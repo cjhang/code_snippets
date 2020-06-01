@@ -158,7 +158,7 @@ def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
                showgui=showgui, overwrite=overwrite)
 
     if show_allobs and not os.path.exists('{}/all_observations.png'.format(plotdir)):
-        print("Plotting elevation with time...")
+        print("Plotting amplitude with time for all obs...")
         plotms(vis=vis, xaxis='time', yaxis='amp', spw=spw, 
                avgchannel='1e8', avgtime='60', coloraxis='field',
                plotfile='{}/all_observations.png'.format(plotdir),

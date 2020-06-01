@@ -160,13 +160,13 @@ print(myscale)
 
 print("\n==============> Applying the Calibration <=============\n")
 # Applying the caltable to the calibrators=for cal_field in [bcal, gcal]: #[bcal, gcal, fcal]
-    default(applycal)
-    applycal(vis=msfile, field=cal_field,
-             gaintable=['gaincurve.cal', 'delays.cal','bandpass.bcal', 
-                        'phase_int.gcal', 'amp_scan.gcal', 'flux.cal'],
-             gainfield=['', bcal, bcal, cal_field, cal_field, cal_field],  
-             interp = ['', '', 'nearest', '', '', ''],
-             calwt=mycalwt, flagbackup=False)
+default(applycal)
+applycal(vis=msfile, field=cal_field,
+         gaintable=['gaincurve.cal', 'delays.cal','bandpass.bcal', 
+                    'phase_int.gcal', 'amp_scan.gcal', 'flux.cal'],
+         gainfield=['', bcal, bcal, cal_field, cal_field, cal_field],  
+         interp = ['', '', 'nearest', '', '', ''],
+         calwt=mycalwt, flagbackup=False)
 
 if False: # RFI flagging by rflag
     # run the following code again after first run
@@ -176,7 +176,7 @@ if False: # RFI flagging by rflag
              # timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant='ea24', plot_overall=True)
+    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant, plot_overall=True)
 
 # apply the caltable to the targets
 default(applycal)
