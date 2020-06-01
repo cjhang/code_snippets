@@ -68,12 +68,22 @@ def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
 
 def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
                show_ants=True, show_mosaic=False, show_uvcoverage=True,
-               show_elevation=True, refant='1', overwrite=True,
+               show_elevation=True, show_allobs=False, refant='1', overwrite=True,
                bcal_field=None, gcal_field=None, target_field=None, 
                ):
     """ plot the basic information of the observation.
 
     Plots include: antenna positions, UV coverage, mosaic coverage(if possible)
+
+    Examples
+    --------
+    To give a quick overview
+
+        check_info(vis=msfile, spw='')
+
+    if you also want to give a glance for the calibrators and science target:
+
+        check_info(vis=msfile, spw='', bcal_field='bcal', gcal_field='gcal', target_field='fcal', refant='1')
 
     Parameters
     ----------
@@ -101,6 +111,9 @@ def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
     show_elevation : bool
         plot the elevation with time for all the fields
         default: True
+    show_allobs : bool
+        plot amplitude vs time for all the fields together
+        default: False
     refant : str
         the reference antenna, set to '' to plot all the antennas
         default: '1'
@@ -142,6 +155,13 @@ def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
         plotms(vis=vis, xaxis='time', yaxis='elevation', spw=spw,
                avgchannel='1e6', coloraxis='field', 
                plotfile='{}/elevation.png'.format(plotdir), 
+               showgui=showgui, overwrite=overwrite)
+
+    if show_allobs and not os.path.exists('{}/all_observations.png'.format(plotdir)):
+        print("Plotting elevation with time...")
+        plotms(vis=vis, xaxis='time', yaxis='amp', spw=spw, 
+               avgchannel='1e8', avgtime='60', coloraxis='field',
+               plotfile='{}/all_observations.png'.format(plotdir),
                showgui=showgui, overwrite=overwrite)
     
     if bcal_field:
@@ -243,10 +263,25 @@ def check_tsys(vis=None, tdmspws=None, ants_subgroups=None, gridcols=2,
 def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
               cal_fields='', target_field='',
               plot_freq=True, plot_time=True, plot_uvdist=True,
-              plot_overall=False, overwrite=True, showgui=False, 
+              overwrite=True, showgui=False, 
               gridrows=2, gridcols=3, dpi=600, plotdir='./plots'):
-    """check the calibrated data after applycal
+    """
+    Check the calibrated data after `applycal`
+    
     The wrapped tools based on `plotms` for manual calibration.
+
+    Examples
+    --------
+    check the amplitude and phase of calibrator change with time and frequency:
+    (set refant to plot with baseline, which is much faster)
+        # to iterate the baseline of refant
+        check_cal(vis=msfile, spw='', cal_fields='0,1', refant='ea01')
+        # to include all the antenna
+        check_cal(vis=msfile, spw='', cal_fields='0,1', refant='ea01')
+
+    for the science target:
+    
+        check_cal(vis=msfile, spw='', target_field='2')
 
     Parameters
     ----------
@@ -278,9 +313,6 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     plot_uvdist : bool
         plot amplitude vs uvdist 
         default: True
-    plot_overall : bool
-        if true, all the antenna will be included in the plots, it is very time consuming for large dataset
-        default: False
     overwrite : bool
         default True
     showgui : bool
@@ -305,7 +337,11 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         for field in cal_fields.split(','):
             print(">> field: {}".format(field))
             for yaxis in ['amplitude', 'phase']:
-                if plot_overall:
+                if refant != '':
+                    iteraxis = 'baseline' 
+                else:
+                    iteraxis = 'antenna'
+                    # generate all the antenna firstly
                     for spw_single in spw.split(','):
                         plotms(vis=vis, field=field, xaxis='frequency', yaxis=yaxis,
                                spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
@@ -313,11 +349,6 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                dpi = dpi, overwrite=overwrite, verbose=False,
                                plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
                                         plotdir, ydatacolumn, field, spw_single, yaxis))
-
-                if refant != '':
-                    iteraxis = 'baseline' 
-                else:
-                    iteraxis = 'antenna'
                 subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
                 # print(subgroups)
                 for page, subgroup in enumerate(subgroups):
@@ -339,16 +370,15 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
             # plot the general consistency of each field
             for field in cal_fields.split(','):
                 print(">> field: {}".format(field))
-                if plot_overall:
+                if refant != '':
+                    iteraxis = 'baseline' 
+                else:
+                    iteraxis = 'antenna'
                     for spw_single in spw.split(','):
                         plotms(vis=vis, field=field, xaxis='time', yaxis=yaxis, spw=spw_single, 
                                avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
                                plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field, yaxis),
                                showgui=showgui, dpi = dpi, overwrite=overwrite)
-                if refant != '':
-                    iteraxis = 'baseline' 
-                else:
-                    iteraxis = 'antenna'
                 subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
                 
                 for page, subgroup in enumerate(subgroups):
