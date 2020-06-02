@@ -97,6 +97,12 @@ if True:
 
     # flagmanager(vis=msfile, mode='save', versionname='BeforeRFI')
 
+if False: 
+    pass
+    # flagdata(vis=msfile, mode='tfcrop', spw='', field='', antenna='',
+         # datacolumn='data', action='apply', display='none', 
+         # ntime='scan', 
+         # timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
 
 
 #######################################################
@@ -181,7 +187,7 @@ if False: # RFI flagging by rflag
              # timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant, plot_overall=True)
+    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant)
 
 # apply the caltable to the target
 default(applycal)
