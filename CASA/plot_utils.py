@@ -347,22 +347,23 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                dpi = dpi, overwrite=overwrite, verbose=False,
                                plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
                                         plotdir, ydatacolumn, field, spw_single, yaxis))
-                elif refant == '':
-                    iteraxis = 'antenna'
-                else:
-                    iteraxis = 'baseline' 
+                else: 
+                    if refant == '':
+                        iteraxis = 'antenna'
+                    else:
+                        iteraxis = 'baseline' 
                     # generate all the antenna firstly
-                subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
-                # print(subgroups)
-                for page, subgroup in enumerate(subgroups):
-                    for spw_single in spw.split(','):
-                        plotms(vis=vis, field=field, xaxis='frequency', yaxis=yaxis,
-                               spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
-                               antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
-                               showgui=showgui, gridrows=gridrows, gridcols=gridcols,
-                               dpi = dpi, overwrite=overwrite, verbose=False,
-                               plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.page{}.png'.format(
-                                         plotdir, ydatacolumn, field, spw_single, yaxis, page))
+                    subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
+                    # print(subgroups)
+                    for page, subgroup in enumerate(subgroups):
+                        for spw_single in spw.split(','):
+                            plotms(vis=vis, field=field, xaxis='frequency', yaxis=yaxis,
+                                   spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
+                                   antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
+                                   showgui=showgui, gridrows=gridrows, gridcols=gridcols,
+                                   dpi = dpi, overwrite=overwrite, verbose=False,
+                                   plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.page{}.png'.format(
+                                             plotdir, ydatacolumn, field, spw_single, yaxis, page))
 
     # the phase should be significantly improved after bandpass calibration
     # especially for the phase calibrator
@@ -379,21 +380,22 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
                                plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field, yaxis),
                                showgui=showgui, dpi = dpi, overwrite=overwrite)
-                if refant == '':
-                    iteraxis = 'antenna'
                 else:
-                    iteraxis = 'baseline' 
-                subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
+                    if refant == '':
+                        iteraxis = 'antenna'
+                    else:
+                        iteraxis = 'baseline' 
+                    subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
                 
-                for page, subgroup in enumerate(subgroups):
-                    for spw_single in spw.split(','):
-                        plotms(vis=vis, field=field, xaxis='time', yaxis=yaxis,
-                               spw=spw_single, avgchannel='1e8', coloraxis='corr',
-                               antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
-                               showgui=showgui, gridrows=gridrows, gridcols=gridcols,
-                               plotfile='{}/time_{}/field{}_spw{}_{}_vs_time.page{}.png'.format(
-                                         plotdir, ydatacolumn, field, spw_single, yaxis, page),
-                               dpi = dpi, overwrite=overwrite)
+                    for page, subgroup in enumerate(subgroups):
+                        for spw_single in spw.split(','):
+                            plotms(vis=vis, field=field, xaxis='time', yaxis=yaxis,
+                                   spw=spw_single, avgchannel='1e8', coloraxis='corr',
+                                   antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
+                                   showgui=showgui, gridrows=gridrows, gridcols=gridcols,
+                                   plotfile='{}/time_{}/field{}_spw{}_{}_vs_time.page{}.png'.format(
+                                             plotdir, ydatacolumn, field, spw_single, yaxis, page),
+                                   dpi = dpi, overwrite=overwrite)
 
     if plot_uvdist and cal_fields != '':
         # well behaved point source should show flat amplitude with uvdist
