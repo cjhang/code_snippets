@@ -12,7 +12,6 @@ import random
 import numpy as np
 from casa import tbtool, plotms, plotants
 
-
 def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
     """group a large number of antenna into small subgroup
 
@@ -42,6 +41,8 @@ def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
     # generate the baseline list
     if refant != '':
         # generates the baseline groups based on the refant
+        if refant not in ants:
+            raise ValueError("Refant {} is not a valid antenna!".format(refant))
         refant_idx = np.where(ants == refant)
         # remove the refant from antenna_list
         ants_new = np.delete(ants, refant_idx)
@@ -293,6 +294,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     refant : str
         the reference antenna, like 'CM03', 'DV48'
         if the refant is specified, the iteration axis will change to baseline, otherwise it will iterate through antenna
+        when plot the science target, the refant will be omitted
         default: ''
     ydatacolumn : str
         the ydatacolumn of `plotms`
@@ -337,11 +339,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         for field in cal_fields.split(','):
             print(">> field: {}".format(field))
             for yaxis in ['amplitude', 'phase']:
-                if refant != '':
-                    iteraxis = 'baseline' 
-                else:
-                    iteraxis = 'antenna'
-                    # generate all the antenna firstly
+                if refant == 'all':
                     for spw_single in spw.split(','):
                         plotms(vis=vis, field=field, xaxis='frequency', yaxis=yaxis,
                                spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
@@ -349,6 +347,11 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                dpi = dpi, overwrite=overwrite, verbose=False,
                                plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
                                         plotdir, ydatacolumn, field, spw_single, yaxis))
+                elif refant == '':
+                    iteraxis = 'antenna'
+                else:
+                    iteraxis = 'baseline' 
+                    # generate all the antenna firstly
                 subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
                 # print(subgroups)
                 for page, subgroup in enumerate(subgroups):
@@ -370,15 +373,16 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
             # plot the general consistency of each field
             for field in cal_fields.split(','):
                 print(">> field: {}".format(field))
-                if refant != '':
-                    iteraxis = 'baseline' 
-                else:
-                    iteraxis = 'antenna'
+                if refant == 'all':
                     for spw_single in spw.split(','):
                         plotms(vis=vis, field=field, xaxis='time', yaxis=yaxis, spw=spw_single, 
                                avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
                                plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field, yaxis),
                                showgui=showgui, dpi = dpi, overwrite=overwrite)
+                if refant == '':
+                    iteraxis = 'antenna'
+                else:
+                    iteraxis = 'baseline' 
                 subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
                 
                 for page, subgroup in enumerate(subgroups):
@@ -405,7 +409,8 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     if target_field != '':
         print("Giving the science target a glance ...")
         os.system('mkdir -p {}/target/'.format(plotdir))
-        for field in target_field.split(','):
+        if True:
+            field = target_field
             if plot_uvdist:
                 print(">> Plotting amplitude vs uvdist for science target...")
                 plotms(vis=vis, xaxis='uvdist', yaxis='amp',
@@ -413,6 +418,11 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                        avgchannel='1e8', coloraxis='corr',
                        plotfile = '{}/target/target_amp_vs_uvdist.png'.format(plotdir),
                        showgui=showgui, dpi=dpi, overwrite=overwrite)
+                print(">> Plotting uv coverage of calibrated data...")
+                plotms(vis=vis, xaxis='U', yaxis='V', field=field, 
+                       spw=spw, showgui=showgui,avgchannel='1e6', 
+                       plotfile='{}/target/target_uvcoverage.png'.format(plotdir),
+                       overwrite=overwrite)
             for spw in spw.split(','):
                 if plot_freq:
                     print(">> Plotting amplitude vs frequency for science target...")
