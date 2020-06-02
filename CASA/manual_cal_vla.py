@@ -4,6 +4,7 @@
 # Email: cjhastro@gmail.com
 # History:
 #   2020.04.11 First release after multiple testings
+#   2020.06.01 Fixed several bugs ready for general usage
 
 #######################################################
 #                  Data Prepare
@@ -18,8 +19,8 @@ msfile = ''
 fcal = '0'
 bcal = '0'
 gcal = '1'
-allcal = bcal + ',' + gcal
-targets = '2'
+allcal = fcal + ','+bcal + ','+gcal
+target = '2'
 
 myrefant = 'ea01'      # reference antenna
 mysolint = 'int'       # integration time
@@ -47,7 +48,7 @@ default(listobs)
 listobs(vis=msfile, listfile=msfile+'.listobs.txt')
 
 plot_utils.check_info(vis=msfile)
-plot_utils.check_info(vis=msfile, spw='', bcal_field=bcal, gcal_field=gcal, target_field=fcal, refant=myrefant)
+plot_utils.check_info(vis=msfile, spw='', bcal_field=bcal, gcal_field=gcal, target_field=target, refant=myrefant)
 
 #######################################################
 #                  Prior Calibration
@@ -85,6 +86,8 @@ flagdata(vis=msfile, mode='clip', clipzeros=True, flagbackup=False)
 #> remove the first 5s and the end 5s data (optional, see the amp_vs_time)
 # flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
 # flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='endb', flagbackup=False)
+#> remove edge channels, 5% channels can be enough
+# flagdata(vis=msfile, mode='manual', spw='*:0~200;5431~5631',flagbackup=False)
 #> saving prior flags 
 flagmanager(vis=msfile, mode='save', versionname='Prior')
 
@@ -159,9 +162,10 @@ print(myscale)
 
 
 print("\n==============> Applying the Calibration <=============\n")
-# Applying the caltable to the calibrators=for cal_field in [bcal, gcal]: #[bcal, gcal, fcal]
+# Applying the caltable to the calibrators
 default(applycal)
-applycal(vis=msfile, field=cal_field,
+for cal_field in [bcal, gcal]: #[bcal, gcal, fcal]
+    applycal(vis=msfile, field=cal_field,
          gaintable=['gaincurve.cal', 'delays.cal','bandpass.bcal', 
                     'phase_int.gcal', 'amp_scan.gcal', 'flux.cal'],
          gainfield=['', bcal, bcal, cal_field, cal_field, cal_field],  
@@ -169,6 +173,7 @@ applycal(vis=msfile, field=cal_field,
          calwt=mycalwt, flagbackup=False)
 
 if False: # RFI flagging by rflag
+    pass
     # run the following code again after first run
     # flagdata(vis=msfile, mode='rflag', spw='', field=allcal, scan='', 
              # datacolumn='corrected', action='apply', display='none',
@@ -178,9 +183,9 @@ if False: # RFI flagging by rflag
 if plot_results:
     plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant, plot_overall=True)
 
-# apply the caltable to the targets
+# apply the caltable to the target
 default(applycal)
-applycal(vis=msfile, field=targets,
+applycal(vis=msfile, field=target,
          gaintable=['gaincurve.cal', 'delays.cal','bandpass.bcal', 
                     'phase_scan.gcal', 'amp_scan.gcal','flux.cal'],
          gainfield=['', bcal, bcal, gcal, gcal, gcal],  
@@ -197,8 +202,8 @@ if True: # DO THIS CAREFULLY
 if plot_results:
     plot_utils.check_cal(vis=msfile, spw='0', refant=myrefant, target_field='2')
 
-# split out the calibrated targets
+# split out the calibrated target
 os.system('rm -rf {}.calibrated'.format(msfile))
 default(split)
-split(vis=msfile, field=targets, datacolumn='corrected', outputvis=msfile+'.calibrated')
+split(vis=msfile, field=target, datacolumn='corrected', outputvis=msfile+'.calibrated')
 
