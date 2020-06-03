@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # funtion to identify flagging data from the output in the logfile
 
 # Author: Zhi-Yu Zhang, Jianhang Chen
