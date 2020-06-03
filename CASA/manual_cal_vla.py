@@ -188,6 +188,7 @@ if False: # RFI flagging by rflag
 
 if plot_results:
     plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant)
+    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant='all')
 
 # apply the caltable to the target
 default(applycal)
