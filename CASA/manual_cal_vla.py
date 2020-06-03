@@ -187,8 +187,8 @@ if False: # RFI flagging by rflag
              # timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant=myrefant)
-    plot_utils.check_cal(vis=msfile, spw='', cal_fields='0,1', refant='all')
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant=myrefant)
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all')
 
 # apply the caltable to the target
 default(applycal)
@@ -207,7 +207,7 @@ if True: # DO THIS CAREFULLY
     pass
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='0', refant=myrefant, target_field='2')
+    plot_utils.check_cal(vis=msfile, spw='', refant='all', field='2')
 
 # split out the calibrated target
 os.system('rm -rf {}.calibrated'.format(msfile))
