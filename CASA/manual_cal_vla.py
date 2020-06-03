@@ -103,6 +103,7 @@ if False:
          # datacolumn='data', action='apply', display='none', 
          # ntime='scan', 
          # timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
+    # flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
 
 
 #######################################################
@@ -185,6 +186,7 @@ if False: # RFI flagging by rflag
              # datacolumn='corrected', action='apply', display='none',
              # ntime='scan',
              # timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
+    # flagmanager(vis=msfile, mode='save', versionname='AfterRflag')
 
 if plot_results:
     plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant=myrefant)
