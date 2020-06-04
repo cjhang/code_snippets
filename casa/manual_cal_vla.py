@@ -5,6 +5,7 @@
 # History:
 #   2020.04.11 First release after multiple testings
 #   2020.06.01 Fixed several bugs ready for general usage
+#   2020.06.04 Move the Prior Calibration after the Prior Flagging
 
 #######################################################
 #                  Data Prepare
@@ -29,7 +30,6 @@ spw_bpphase =''        # the spw window with small variation
 
 
 update_antpos = False  # update the antenna position online
-plot_results = True
 
 # optional
 # clearcal(vis=msfile)
@@ -37,6 +37,7 @@ plot_results = True
 ## Validation checking
 try:
     import plot_utils
+    plot_results = True
 except:
     plot_results = False
 
@@ -49,6 +50,38 @@ listobs(vis=msfile, listfile=msfile+'.listobs.txt')
 
 plot_utils.check_info(vis=msfile)
 plot_utils.check_info(vis=msfile, spw='', bcal_field=bcal, gcal_field=gcal, target_field=target, refant=myrefant)
+
+
+#######################################################
+#                  Prior Flagging
+#######################################################
+print("start prior flagging...")
+flagdata(vis=msfile, autocorr=True, flagbackup=False)
+flagdata(vis=msfile, mode='shadow', flagbackup=False)
+#> remove zero data
+flagdata(vis=msfile, mode='clip', clipzeros=True, flagbackup=False)
+#> remove the first 5s and the end 5s data (optional, see the amp_vs_time)
+# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
+# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='endb', flagbackup=False)
+#> remove edge channels, 5% channels can be enough
+# flagdata(vis=msfile, mode='manual', spw='*:0~100;900~1000',flagbackup=False)
+#> saving prior flags 
+flagmanager(vis=msfile, mode='save', versionname='Prior')
+
+if True:
+    pass
+    ## Additional manual flagging
+
+    # flagmanager(vis=msfile, mode='save', versionname='BeforeRFI')
+
+if False: 
+    pass
+    # flagdata(vis=msfile, mode='tfcrop', spw='', field='', antenna='',
+         # datacolumn='data', action='apply', display='none', 
+         # ntime='scan', 
+         # timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
+    # flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
+
 
 #######################################################
 #                  Prior Calibration
@@ -72,38 +105,6 @@ gencal(vis=msfile, caltable='gaincurve.cal', caltype='gceff')
 # setjy(vis=msfile ,listmodels=True)
 # for resolved calibrators, one should specify the model
 setjy(vis=msfile, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
-
-
-
-#######################################################
-#                  Prior Flagging
-#######################################################
-print("start prior flagging...")
-flagdata(vis=msfile, autocorr=True, flagbackup=False)
-flagdata(vis=msfile, mode='shadow', flagbackup=False)
-#> remove zero data
-flagdata(vis=msfile, mode='clip', clipzeros=True, flagbackup=False)
-#> remove the first 5s and the end 5s data (optional, see the amp_vs_time)
-# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
-# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='endb', flagbackup=False)
-#> remove edge channels, 5% channels can be enough
-# flagdata(vis=msfile, mode='manual', spw='*:0~200;5431~5631',flagbackup=False)
-#> saving prior flags 
-flagmanager(vis=msfile, mode='save', versionname='Prior')
-
-if True:
-    pass
-    ## Additional manual flagging
-
-    # flagmanager(vis=msfile, mode='save', versionname='BeforeRFI')
-
-if False: 
-    pass
-    # flagdata(vis=msfile, mode='tfcrop', spw='', field='', antenna='',
-         # datacolumn='data', action='apply', display='none', 
-         # ntime='scan', 
-         # timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
-    # flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
 
 
 #######################################################
