@@ -1,4 +1,4 @@
-# a collection of plots utils to inspect the data during calibratiion
+# a collection of plots utils to inspect the data during calibration
 
 # by Jianhang Chen
 # cjhastro@gmail.com 
@@ -412,15 +412,15 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         os.system('mkdir -p {}/uvdist/'.format(plotdir))
         for field_single in field.split(','):
             print('>> field: {}'.format(field_single))
-            plotms(vis=vis, field=field_single, xaxis='uvdist', yaxis='amp',
-                   avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
-                   plotfile='{}/uvdist/field{}_amp_vs_uvdist.png'.format(plotdir, field_single),
-                   dpi=dpi, overwrite=overwrite, showgui=showgui)
-            print(">> Plotting uv coverage of calibrated data...")
-            plotms(vis=vis, xaxis='U', yaxis='V', field=field_single, 
-                   spw=spw, showgui=showgui, avgchannel='1e6', 
-                   plotfile='{}/target/field{}_uvcoverage.png'.format(plotdir, field_single),
-                   overwrite=overwrite)
+            for spw_single in spw.split(','):
+                plotms(vis=vis, field=field_single, xaxis='uvdist', yaxis='amp', spw=spw_single,
+                       avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
+                       plotfile='{}/uvdist/field{}_spw{}_amp_vs_uvdist.png'.format(plotdir, field_single, spw_single),
+                       dpi=dpi, overwrite=overwrite, showgui=showgui)
+                plotms(vis=vis, field=field_single, xaxis='U', yaxis='V', spw=spw_single,
+                       avgchannel='1e8', coloraxis='corr', ydatacolumn=ydatacolumn,
+                       plotfile='{}/uvdist/field{}_spw{}_uvcoverage.png'.format(plotdir, field_single, spw_single),
+                       dpi=dpi, overwrite=overwrite, showgui=showgui)
        
 
 def check_bandpass(fgcal='bpphase.gcal', fbcal='bandpass.bcal', 
