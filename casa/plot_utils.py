@@ -351,7 +351,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                 if refant == 'all':
                     for spw_single in spw.split(','):
                         plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
-                               spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
+                               spw=spw_single, avgtime='1e8', avgscan=False, coloraxis='corr',
                                ydatacolumn=ydatacolumn, showgui=showgui,
                                dpi = dpi, overwrite=overwrite, verbose=False,
                                plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
@@ -367,7 +367,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                     for page, subgroup in enumerate(subgroups):
                         for spw_single in spw.split(','):
                             plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
-                                   spw=spw_single, avgtime='1e8', avgscan=True, coloraxis='corr',
+                                   spw=spw_single, avgtime='1e8', avgscan=False, coloraxis='corr',
                                    antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
                                    showgui=showgui, gridrows=gridrows, gridcols=gridcols,
                                    dpi = dpi, overwrite=overwrite, verbose=False,
