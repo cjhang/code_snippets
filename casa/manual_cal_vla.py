@@ -78,7 +78,7 @@ if False:
     pass
     # flagdata(vis=msfile, mode='tfcrop', spw='', field='', antenna='',
          # datacolumn='data', action='apply', display='none', 
-         # ntime='scan', 
+         # ntime='scan', combinescans=False, 
          # timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
     # flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
 
@@ -185,7 +185,7 @@ if False: # RFI flagging by rflag
     # run the following code again after first run
     # flagdata(vis=msfile, mode='rflag', spw='', field=allcal, scan='', 
              # datacolumn='corrected', action='apply', display='none',
-             # ntime='scan',
+             # ntime='scan', combinescans=False,
              # timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
     # flagmanager(vis=msfile, mode='save', versionname='AfterRflag')
 
