@@ -9,6 +9,8 @@ mythreshold = '5.0mJy'
 myvstart = '1700km/s'
 mynchan = 40
 mywidth = ''
+myweighting = 'briggs'
+myrobust = '1.5'
 
 
 ## Continuum subtraction for emission lines
@@ -20,18 +22,18 @@ mywidth = ''
 #######################################################
 #                     mfs
 #######################################################
-myimagename = calfile + '_mfs'
+myimagename = calfile+'_'+myweighting+'_'+'robust'+myrobust+'_mfs'
 rmtables(tablenames=myimagename + '.*')
 tclean(vis=calfile, spw=myspw, imagename=myimagename,
        imsize=myimsize, cell=mycell, specmode='mfs',
-       weighting='briggs', robust=0, pblimit=-0.0001,
+       weighting='briggs', robust=1.5, pblimit=-0.0001,
        niter=1000, interactive=False)
 
 
 #######################################################
 #                   datacube
 #######################################################
-myimagename = calfile + '_cube'
+myimagename = calfile+'_'+myweighting+'_'+'robust'+myrobust+'_cube'
 rmtables(tablenames=myimagename + '.*')
 #> First run for dirty image 
 #>> to determine the cell and threshold
@@ -44,8 +46,7 @@ tclean(vis=calfile, spw=myspw,
        nchan=mynchan, start=myvstart, width=mywidth,
        perchanweightdensity=True, restoringbeam="common",
        gridder="standard", pblimit=-0.0001,
-       weighting='natural',
-       # weighting="briggs", robust=1.5,
+       weighting=myweighting, robust=myrobust,
        niter=0,)
 
 #> start the full clean
@@ -58,11 +59,10 @@ tclean(vis=calfile, spw=myspw,
        nchan=mynchan, start=myvstart, width=mywidth,
        perchanweightdensity=True, restoringbeam="common",
        gridder="standard", pblimit=-0.0001,
-       weighting='natural',
-       # weighting="briggs", robust=1.5,
+       weighting=myweighting, robust=myrobust,
        niter=10000, gain=0.1, threshold=mythreshold,
-       # usemask='user',
-       usemask="auto-multithresh",
+       usemask='user',
+       # usemask="auto-multithresh",
        interactive=True,
        savemodel="none",)
 
