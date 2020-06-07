@@ -7,7 +7,7 @@
 # History:
 #   21 Mar 2019, update by Zhiyu
 #   30 Sep 2019, transfer into function from the original script, by Jianhang
-#    3 Dec 2019, match logs by regex, Jianhang
+#    3 Dec 2019, v0.0.2: match logs by regex, by Jianhang
 #    1 Apr 2020, sort the ouput including more details
 
 
@@ -59,9 +59,16 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-
 def locating_flag(logfile, n=5, debug=False):
     """Searching flag information in logfile
+    
+    Example
+    -------
+    As a package:
+        from locating_flag import locating_flag
+        locating_flag(logfile, n=5)
+    In casa:
+        execfile locating_flag.py
 
     Parameters
     ----------
@@ -108,10 +115,15 @@ def locating_flag(logfile, n=5, debug=False):
     flag_baseline = ''
     for baseline in Counter(match_stat['baselines']).most_common(n):
         flag_baseline += "{};".format(baseline[0])
-    # flag_corr = Counter(match_stat['corrs']).most_common(1)[0]
-    # flag_chan = Counter(match_stat['chans']).most_common(1)[0]
+    flag_scan = ''
+    for scan in Counter(match_stat['scans']).most_common(n):
+        flag_scan += "{},".format(scan[0])
+    flag_corr = ''
+    for corr in Counter(match_stat['corrs']).most_common(n):
+        flag_corr += "{},".format(corr[0])
 
-    print("flagdata(vis='', mode='manual', antenna='{}', flagbackup=False)".format(flag_baseline[:-1]))
+    print("flagdata(vis='', mode='manual', antenna='{}', scan='{}', correlation='{}', flagbackup=False)".format(flag_baseline[:-1], flag_scan[:-1], flag_corr[:,-1]))
+
 
 if __name__ == '__main__':
     locating_flag(casalog.logfile())
