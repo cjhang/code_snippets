@@ -59,7 +59,24 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-def locating_flag(logfile, n=5, debug=False, vis='msfile'):
+def generate_timerange(time_list):
+    """comparing the string, find the smallest time string and the largest
+    """
+    if len(time_list) <= 1:
+        return time_list[0]
+
+    start_time = time_list[0]
+    end_time = time_list[0]
+    for item in time_list[1:]:
+        if item < smallest:
+            start_time = item
+        if item > end_time:
+            end_time = item
+    return start_time +'~'+ end_time
+
+
+
+def locating_flag(logfile, n=5, debug=False, vis=''):
     """Searching flag information in logfile
     
     Example
@@ -121,9 +138,9 @@ def locating_flag(logfile, n=5, debug=False, vis='msfile'):
     flag_corr = ''
     for corr in Counter(match_stat['corrs']).most_common(n):
         flag_corr += "{},".format(corr[0])
+    flag_timerange = generate_timerange(match_stat['time'])
 
-    print("flagdata(vis='{}', mode='manual', antenna='{}', scan='{}', correlation='{}', flagbackup=False)".format(
-        vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1]))
+    print("flagdata(vis='{}', mode='manual', antenna='{}', scan='{}', correlation='{}', timerange='{}', flagbackup=False)".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1], flag_timerange))
 
 
 if __name__ == '__main__':
