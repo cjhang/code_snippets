@@ -59,7 +59,7 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-def locating_flag(logfile, n=5, debug=False):
+def locating_flag(logfile, n=5, debug=False, vis='msfile'):
     """Searching flag information in logfile
     
     Example
@@ -122,7 +122,8 @@ def locating_flag(logfile, n=5, debug=False):
     for corr in Counter(match_stat['corrs']).most_common(n):
         flag_corr += "{},".format(corr[0])
 
-    print("flagdata(vis='', mode='manual', antenna='{}', scan='{}', correlation='{}', flagbackup=False)".format(flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1]))
+    print("flagdata(vis='{}', mode='manual', antenna='{}', scan='{}', correlation='{}', flagbackup=False)".format(
+        vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1]))
 
 
 if __name__ == '__main__':
