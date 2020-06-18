@@ -62,13 +62,13 @@ def pretty_output(counter):
 def generate_timerange(time_list):
     """comparing the string, find the smallest time string and the largest
     """
-    if len(time_list) <= 1:
+    if len(Counter(time_list)) <= 1:
         return time_list[0]
 
     start_time = time_list[0]
     end_time = time_list[0]
     for item in time_list[1:]:
-        if item < smallest:
+        if item < start_time:
             start_time = item
         if item > end_time:
             end_time = item
@@ -140,7 +140,7 @@ def locating_flag(logfile, n=5, debug=False, vis=''):
         flag_corr += "{},".format(corr[0])
     flag_timerange = generate_timerange(match_stat['time'])
 
-    print("flagdata(vis='{}', mode='manual', antenna='{}', scan='{}', correlation='{}', timerange='{}', flagbackup=False)".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1], flag_timerange))
+    print("flagdata(vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', timerange='{}', flagbackup=False)".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1], flag_timerange))
 
 
 if __name__ == '__main__':
