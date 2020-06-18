@@ -13,6 +13,7 @@
 
 import re
 from collections import Counter
+from datetime import datetime
 
 version = '0.0.3'
 
@@ -59,8 +60,16 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-def generate_timerange(time_list):
+def generate_timerange(time_list, intt=5.0):
     """comparing the string, find the smallest time string and the largest
+    
+    Parameters
+    ----------
+    time_list : str or list
+        the list of time from the match_info
+    intt : int or float
+        the integrational time of the data
+        default: 5s
     """
     if len(time_list) <= 1:
         return time_list[0]
@@ -72,11 +81,13 @@ def generate_timerange(time_list):
             start_time = item
         if item > end_time:
             end_time = item
-    return start_time +'~'+ end_time
+    start_time = datetime.strptime(start_time) - timedelta(seconds=intt/2.0)
+    end_time = datetime.strptime(end_time) + timedelta(seconds=intt/2.0)
+    return start_time.strftime('%Y/%m/%d/%H:%M:%S.%f') +'~'+ end_time.strftime('%Y/%m/%d/%H:%M:%S.%f')
 
 
 
-def locating_flag(logfile, n=5, debug=False, vis=''):
+def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0):
     """Searching flag information in logfile
     
     Example
@@ -138,7 +149,7 @@ def locating_flag(logfile, n=5, debug=False, vis=''):
     flag_corr = ''
     for corr in Counter(match_stat['corrs']).most_common(n):
         flag_corr += "{},".format(corr[0])
-    flag_timerange = generate_timerange(match_stat['time'])
+    flag_timerange = generate_timerange(match_stat['time'], intt=intt)
 
     print("flagdata(vis='{}', mode='manual', antenna='{}', scan='{}', correlation='{}', timerange='{}', flagbackup=False)".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1], flag_timerange))
 
