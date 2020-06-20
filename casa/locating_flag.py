@@ -13,7 +13,7 @@
 
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 version = '0.0.3'
 
@@ -60,7 +60,7 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-def generate_timerange(time_list, intt=5.0):
+def generate_timerange(time_list, intt=5.0, avgtime=None):
     """comparing the string, find the smallest time string and the largest
     
     Parameters
@@ -70,9 +70,17 @@ def generate_timerange(time_list, intt=5.0):
     intt : int or float
         the integrational time of the data
         default: 5s
+    avgtime : int or float
+        the average time interval during the inspection
+        default: None
     """
     if len(Counter(time_list)) <= 1:
-        return time_list[0]
+        if avgtime:
+            start_time = datetime.strptime(time_list[0], '%Y/%m/%d/%H:%M:%S.%f') - timedelta(seconds=avgtime/2.0)
+            end_time = datetime.strptime(time_list[0], '%Y/%m/%d/%H:%M:%S.%f') + timedelta(seconds=avgtime/2.0)
+            return start_time.strftime('%Y/%m/%d/%H:%M:%S.%f') +'~'+ end_time.strftime('%Y/%m/%d/%H:%M:%S.%f')
+        else:
+            return time_list[0]
 
     start_time = time_list[0]
     end_time = time_list[0]
@@ -81,13 +89,27 @@ def generate_timerange(time_list, intt=5.0):
             start_time = item
         if item > end_time:
             end_time = item
-    start_time = datetime.strptime(start_time) - timedelta(seconds=intt/2.0)
-    end_time = datetime.strptime(end_time) + timedelta(seconds=intt/2.0)
+    if avgtime:
+        intt = avgtime
+    start_time = datetime.strptime(start_time, '%Y/%m/%d/%H:%M:%S.%f') - timedelta(seconds=intt/2.0)
+    end_time = datetime.strptime(end_time, '%Y/%m/%d/%H:%M:%S.%f') + timedelta(seconds=intt/2.0)
     return start_time.strftime('%Y/%m/%d/%H:%M:%S.%f') +'~'+ end_time.strftime('%Y/%m/%d/%H:%M:%S.%f')
 
+def generate_spw(chan_list):
+    if len(Counter(chan_list)) <= 1:
+        return '*:' + chan_list[0] + '~' + chan_list[0]
+    start_chan = int(chan_list[0])
+    end_chan = int(chan_list[0])
+    for item in chan_list:
+        item_int = int(item)
+        if item_int < start_chan:
+            start_chan = item_int
+        if item_int > end_chan:
+            end_chan = item_int
+    return '*:' + str(start_chan) + '~' + str(end_chan)
 
-
-def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0):
+def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0, avgtime=None, show_timerange=True, 
+                  show_spw=False):
     """Searching flag information in logfile
     
     Example
@@ -149,9 +171,15 @@ def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0):
     flag_corr = ''
     for corr in Counter(match_stat['corrs']).most_common(n):
         flag_corr += "{},".format(corr[0])
-    flag_timerange = generate_timerange(match_stat['time'], intt=intt)
-
-    print("flagdata(vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', timerange='{}', flagbackup=False)".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1], flag_timerange))
+    
+    flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1])
+    if show_timerange:
+        flag_timerange = generate_timerange(match_stat['time'], intt=intt, avgtime=avgtime)
+        flag_cmd += "timerange='{}', ".format(flag_timerange)
+    if show_spw:
+        flag_spw = generate_spw(match_stat['chans'])
+        flag_cmd += "spw='{}', ".format(flag_spw)
+    print("flagdata({}flagbackup=False)".format(flag_cmd))
 
 
 if __name__ == '__main__':
