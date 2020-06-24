@@ -108,8 +108,8 @@ def generate_spw(chan_list):
             end_chan = item_int
     return '*:' + str(start_chan) + '~' + str(end_chan)
 
-def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0, avgtime=None, show_timerange=True, 
-                  show_spw=False):
+def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None, mode='stat',  
+                  show_timerange=True, show_spw=False, debug=False,):
     """Searching flag information in logfile
     
     Example
@@ -126,7 +126,29 @@ def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0, avgtime=None, sho
         the filename of the log
     n : int
         the number of most common outputs
-
+        default: 5
+    vis : str
+        the vis of generated flagdata command
+        default: ''
+    intt : int or float
+        integration time, in seconds
+        default: 5
+    avgtime : int or float
+        the avgtime in plotms
+        default: None
+    mode : str
+        'stat' or 'statistics': print out the antenna and baseline statistics
+        'single': generate flagdata command for each point in plotms
+        default: 'stat'
+    show_timerange : bool
+        generate the timerange in the flagdata command
+        default: True
+    show_spw : bool
+        generate spw in the flagdata command
+        default: False
+    debug : bool
+        printing the matching information in the match_info function
+        default: False
     """
     n_select_start = 0
     n_select_end = 0
@@ -149,37 +171,52 @@ def locating_flag(logfile, n=5, debug=False, vis='', intt=5.0, avgtime=None, sho
 
     match_stat = {'ant1&ant2':[], 'baselines':[], 'spws':[], 'corrs':[], 
             'chans':[], 'scans':[], 'fields':[], 'time':[]}
-    ants_all = []
-    baselines_all = []
+    if mode == 'stat' or mode == 'statistics':
+        ants_all = []
+        baselines_all = []
+        for line in all_lines[n_select_start:n_select_end]:
+            info_matched = match_info(line, debug=debug)
+            for item_stat in match_stat:
+                for item_info in info_matched:
+                    if item_info in item_stat:
+                        match_stat[item_stat].append(info_matched[item_info])
+        for item in match_stat:
+            print("{}:\n{}\n".format(item, pretty_output(Counter(match_stat[item]).most_common(n))))
 
-    for line in all_lines[n_select_start:n_select_end]:
-        info_matched = match_info(line, debug=debug)
-        for item_stat in match_stat:
-            for item_info in info_matched:
-                if item_info in item_stat:
-                    match_stat[item_stat].append(info_matched[item_info])
-    for item in match_stat:
-        print("{}:\n{}\n".format(item, pretty_output(Counter(match_stat[item]).most_common(n))))
+        # generate flagdata command
+        flag_baseline = ''
+        for baseline in Counter(match_stat['baselines']).most_common(n):
+            flag_baseline += "{};".format(baseline[0])
+        flag_scan = ''
+        for scan in Counter(match_stat['scans']).most_common(n):
+            flag_scan += "{},".format(scan[0])
+        flag_corr = ''
+        for corr in Counter(match_stat['corrs']).most_common(n):
+            flag_corr += "{},".format(corr[0])
+        
+        flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1])
+        if show_timerange:
+            flag_timerange = generate_timerange(match_stat['time'], intt=intt, avgtime=avgtime)
+            flag_cmd += "timerange='{}', ".format(flag_timerange)
+        if show_spw:
+            flag_spw = generate_spw(match_stat['chans'])
+            flag_cmd += "spw='{}', ".format(flag_spw)
+        print("flagdata({}flagbackup=False)".format(flag_cmd))
 
-    # generate flagdata command
-    flag_baseline = ''
-    for baseline in Counter(match_stat['baselines']).most_common(n):
-        flag_baseline += "{};".format(baseline[0])
-    flag_scan = ''
-    for scan in Counter(match_stat['scans']).most_common(n):
-        flag_scan += "{},".format(scan[0])
-    flag_corr = ''
-    for corr in Counter(match_stat['corrs']).most_common(n):
-        flag_corr += "{},".format(corr[0])
-    
-    flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1])
-    if show_timerange:
-        flag_timerange = generate_timerange(match_stat['time'], intt=intt, avgtime=avgtime)
-        flag_cmd += "timerange='{}', ".format(flag_timerange)
-    if show_spw:
-        flag_spw = generate_spw(match_stat['chans'])
-        flag_cmd += "spw='{}', ".format(flag_spw)
-    print("flagdata({}flagbackup=False)".format(flag_cmd))
+    elif mode == 'single':
+        for line in all_lines[n_select_start:n_select_end]:
+            info_matched = match_info(line, debug=debug)
+
+            flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,info_matched['baseline'], 
+                    info_matched['scan'], info_matched['corr'])
+            if show_timerange:
+                flag_timerange = generate_timerange(match_info['time'], intt=intt, avgtime=avgtime)
+                flag_cmd += "timerange='{}', ".format(flag_timerange)
+            if show_spw:
+                flag_spw = generate_spw(match_info['chans'])
+                flag_cmd += "spw='{}', ".format(flag_spw)
+            print("flagdata({}flagbackup=False)".format(flag_cmd))
+
 
 
 if __name__ == '__main__':
