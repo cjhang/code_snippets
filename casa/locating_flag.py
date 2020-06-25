@@ -6,9 +6,9 @@
 # Email: pmozhang@gmail.com, cjhastro@gmail.com
 # History:
 #   21 Mar 2019, update by Zhiyu
-#   30 Sep 2019, transfer into function from the original script, by Jianhang
+#   30 Sep 2019, transfer into function from the original script of Zhiyu, by Jianhang
 #    3 Dec 2019, v0.0.2: match logs by regex, by Jianhang
-#    1 Apr 2020, sort the ouput including more details
+#   24 Jun 2020, v0.1, locating_flag can generate the flagdata automatically
 
 
 import re
@@ -74,6 +74,8 @@ def generate_timerange(time_list, intt=5.0, avgtime=None):
         the average time interval during the inspection
         default: None
     """
+    if isinstance(time_list, str):
+        time_list = [time_list,]
     if len(Counter(time_list)) <= 1:
         if avgtime:
             start_time = datetime.strptime(time_list[0], '%Y/%m/%d/%H:%M:%S.%f') - timedelta(seconds=avgtime/2.0)
@@ -96,6 +98,8 @@ def generate_timerange(time_list, intt=5.0, avgtime=None):
     return start_time.strftime('%Y/%m/%d/%H:%M:%S.%f') +'~'+ end_time.strftime('%Y/%m/%d/%H:%M:%S.%f')
 
 def generate_spw(chan_list):
+    if isinstance(chan_list, str):
+        chan_list = [chan_list,]
     if len(Counter(chan_list)) <= 1:
         return '*:' + chan_list[0] + '~' + chan_list[0]
     start_chan = int(chan_list[0])
@@ -108,7 +112,8 @@ def generate_spw(chan_list):
             end_chan = item_int
     return '*:' + str(start_chan) + '~' + str(end_chan)
 
-def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None, mode='stat',  
+def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None, mode='stat',
+                  flagfile=None,
                   show_timerange=True, show_spw=False, debug=False,):
     """Searching flag information in logfile
     
@@ -206,16 +211,21 @@ def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None, mode='stat',
     elif mode == 'single':
         for line in all_lines[n_select_start:n_select_end]:
             info_matched = match_info(line, debug=debug)
+            if debug:
+                print("\nOriginal flagInfo:", line)
+                print("Matched info:", info_matched)
 
             flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,info_matched['baseline'], 
                     info_matched['scan'], info_matched['corr'])
             if show_timerange:
-                flag_timerange = generate_timerange(match_info['time'], intt=intt, avgtime=avgtime)
+                flag_timerange = generate_timerange(info_matched['time'], intt=intt, avgtime=avgtime)
                 flag_cmd += "timerange='{}', ".format(flag_timerange)
             if show_spw:
-                flag_spw = generate_spw(match_info['chans'])
+                flag_spw = generate_spw(info_matched['chans'])
                 flag_cmd += "spw='{}', ".format(flag_spw)
-            print("flagdata({}flagbackup=False)".format(flag_cmd))
+            if flagfile:
+                with open(flagfile, "a") as ff:
+                    ff.write("flagdata({}flagbackup=False)\n".format(flag_cmd))
 
 
 
