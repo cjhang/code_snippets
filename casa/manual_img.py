@@ -1,17 +1,70 @@
+# Simple manual imaging script for VLA data
+#
+# Author: Jianhang Chen
+# Email: cjhastro@gmail.com
+# History:
+#   2020.06.25 First release after multiple testings
+
 # The reference clean program and notes
+
+print('\nstart imaging....\n')
 
 calfile = ''
 myspw = '' 
-myimsize = 400
+myimsize = 500
 mycell = '7arcsec'
 myrestfreq = '1.420405752GHz'
-mythreshold = '5.0mJy'
-myvstart = '1700km/s'
-mynchan = 40
+myvstart = ''
+mynchan = -1
 mywidth = ''
-myweighting = 'briggs'
-myrobust = '1.5'
+allcal = ['0', '1']
+target = '2'
 
+imagedir = './tclean'
+os.system('mkdir {}'.format(imagedir))
+
+filename = os.path.basename(calfile)
+basename = filename.split('.')[0]
+
+#######################################################
+#              Imaging the calibrators
+#######################################################
+if True:
+    # os.system('cp {} .'.format(obs))
+    # obs_local.append()
+    # os.system('mkdir {}'.format(basename))
+    
+    # for gain calibrator
+    for cal_field in allcal:
+        mythreshold = '20mJy'
+        
+        split_file = imagedir +'/'+ basename + '_field{}.ms'.format(cal_field)
+        split(vis=calfile, outputvis=split_file, field=cal_field, datacolumn='corrected')
+        
+        myimagename = split_file + '.cube.auto'
+        rmtables(tablenames=myimagename + '.*')
+        tclean(vis=split_file, spw=myspw,
+               selectdata=True, datacolumn="data",
+               imagename=myimagename,
+               imsize=myimsize, cell=mycell, 
+               restfreq=myrestfreq, phasecenter="", 
+               specmode="cube", outframe="LSRK", veltype="optical", 
+               nchan=mynchan, start=myvstart, width=mywidth,
+               perchanweightdensity=True, restoringbeam="common",
+               gridder="standard", pblimit=-0.0001,
+               # weighting='natural',
+               weighting="briggs", robust=1.5,
+               niter=4000, gain=0.1, threshold=mythreshold,
+               usemask='user',
+               # usemask="auto-multithresh",
+               interactive=False,
+               savemodel="none",)
+
+
+
+#######################################################
+#              Imaging the calibrators
+#######################################################
 
 ## Continuum subtraction for emission lines
 # myfitspw = ''
@@ -19,38 +72,23 @@ myrobust = '1.5'
 # uvcontsub(vis=calfile, fitspw=myfitspw, excludechans=True, want_cont=True)
 
 
-#######################################################
-#                     mfs
-#######################################################
-myimagename = calfile+'_'+myweighting+'_'+'robust'+myrobust+'_mfs'
+# imaging the science target
+split_file = imagedir +'/'+ basename + '_target.ms'
+split(vis=calfile, outputvis=split_file, field=target, datacolumn='corrected')
+
+if False:
+    # mfs
+    myimagename = split_file + basename+'mfs'
+    rmtables(tablenames=myimagename + '.*')
+    tclean(vis=split_file, spw=myspw, imagename=myimagename,
+           imsize=myimsize, cell=mycell, specmode='mfs',
+           weighting='briggs', robust=1.5, pblimit=-0.0001,
+           niter=1000, interactive=False)
+
+myimagename = split_file + '.cube.auto'
+mythreshold = '3mJy'
 rmtables(tablenames=myimagename + '.*')
-tclean(vis=calfile, spw=myspw, imagename=myimagename,
-       imsize=myimsize, cell=mycell, specmode='mfs',
-       weighting='briggs', robust=1.5, pblimit=-0.0001,
-       niter=1000, interactive=False)
-
-
-#######################################################
-#                   datacube
-#######################################################
-myimagename = calfile+'_'+myweighting+'_'+'robust'+myrobust+'_cube'
-rmtables(tablenames=myimagename + '.*')
-#> First run for dirty image 
-#>> to determine the cell and threshold
-tclean(vis=calfile, spw=myspw,
-       selectdata=True, datacolumn="data",
-       imagename=myimagename+'.dirty',
-       imsize=myimsize, cell=mycell, 
-       restfreq=myrestfreq, phasecenter="", 
-       specmode="cube", outframe="LSRK", veltype="optical", 
-       nchan=mynchan, start=myvstart, width=mywidth,
-       perchanweightdensity=True, restoringbeam="common",
-       gridder="standard", pblimit=-0.0001,
-       weighting=myweighting, robust=myrobust,
-       niter=0,)
-
-#> start the full clean
-tclean(vis=calfile, spw=myspw,
+tclean(vis=split_file, spw=myspw,
        selectdata=True, datacolumn="data",
        imagename=myimagename,
        imsize=myimsize, cell=mycell, 
@@ -59,13 +97,13 @@ tclean(vis=calfile, spw=myspw,
        nchan=mynchan, start=myvstart, width=mywidth,
        perchanweightdensity=True, restoringbeam="common",
        gridder="standard", pblimit=-0.0001,
-       weighting=myweighting, robust=myrobust,
-       niter=10000, gain=0.1, threshold=mythreshold,
+       # weighting='natural',
+       weighting="briggs", robust=1.5,
+       niter=40000, gain=0.1, threshold=mythreshold,
        usemask='user',
        # usemask="auto-multithresh",
        interactive=True,
        savemodel="none",)
-
 # check modelcolumn is generated
 #niter=0; calcres=False; calcpsf=False
 
