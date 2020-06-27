@@ -1,0 +1,81 @@
+2020-06-04 02:36:10	INFO	::casa	
+2020-06-04 02:36:10	INFO	::casa	CASA Version PIPELINE 5.6.1-8  
+2020-06-05 00:08:56	INFO	PlotMS::plot	Plotting 98736 unflagged points.
+2020-06-05 00:10:13	INFO	PlotMS::locate	Channel in [1466.57 1467.15], Amp in [1.75973 1.96277]:
+2020-06-05 00:10:13	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea04@N05 & ea17@N04 [3&15] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.81412 Observation=0
+2020-06-05 00:10:13	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.89053 Observation=0
+2020-06-05 00:10:13	INFO	PlotMS::locate+	Found 2 points (2 unflagged) among 115668 in 0.01s.
+2020-06-05 00:11:15	INFO	PlotMS::locate	Channel in [1459.83 1469.48], Amp in [1.38795 2.2326]:
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1461 Freq=1.42918 Corr=LL X=1461 Y=1.39239 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1462 Freq=1.42921 Corr=LL X=1462 Y=1.68575 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1463 Freq=1.42925 Corr=LL X=1463 Y=1.44794 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1464 Freq=1.42929 Corr=LL X=1464 Y=1.51202 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1465 Freq=1.42932 Corr=LL X=1465 Y=1.51145 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1467 Freq=1.42939 Corr=LL X=1467 Y=1.56629 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea01@W02 & ea25@N08 [0&23] Spw=0 Chan=1468 Freq=1.42943 Corr=LL X=1468 Y=1.43053 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea04@N05 & ea11@N03 [3&9] Spw=0 Chan=1462 Freq=1.42921 Corr=LL X=1462 Y=1.41422 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea04@N05 & ea11@N03 [3&9] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=1.52535 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea11@N03 [5&9] Spw=0 Chan=1462 Freq=1.42921 Corr=LL X=1462 Y=1.52252 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1461 Freq=1.42918 Corr=LL X=1461 Y=1.69889 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1462 Freq=1.42921 Corr=LL X=1462 Y=1.50683 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1463 Freq=1.42925 Corr=LL X=1463 Y=1.70362 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1465 Freq=1.42932 Corr=LL X=1465 Y=1.48723 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.48626 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1466 Freq=1.42936 Corr=LL X=1466 Y=1.57822 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1467 Freq=1.42939 Corr=LL X=1467 Y=1.61038 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea06@N06 & ea17@N04 [5&15] Spw=0 Chan=1468 Freq=1.42943 Corr=LL X=1468 Y=1.95963 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea11@N03 [7&9] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.53752 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1461 Freq=1.42918 Corr=RR X=1461 Y=1.51312 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1463 Freq=1.42925 Corr=RR X=1463 Y=1.60547 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.80198 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.55075 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.67216 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea08@W01 & ea17@N04 [7&15] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=1.66233 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea17@N04 [9&15] Spw=0 Chan=1462 Freq=1.42921 Corr=RR X=1462 Y=1.58807 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea17@N04 [9&15] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.46767 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea17@N04 [9&15] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.63123 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1461 Freq=1.42918 Corr=RR X=1461 Y=1.43783 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1462 Freq=1.42921 Corr=RR X=1462 Y=1.61363 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1463 Freq=1.42925 Corr=RR X=1463 Y=1.49843 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.6418 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.5476 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=1.45394 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea15@N09 & ea25@N08 [13&23] Spw=0 Chan=1461 Freq=1.42918 Corr=LL X=1461 Y=1.51421 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea15@N09 & ea25@N08 [13&23] Spw=0 Chan=1468 Freq=1.42943 Corr=LL X=1468 Y=1.5874 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea17@N04 & ea20@N02 [15&18] Spw=0 Chan=1464 Freq=1.42929 Corr=LL X=1464 Y=1.531 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea17@N04 & ea20@N02 [15&18] Spw=0 Chan=1465 Freq=1.42932 Corr=LL X=1465 Y=1.50491 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea17@N04 & ea20@N02 [15&18] Spw=0 Chan=1468 Freq=1.42943 Corr=LL X=1468 Y=1.47159 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1462 Freq=1.42921 Corr=LL X=1462 Y=1.38882 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1463 Freq=1.42925 Corr=LL X=1463 Y=1.64399 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1464 Freq=1.42929 Corr=LL X=1464 Y=1.53391 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1466 Freq=1.42936 Corr=LL X=1466 Y=1.71078 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1467 Freq=1.42939 Corr=LL X=1467 Y=1.40974 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=4 Field=AGC 242019 [2] Time=2019/11/21/17:36:21.0000 BL=ea22@W05 & ea24@W03 [20&22] Spw=0 Chan=1468 Freq=1.42943 Corr=LL X=1468 Y=1.55952 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea04@N05 & ea17@N04 [3&15] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.55943 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea04@N05 & ea17@N04 [3&15] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.81412 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1461 Freq=1.42918 Corr=RR X=1461 Y=1.79824 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1463 Freq=1.42925 Corr=RR X=1463 Y=1.72865 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.60174 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.88181 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.69697 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.40842 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=2.07141 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1462 Freq=1.42921 Corr=RR X=1462 Y=1.84572 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1463 Freq=1.42925 Corr=RR X=1463 Y=1.49474 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.69461 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.7701 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=6 Field=AGC 242019 [2] Time=2019/11/21/17:59:37.5000 BL=ea24@W03 & ea25@N08 [22&23] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.89053 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1461 Freq=1.42918 Corr=RR X=1461 Y=1.81807 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1462 Freq=1.42921 Corr=RR X=1462 Y=1.87499 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1463 Freq=1.42925 Corr=RR X=1463 Y=1.91999 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.82632 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.46199 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.64662 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea02@W04 & ea15@N09 [1&13] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=1.66408 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1461 Freq=1.42918 Corr=RR X=1461 Y=1.81687 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1464 Freq=1.42929 Corr=RR X=1464 Y=1.60727 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1465 Freq=1.42932 Corr=RR X=1465 Y=1.79951 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1466 Freq=1.42936 Corr=RR X=1466 Y=1.60206 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1467 Freq=1.42939 Corr=RR X=1467 Y=1.55208 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Scan=8 Field=AGC 242019 [2] Time=2019/11/21/18:22:54.0000 BL=ea11@N03 & ea20@N02 [9&18] Spw=0 Chan=1468 Freq=1.42943 Corr=RR X=1468 Y=1.62776 Observation=0
+2020-06-05 00:11:15	INFO	PlotMS::locate+	Found 72 points (72 unflagged) among 115668 in 0s.

@@ -6,7 +6,7 @@
 #   2020.04.11 First release after multiple testings
 #   2020.06.01 Fixed several bugs ready for general usage
 #   2020.06.04 Move the Prior Calibration after the Prior Flagging
-#   2020.06.23 Add prior calibration table for flexibility
+#   2020.06.23 Introduce 'prior_caltable' for flexibility
 
 #######################################################
 #                  Data Prepare
@@ -200,7 +200,7 @@ print(myscale)
 print("\n==============> Applying the Calibration <=============\n")
 # Applying the caltable to the calibrators
 default(applycal)
-for cal_field in [bcal, gcal, fcal]:
+for cal_field in allcal.split(','):
     applycal(vis=msfile, field=cal_field,
          gaintable=prior_caltable + ['bandpass.bcal', 'phase_int.gcal', 
                                      'amp_scan.gcal', 'flux.cal'],
@@ -224,8 +224,8 @@ if False: # RFI flagging by rflag
     flagmanager(vis=msfile, mode='save', versionname='AfterRflag')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant=myrefant)
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all')
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='', plotdir='antenna_cal')
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all', plotdir='all_cal')
 
 # apply the caltable to the target
 default(applycal)
