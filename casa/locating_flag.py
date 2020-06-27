@@ -100,20 +100,28 @@ def generate_timerange(time_list, intt=5.0, avgtime=None):
 def generate_spw(chan_list):
     if isinstance(chan_list, str):
         chan_list = [chan_list,]
+    if '<' in chan_list[0]:
+        chan_match = re.compile('<(\d*)~(\d*)>')
+    else:
+        chan_match = re.compile('(\d*)')
     if len(Counter(chan_list)) <= 1:
-        return '*:' + chan_list[0] + '~' + chan_list[0]
-    start_chan = int(chan_list[0])
-    end_chan = int(chan_list[0])
+        chan_nums = chan_match.search(chan_list[0]).groups()
+        return '*:' + chan_nums[0] + '~' + chan_nums[-1]
+    chan_nums = chan_match.search(chan_list[0]).groups()
+    start_chan = int(chan_nums[0])
+    end_chan = int(chan_nums[-1])
     for item in chan_list:
-        item_int = int(item)
-        if item_int < start_chan:
-            start_chan = item_int
-        if item_int > end_chan:
-            end_chan = item_int
+        chan_nums = chan_match.search(item).groups()
+        for num in chan_nums:
+            item_int = int(num)
+            if item_int < start_chan:
+                start_chan = item_int
+            if item_int > end_chan:
+                end_chan = item_int
     return '*:' + str(start_chan) + '~' + str(end_chan)
 
-def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None, mode='stat',
-                  flagfile=None,
+def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None,
+                  mode='stat', flagfile=None,
                   show_timerange=True, show_spw=False, debug=False,):
     """Searching flag information in logfile
     
