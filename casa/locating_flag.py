@@ -8,14 +8,14 @@
 #   21 Mar 2019, update by Zhiyu
 #   30 Sep 2019, transfer into function from the original script of Zhiyu, by Jianhang
 #    3 Dec 2019, v0.0.2: match logs by regex, by Jianhang
-#   24 Jun 2020, v0.1, locating_flag can generate the flagdata automatically
+#   24 Jun 2020, v0.1.0, locating_flag can generate the flagdata automatically
 
 
 import re
 from collections import Counter
 from datetime import datetime, timedelta
 
-version = '0.0.3'
+version = '0.1.0'
 
 def match_info(info_line, debug=False):
     """match the info of plotms selection
