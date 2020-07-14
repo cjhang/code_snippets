@@ -76,13 +76,14 @@ if plot_results:
 if False: #tfcrop RFI flagging
     pass
     #>> Testing
-    flagdata(vis='vis', mode='tfcrop', spw='0', datacolumn='data', action='calculate',
-             antenna='ea01&ea02', display='both', ntime='scan', combinescans=False,
+    flagdata(vis='vis', mode='tfcrop', spw='0', datacolumn='data', 
+             action='calculate', antenna='ea01&ea02', display='both', 
+             ntime='scan', combinescans=False, extendflags=False,
              timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
     #>> Applying
     flagdata(vis=msfile, mode='tfcrop', spw='', field='', antenna='',
          datacolumn='data', action='apply', display='none', 
-         ntime='scan', combinescans=False, 
+         ntime='scan', combinescans=False, extendflags=False,
          timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
     flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
 
@@ -224,8 +225,8 @@ if False: # RFI flagging by rflag
     flagmanager(vis=msfile, mode='save', versionname='AfterRflag')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='', plotdir='antenna_cal')
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all', plotdir='all_cal')
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='', plotdir='plots/antenna_cal')
+    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all', plotdir='plots/all_cal')
 
 # apply the caltable to the target
 default(applycal)
