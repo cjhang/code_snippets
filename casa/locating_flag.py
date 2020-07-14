@@ -234,6 +234,8 @@ def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None,
             if flagfile:
                 with open(flagfile, "a") as ff:
                     ff.write("flagdata({}flagbackup=False)\n".format(flag_cmd))
+            else:
+                print("flagdata({}flagbackup=False)\n".format(flag_cmd))
 
 
 
