@@ -229,7 +229,7 @@ def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None,
                 flag_timerange = generate_timerange(info_matched['time'], intt=intt, avgtime=avgtime)
                 flag_cmd += "timerange='{}', ".format(flag_timerange)
             if show_spw:
-                flag_spw = generate_spw(info_matched['chans'])
+                flag_spw = generate_spw(info_matched['chan'])
                 flag_cmd += "spw='{}', ".format(flag_spw)
             if flagfile:
                 with open(flagfile, "a") as ff:
