@@ -54,9 +54,9 @@ if True:
                gridder="standard", pblimit=-0.0001,
                # weighting='natural',
                weighting="briggs", robust=1.5,
-               niter=4000, gain=0.1, threshold=mythreshold,
-               usemask='user',
-               # usemask="auto-multithresh",
+               niter=40000, gain=0.1, threshold=mythreshold,
+               # usemask='user',
+               usemask="auto-multithresh",
                interactive=False,
                savemodel="none",)
 
