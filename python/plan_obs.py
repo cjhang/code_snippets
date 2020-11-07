@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-
 """This is a stand alone file to assistant the plan of astronomical observation
 
 Requirements:
@@ -34,7 +33,7 @@ from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
 
-def make_plot(target_list={}, observatory=None, utc_offset=0, obs_time=None, show_sun=True, show_moon=True):
+def plot_altitude(target_list={}, observatory=None, utc_offset=0, obs_time=None, show_sun=True, show_moon=True):
     """plot the position of science target during observation
     """
     
@@ -49,8 +48,8 @@ def make_plot(target_list={}, observatory=None, utc_offset=0, obs_time=None, sho
         target_altaz_list[name] = skcoord.transform_to(altaz_frames)
 
 
-    fig = plt.figure(figsize=(8, 5))
-    ax = fig.add_subplot(111)
+    fig = plt.figure(figsize=(12, 4))
+    ax = fig.add_subplot(121)
     for name, pos in target_altaz_list.items():
         ax.scatter(delta_hours, pos.alt, label=name, s=8)
     ax.set_title("Observed on {}".format(obs_time.fits))
@@ -68,10 +67,22 @@ def make_plot(target_list={}, observatory=None, utc_offset=0, obs_time=None, sho
                      color='k', zorder=0, alpha=0.5)
     ax.set_xlabel('LST offset')
     ax.set_ylabel('Altitude')
-    ax.set_ylim(-10, 90)
+    # ax.set_ylim(-10, 90)
     ax.legend(loc='upper right')
     # plt.tight_layout()
+    
+    ax = fig.add_subplot(122, projection='polar')
+    for name, pos in target_altaz_list.items():
+        ax.plot(pos.az/180*np.pi, np.cos(pos.alt), label=name, marker='.', ms=8)
+    if show_sun:
+        ax.plot(sun.az/180*np.pi, np.cos(sun.alt), 'r.', label='sun')
+    if show_moon:
+        moon = get_moon(obstimes).transform_to(altaz_frames)
+        ax.plot(moon.az/180*np.pi, np.cos(moon.alt), 'k--', label='moon')
+    ax.set_ylim(0, 1)
+
     plt.show()
+
 
 if __name__ == '__main__':
 
@@ -86,37 +97,8 @@ if __name__ == '__main__':
             '3C286': SkyCoord('13h31m08.288s', '+30d30m32.959s', frame='icrs'),
             }
 
-    # location of ZDJ Observatory
+    # location of ZDJ Observatory of Nanjing University
     vla = EarthLocation(lon=-107.61828*u.deg, lat=34.07875*u.deg, height=2124*u.m)
     
-    make_plot(target_list=targets, observatory=vla, obs_time=obs_time, utc_offset=utc_offset, show_sun=False)
+    plot_altitude(target_list=targets, observatory=vla, obs_time=obs_time, utc_offset=utc_offset, show_sun=True)
 
-    if False:
-        from astroplan import Observer, FixedTarget
-        from astroplan.plots import plot_sky
-
-        # define the coodinate of targets
-        virgo = SkyCoord('12h27m0s', '+12d43m0s', frame='icrs')
-        MaNGA_8335_6101 = SkyCoord(215.229240711*u.deg, 40.1210273909*u.deg, frame='icrs')
-        plan1 = FixedTarget(name='Virgo Cluster', coord=virgo)
-        plan2 = FixedTarget(name='MaNGA:8335-6101', coord=MaNGA_8335_6101)
-        # observertory
-        obs_loc = EarthLocation(lat=32.1218*u.deg, lon=118.96097*u.deg, height=39*u.m)
-        plan_site = Observer(location=obs_loc, name="ZDJO", timezone="Asia/Shanghai")
-
-        # define time window
-        obs_time = Time('2020-12-01 0:00') - 8*u.hour # also need minus the time offset
-        start = obs_time
-        end = obs_time + 10*u.hour
-        time_window = start + (end - start) * np.linspace(0, 1, 20)
-
-        plot_sky(plan1, plan_site, time_window, style_kwargs={'color': 'r'})
-        plot_sky(plan2, plan_site, time_window, style_kwargs={'color': 'g'})
-
-        # uncomment below to get the position of moon. 
-        # It seems the astroplan not support the NonFixedTarget, so there is something wrong the legend
-        #moon = get_moon(time_window)
-        #plot_sky(moon, plan_site, time_window, style_kwargs={'color': 'b', 'alpha': 0.2})
-
-        plt.legend(loc='center left', bbox_to_anchor=(1.25, 0.5))  
-        plt.show()
