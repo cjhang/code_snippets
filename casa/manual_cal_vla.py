@@ -28,12 +28,12 @@ myspw = ''
 spw_bpphase =''        # the spw window with small variation
 myrefant = '1'      # reference antenna
 mysolint = 'int'       # integration time
+myminsnr = 3.0  # minimal snr requirement for solutions
 mycalwt = False        # calculate the weight, must be false for EVLA
 
 
 cal_antpos = False  # update the antenna position online
 cal_gceff = False
-cal_delays = False
 cal_opacity = False
 
 # optional
@@ -109,8 +109,9 @@ if cal_antpos:
     # Correction for antenna position, automatic fetch from online database
     os.system('rm -rf antpos.cal')
     gencal(vis=msfile, caltable='antpos.cal', caltype='antpos', antenna='')
-    prior_caltable.append('antpos.cal')
-    prior_calfield.append('')
+    if os.path.isdir('antpos.cal')
+        prior_caltable.append('antpos.cal')
+        prior_calfield.append('')
 
 ## Antenna efficiency and Gain curve (VLA only)
 if cal_gceff:
@@ -126,12 +127,26 @@ if cal_opacity:
     gencal(vis=msfile, caltable='opacity.cal', caltype='opac', parameter=myTau)
     prior_caltable.append('opacity.cal')
     prior_calfield.append('')
+# Apply the Prior calibration if there are
+for cal_field in allcal.split(','):
+    applycal(vis=msfile, field=cal_field,
+         gaintable=prior_caltable,
+         gainfield=prior_calfield,  
+         calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
+# split out the data after prior calibration
+msfile2 = os.path.basename(msfile)[:-3]+'.afterprior.ms'
+split(vis=msfile, outputvis=msfile2)
+
+
+#######################################################
+#             Set Flux Model
+#######################################################
 
 ### set flux density
 ##> list all the avaible model
 # setjy(vis=msfile ,listmodels=True)
 # for resolved calibrators, one should specify the model
-setjy(vis=msfile, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
+setjy(vis=msfile2, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
 
 
 #######################################################
@@ -140,30 +155,27 @@ setjy(vis=msfile, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
 print("\n==============> Start Calibration <=============\n")
 print("\n==============> Generating Bandpass Calibration <=============\n")
 # delay calibration
-if cal_delays:
-    os.system('rm -rf delays.cal')
-    gaincal(vis=msfile, caltable='delays.cal', field=bcal, refant=myrefant, 
-            gaintype='K', solint='inf', combine='scan', minsnr=2.0, 
-            gaintable=prior_caltable) 
-    prior_caltable.append('delays.cal')
-    prior_calfield.append(bcal)
+os.system('rm -rf delays.cal')
+gaincal(vis=msfile2, caltable='delays.cal', field=bcal, refant=myrefant, 
+        gaintype='K', solint='inf', combine='scan', minsnr=myminsnr, 
+        gaintable='')
 
 # integration bandpass calibration
 os.system('rm -rf bpphase.gcal')
 default(gaincal)
-gaincal(vis=msfile, caltable="bpphase.gcal", field=bcal, spw=spw_bpphase, 
-        solint=mysolint, refant=myrefant, minsnr=2.0, gaintype='G', calmode="p",
-        gaintable=prior_caltable)
+gaincal(vis=msfile2, caltable="bpphase.gcal", field=bcal, spw=spw_bpphase, 
+        solint=mysolint, refant=myrefant, minsnr=myminsnr, gaintype='G', calmode="p",
+        gaintable='delays.cal')
 
 # bandpass calinration
 os.system('rm -rf bandpass.bcal')
 default(bandpass)
-bandpass(vis=msfile, caltable='bandpass.bcal', field=bcal, spw='', refant=myrefant, 
-         combine='scan', solint='inf', bandtype='B', minsnr=2.0,
-         gaintable=['bpphase.gcal',]+prior_caltable)
+bandpass(vis=msfile2, caltable='bandpass.bcal', field=bcal, spw='', refant=myrefant, 
+         combine='scan', solint='inf', bandtype='B', minsnr=myminsnr,
+         gaintable=['bpphase.gcal','delays.cal'])
 
 # testing the bandpass calibration, applying the calibration to bandpass calibrator
-# applycal(vis=msfile, field=bcal, calwt=False,
+# applycal(vis=msfile2, field=bcal, calwt=False,
         # gaintable=['gaincurve.cal', 'delays.cal', 'bandpass.bcal'],
         # gainfield=['' ,bcal, bcal])
 
@@ -172,28 +184,28 @@ print("\n==============> Generating Gain Calibration <=============\n")
 # phase calibration for quick time variation
 os.system('rm -rf phase_int.gcal')
 default(gaincal)
-gaincal(vis=msfile, caltable='phase_int.gcal', field=allcal, refant=myrefant, 
-        calmode='p', solint=mysolint, minsnr=2.0, spw='',
-        gaintable=['bandpass.bcal',]+prior_caltable)
+gaincal(vis=msfile2, caltable='phase_int.gcal', field=allcal, refant=myrefant, 
+        calmode='p', solint=mysolint, minsnr=myminsnr, spw='',
+        gaintable=['bandpass.bcal','delays.cal'])
 
 # phase calibration for long time variation
 os.system('rm -rf phase_scan.gcal')
 default(gaincal)
-gaincal(vis=msfile, caltable='phase_scan.gcal', field=allcal, refant=myrefant, 
-        calmode='p', solint='inf', minsnr=2.0, spw='',
-        gaintable=['bandpass.bcal',]+prior_caltable)
+gaincal(vis=msfile2, caltable='phase_scan.gcal', field=allcal, refant=myrefant, 
+        calmode='p', solint='inf', minsnr=myminsnr, spw='',
+        gaintable=['bandpass.bcal', 'delays.cal'])
 
 # amplitude calibration
 os.system('rm -rf amp_scan.gcal')
 default(gaincal)
-gaincal(vis=msfile, caltable='amp_scan.gcal', field=allcal, refant=myrefant, 
-        calmode='ap', solint='inf', minsnr=2.0, spw='',
-        gaintable=['bandpass.bcal','phase_int.gcal']+prior_caltable)
+gaincal(vis=msfile2, caltable='amp_scan.gcal', field=allcal, refant=myrefant, 
+        calmode='ap', solint='inf', minsnr=myminsnr, spw='',
+        gaintable=['bandpass.bcal','phase_int.gcal', 'delays.cal'])
 
 # fluxscale
 os.system('rm -rf flux.cal')
 default(fluxscale)
-myscale = fluxscale(vis=msfile, caltable='amp_scan.gcal', fluxtable='flux.cal',
+myscale = fluxscale(vis=msfile2, caltable='amp_scan.gcal', fluxtable='flux.cal',
                     reference=fcal, incremental=True)
 print(myscale)
 
@@ -202,10 +214,10 @@ print("\n==============> Applying the Calibration <=============\n")
 # Applying the caltable to the calibrators
 default(applycal)
 for cal_field in allcal.split(','):
-    applycal(vis=msfile, field=cal_field,
-         gaintable=prior_caltable + ['bandpass.bcal', 'phase_int.gcal', 
-                                     'amp_scan.gcal', 'flux.cal'],
-         gainfield=prior_calfield + [bcal, cal_field, cal_field, cal_field],  
+    applycal(vis=msfile2, field=cal_field,
+         gaintable=['delays.cal', 'bandpass.bcal', 'phase_int.gcal', 
+                    'amp_scan.gcal', 'flux.cal'],
+         gainfield=[bcal, bcal, cal_field, cal_field, cal_field],  
          # interp = ['nearest', '', '', ''],
          calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
 
@@ -218,27 +230,27 @@ if False: # RFI flagging by rflag
              display='both', timedevscale=5.0, freqdevscale=5.0, 
              flagbackup=False)
     #>> Applying, run after applying the calibration
-    flagdata(vis=msfile, mode='rflag', spw='', field=allcal, scan='', 
+    flagdata(vis=msfile2, mode='rflag', spw='', field=allcal, scan='', 
              datacolumn='corrected', action='apply', display='none',
              ntime='scan', combinescans=False,
              timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
-    flagmanager(vis=msfile, mode='save', versionname='AfterRflag')
+    flagmanager(vis=msfile2, mode='save', versionname='AfterRflag')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='', plotdir='plots/antenna_cal')
-    plot_utils.check_cal(vis=msfile, spw='', field='0,1', refant='all', plotdir='plots/all_cal')
+    plot_utils.check_cal(vis=msfile2, spw='', field='0,1', refant='', plotdir='plots/antenna_cal')
+    plot_utils.check_cal(vis=msfile2, spw='', field='0,1', refant='all', plotdir='plots/all_cal')
 
 # apply the caltable to the target
 default(applycal)
-applycal(vis=msfile, field=target,
-         gaintable=prior_caltable + ['bandpass.bcal', 'phase_scan.gcal', 
-                                     'amp_scan.gcal','flux.cal'],
-         gainfield=prior_calfield + [bcal, gcal, gcal, gcal],  
+applycal(vis=msfile2, field=target,
+         gaintable=['delays.cal', 'bandpass.bcal', 'phase_scan.gcal', 
+                    'amp_scan.gcal','flux.cal'],
+         gainfield=[bcal, bcal, gcal, gcal, gcal],  
          # interp = ['nearest', '', '', ''],
          calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
 
-flagmanager(vis=msfile, mode='save', versionname='AfterApplycal')
+flagmanager(vis=msfile2, mode='save', versionname='AfterApplycal')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile, spw='', refant='all', field='2', plotdir='plots/target')
+    plot_utils.check_cal(vis=msfile2, spw='', refant='all', field='2', plotdir='plots/target')
 

@@ -12,6 +12,18 @@ import random
 import numpy as np
 from casa import tbtool, plotms, plotants
 
+def list2str(ll):
+    """convert list into string with seperator ','
+    Parameters
+    ----------
+    ll : list
+        the input list or numpy ndarray
+    """
+    string = ''
+    for i in ll:
+        string += str(i)+','
+    return string[:-1]
+
 def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
     """group a large number of antenna into small subgroup
 
@@ -70,8 +82,8 @@ def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
 def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
                show_ants=True, show_mosaic=False, show_uvcoverage=True,
                avgtime='1e8', avgchannel='1e8',
-               show_elevation=True, show_allobs=False, refant='1', overwrite=True,
-               bcal_field=None, gcal_field=None, target_field=None, 
+               show_elevation=True, show_allobs=True, refant='1', overwrite=True,
+               #cal_field=None, gcal_field=None, target_field=None, 
                ):
     """ plot the basic information of the observation.
 
@@ -122,15 +134,6 @@ def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
     overwrite : bool
         set to True to overwrite all the existing plots
         default: True
-    bcal_field : str
-        the bandpass calibrator fields
-        default: None
-    gcal_field : str
-        the gain calibrator field
-        default: None
-    target_field : str
-        the target field
-        default: None
     """
     os.system('mkdir -p {}/info'.format(plotdir))
     plotdir = plotdir + '/info'
@@ -166,45 +169,47 @@ def check_info(vis=None, showgui=False, plotdir='./plots', spw='',
                plotfile='{}/all_observations.png'.format(plotdir),
                showgui=showgui, overwrite=overwrite)
     
-    if bcal_field:
+    # plot the bandpass calibrator
+    if 1:
         print('Plotting bandpass calibrator...')
-        plotms(vis=vis, xaxis='U', yaxis='V', field=bcal_field, 
+        plotms(vis=vis, xaxis='U', yaxis='V', intent='*BANDPASS*,*FLUX*', 
                spw=spw, showgui=showgui,avgchannel=avgchannel, 
                plotfile='{}/bcal_uvcoverage.png'.format(plotdir),
                overwrite=overwrite)
 
         # phase change with time
-        plotms(vis=vis, field=bcal_field, xaxis='time', yaxis='phase', antenna=refant,
+        plotms(vis=vis, intent='*BANDPASS*,*FLUX*', xaxis='time', yaxis='phase', antenna=refant,
                avgchannel=avgchannel, spw=spw, coloraxis='corr', ydatacolumn='data',
                plotfile='{}/bcal_{}_time.png'.format(plotdir, 'phase'),
                showgui=False, overwrite=overwrite)
-        # phase change with freq
+        # phase and amplitude change with freq
         for spw_single in spw.split(','):
             for yaxis in ['amp','phase']:
-                plotms(vis=vis, field=bcal_field, xaxis='freq', yaxis=yaxis, antenna=refant,
+                plotms(vis=vis, intent='*BANDPASS*,*FLUX*', xaxis='freq', yaxis=yaxis, antenna=refant,
                        avgtime=avgtime,spw=spw_single, coloraxis='corr', ydatacolumn='data',
                        plotfile='{}/bcal_spw{}_{}_freq.png'.format(plotdir, spw_single, yaxis),
                        showgui=False, overwrite=overwrite)
-    if gcal_field:
+    if 1:
         print('Plotting gain calibrator...')
-        plotms(vis=vis, xaxis='U', yaxis='V', field=gcal_field, 
+        plotms(vis=vis, xaxis='U', yaxis='V', intent='*PHASE*,*AMPLI*', 
                spw=spw, showgui=showgui,avgchannel=avgchannel, 
                plotfile='{}/gcal_uvcoverage.png'.format(plotdir),
                overwrite=overwrite)
-        for yaxis in ['amp','phase']:
-            plotms(vis=vis, field=gcal_field, spw=spw, ydatacolumn='data',
-                   xaxis='time', yaxis=yaxis, avgchannel=avgchannel, 
-                   coloraxis='corr', showgui=showgui, antenna=refant,
-                   plotfile='{}/gcal_{}_time.png'.format(plotdir, yaxis),
-                   overwrite=overwrite)
-    if target_field:
+        for spw_single in spw.split(','):
+            for yaxis in ['amp','phase']:
+                plotms(vis=vis, intent='*PHASE*,*AMPLI*', spw=spw_single, ydatacolumn='data',
+                       xaxis='time', yaxis=yaxis, avgchannel=avgchannel, 
+                       coloraxis='corr', showgui=showgui, antenna=refant,
+                       plotfile='{}/gcal_spw{}_{}_time.png'.format(plotdir, spw_single, yaxis),
+                       overwrite=overwrite)
+    if 1:
         print('Plotting science target...')
-        plotms(vis=vis, xaxis='U', yaxis='V', field=target_field, 
+        plotms(vis=vis, xaxis='U', yaxis='V', intent='*TARGET*', 
                spw=spw, showgui=showgui,avgchannel=avgchannel, 
                plotfile='{}/target_uvcoverage.png'.format(plotdir),
                overwrite=overwrite)
         plotms(vis=vis, xaxis='time', yaxis='amplitude', avgchannel=avgchannel, 
-               spw=spw, field=target_field, coloraxis='corr', 
+               spw=spw, intent="TARGET", coloraxis='corr', 
                antenna=refant, ydatacolumn='data',
                plotfile='{}/target_amp_time.png'.format(plotdir),
                showgui=showgui, overwrite=overwrite)
@@ -263,7 +268,7 @@ def check_tsys(vis=None, tdmspws=None, ants_subgroups=None, gridcols=2,
                    plotfile='{}/tsys/spw{}_tsys_vs_freq.page{}.png'.format(plotdir, spw, page))
 
 def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
-              field='', cal_fields='', target_field='',
+              field='',
               plot_freq=True, plot_time=True, plot_uvdist=True,
               overwrite=True, showgui=False, 
               avgtime='1e8', avgchannel='1e8',
@@ -278,13 +283,13 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     check the amplitude and phase of calibrator change with time and frequency:
     (set refant to plot with baseline, which is much faster)
         # to iterate the baseline of refant
-        check_cal(vis=msfile, spw='', cal_fields='0,1', refant='ea01')
+        check_cal(vis=msfile, spw='', field='bcal,gcal', refant='ea01')
         # to include all the antenna
-        check_cal(vis=msfile, spw='', cal_fields='0,1', refant='ea01')
+        check_cal(vis=msfile, spw='', field='bcal,gcal')
 
     for the science target:
     
-        check_cal(vis=msfile, spw='', target_field='2')
+        check_cal(vis=msfile, spw='', field='science_field')
 
     Parameters
     ----------
@@ -294,9 +299,8 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         same as casa
         default: ''
     refant : str
-        the reference antenna, like 'CM03', 'DV48'
-        if the refant is specified, the iteration axis will change to baseline, otherwise it will iterate through antenna
-        when plot the science target, the refant will be omitted
+        the reference antenna, like 'CM03', 'DV48', 'ea01'
+        if the refant is specified, the iteration axis will change to baseline, otherwise it will iterate through antennas
         default: ''
     ydatacolumn : str
         the ydatacolumn of `plotms`
@@ -304,15 +308,6 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     field : str
         the field or fileds to be plotted
         example: '0,2,3' or 'J1427-4260,Mars', not support '~'
-    cal_fields : str
-        Deprecated, will be removed in the next version
-        a string contains all the fields of calibrators
-        example: '0,2,3' or 'J1427-4206,Mars'
-        default: ''
-    science_field : str
-        Deprecated, will be removed in the next version
-        the fields of the science target
-        example: 'Cen*' or '4~22'
     plot_freq : bool
         Plot the amplitude-vs-frequency, phase-vs-frequency for both data.
         default: True
@@ -323,12 +318,15 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         plot amplitude vs uvdist 
         default: True
     overwrite : bool
-        default True
+        default: True
     showgui : bool
         default: True
-    gridrows, gridcols : int
-        the number of row and columns
-        default: gridrows=2, gridcols=3
+    gridrows : int 
+        the number of rows
+        default: gridrows=2 
+    gridcols : int
+        the number of columns
+        default: gridcols=3
     dpi : int
         the resolution of the saved png files
         default: 600
@@ -339,25 +337,28 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     if vis == '':
         raise ValueError("You must give the measurements file name `vis`!")
 
-    if cal_fields != '':
-        field = cal_fields
-    if target_field != '':
-        field = target_field
+    if field == '':
+        # read all the fields
+        tb.open(vis)
+        field_list = np.unique(tb.getcol('FIELD_ID'))
+        field = list2str(field_list)
+        tb.close()
     # plot the frequency related scatter
-    if plot_freq and field != '':
+    if plot_freq:
         print("Plot frequency related calibration for field: {} ...".format(field))
         os.system('mkdir -p {}/freq_{}/'.format(plotdir, ydatacolumn))
         for field_single in field.split(','):
             print(">> field: {}".format(field_single))
             for yaxis in ['amplitude', 'phase']:
                 if refant == 'all':
-                    for spw_single in spw.split(','):
-                        plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
-                               spw=spw_single, avgtime=avgtime, avgscan=False, coloraxis='corr',
-                               ydatacolumn=ydatacolumn, showgui=showgui,
-                               dpi = dpi, overwrite=overwrite, verbose=False,
-                               plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
-                                        plotdir, ydatacolumn, field_single, spw_single, yaxis))
+                    pass
+                    # for spw_single in spw.split(','):
+                        # plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
+                               # spw=spw_single, avgtime=avgtime, avgscan=False, coloraxis='corr',
+                               # ydatacolumn=ydatacolumn, showgui=showgui,
+                               # dpi = dpi, overwrite=overwrite, verbose=False,
+                               # plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
+                                        # plotdir, ydatacolumn, field_single, spw_single, yaxis))
                 else: 
                     if refant == '':
                         iteraxis = 'antenna'
@@ -378,7 +379,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
 
     # the phase should be significantly improved after bandpass calibration
     # especially for the phase calibrator
-    if plot_time and field != '':
+    if plot_time:
         print("Plot time related calibration for field: {} ...".format(field))
         os.system('mkdir -p {}/time_{}/'.format(plotdir, ydatacolumn))
         for yaxis in ['amplitude', 'phase']:
@@ -386,18 +387,18 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
             for field_single in field.split(','):
                 print(">> field: {}".format(field_single))
                 if refant == 'all':
-                    for spw_single in spw.split(','):
-                        plotms(vis=vis, field=field_single, xaxis='time', yaxis=yaxis, spw=spw_single, 
-                               avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
-                               plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field_single, yaxis),
-                               showgui=showgui, dpi = dpi, overwrite=overwrite)
+                    pass
+                    # for spw_single in spw.split(','):
+                        # plotms(vis=vis, field=field_single, xaxis='time', yaxis=yaxis, spw=spw_single, 
+                               # avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
+                               # plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field_single, yaxis),
+                               # showgui=showgui, dpi = dpi, overwrite=overwrite)
                 else:
                     if refant == '':
                         iteraxis = 'antenna'
                     else:
                         iteraxis = 'baseline' 
                     subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
-                
                     for page, subgroup in enumerate(subgroups):
                         for spw_single in spw.split(','):
                             plotms(vis=vis, field=field_single, xaxis='time', yaxis=yaxis,
@@ -408,7 +409,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                              plotdir, ydatacolumn, field_single, spw_single, yaxis, page),
                                    dpi = dpi, overwrite=overwrite)
 
-    if plot_uvdist and field != '':
+    if plot_uvdist:
         # well behaved point source should show flat amplitude with uvdist
         print("Plot uvdist related calibration for {} ...".format(field))
         os.system('mkdir -p {}/uvdist/'.format(plotdir))
@@ -424,69 +425,109 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                        plotfile='{}/uvdist/field{}_spw{}_uvcoverage.png'.format(plotdir, field_single, spw_single),
                        dpi=dpi, overwrite=overwrite, showgui=showgui)
 
-def check_bandpass(fgcal='bpphase.gcal', fbcal='bandpass.bcal', 
+def check_bandpass(phasecal_int='bpphase.gcal', bpcal='bandpass.bcal', 
                    dpi=600, gridrows=2, gridcols=2, plotdir='./plots'):
     """check the data quality of bandpass calibrator and the calibration
+
+    it can plot two solution: the short time gain (fgcal) and the bandpass solution (fbcal)
+
+    Parameters
+    ----------
+    phasecal_int : str
+        the file of gain solution for bandpass calibrator
+    bpcal : str
+        the file of the bandpass solution
+    gridrows : int 
+        the number of rows
+        default: 2 
+    gridcols : int
+        the number of columns
+        default: 2
+    dpi : int
+        the resolution of the saved png files
+        default: 600
+    plotdir : str
+        the root directory to put all the generated plots
     """
     os.system('mkdir -p {}/bandpass'.format(plotdir))
-    if os.path.exists(fgcal):
-        print('Plotting {}'.format(fgcal))
-        subgroups = group_antenna(fgcal, subgroup_member=gridrows*gridcols)
+    if os.path.exists(phasecal_int):
+        print('Plotting {}'.format(phasecal_int))
+        subgroups = group_antenna(phasecal_int, subgroup_member=gridrows*gridcols)
         for page, antenna in enumerate(subgroups):
             # after casa 6, consider using pathlib
-            plotms(vis=fgcal, gridrows=gridrows, gridcols=gridcols, xaxis='time',
+            plotms(vis=phasecal_int, gridrows=gridrows, gridcols=gridcols, xaxis='time',
                    yaxis='phase', antenna=antenna, iteraxis='antenna', coloraxis='corr',
                    plotfile='{}/bandpass/amp_page{}.png'.format(plotdir, page),
                    plotrange=[0,0,-180,180], showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct bandpass gain table! Set the fgcal parameter")
 
-    if os.path.exists(fbcal):
-        print('Plotting {}'.format(fbcal))
-        subgroups = group_antenna(fbcal, subgroup_member=gridrows*gridcols)
+    if os.path.exists(bpcal):
+        print('Plotting {}'.format(bpcal))
+        subgroups = group_antenna(bpcal, subgroup_member=gridrows*gridcols)
         for page, antenna in enumerate(subgroups):
             for yaxis in ['amp', 'phase']:
-                plotms(vis=fbcal, gridrows=gridrows, gridcols=gridcols, xaxis='freq',
+                plotms(vis=bpcal, gridrows=gridrows, gridcols=gridcols, xaxis='freq',
                        yaxis=yaxis, antenna=antenna, iteraxis='antenna', coloraxis='corr',
                        plotfile='{}/bandpass/{}_page{}.png'.format(plotdir, yaxis, page),
                        showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct bandpass calibration table! Set the fbcal parameter")
 
-def check_gain(phase_int='phase_int.gcal', phase_scan='phase_scan.gcal', amp_scan='amp_scan.gcal', 
+def check_gain(phasecal_int='phase_int.gcal', phasecal_scan='phase_scan.gcal', ampcal_scan='amp_scan.gcal', 
                dpi=600, gridrows=2, gridcols=2, plotdir='./plots'):
     """check the gain table
     In order to use this function, one should follow the same naming 
+    It is designed to plot the phase and amplitude splution from the gain calibrator
+
+    Parameters:
+    phase_int : str
+        the file of integrated time (or specified short time) solution for phase variation
+    phase_scan : str
+        the file of scan based solution for gain calibrator, used for science target
+    ampcal_scan : str
+        the file of amplitude solution based on scan integration
+    gridrows : int 
+        the number of rows
+        default: 2 
+    gridcols : int
+        the number of columns
+        default: 2
+    dpi : int
+        the resolution of the saved png files
+        default: 600
+    plotdir : str
+        the root directory to put all the generated plots
     """
     os.system('mkdir -p {}/gain_solution/'.format(plotdir))
-    if os.path.exists(phase_int):
-        print('Plotting {}'.format(phase_int))
-        subgroups = group_antenna(phase_int, subgroup_member=gridrows*gridcols)
+    if os.path.exists(phasecal_int):
+        print('Plotting {}'.format(phasecal_int))
+        subgroups = group_antenna(phasecal_int, subgroup_member=gridrows*gridcols)
         for page, antenna in enumerate(subgroups):
-            plotms(vis=phase_int, gridrows=gridrows, gridcols=gridcols, xaxis='time',
+            plotms(vis=phasecal_int, gridrows=gridrows, gridcols=gridcols, xaxis='time',
                    yaxis='phase', antenna=antenna, iteraxis='antenna', coloraxis='corr',
                    plotfile='{}/gain_solution/phase_int_page{}.png'.format(plotdir, page),
                    plotrange=[0,0,-180,180], showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct integrated phase table! Set the phase_int parameter")
 
-    if os.path.exists(phase_scan):
-        print('Plotting {}'.format(phase_scan))
-        subgroups = group_antenna(phase_scan, subgroup_member=gridrows*gridcols)
+    if os.path.exists(phasecal_scan):
+        print('Plotting {}'.format(phasecal_scan))
+        subgroups = group_antenna(phasecal_scan, subgroup_member=gridrows*gridcols)
         for page, antenna in enumerate(subgroups):
-            plotms(vis=phase_scan, gridrows=gridrows, gridcols=gridcols, xaxis='time',
+            plotms(vis=phasecal_scan, gridrows=gridrows, gridcols=gridcols, xaxis='time',
                    yaxis='phase', antenna=antenna, iteraxis='antenna', coloraxis='corr',
                    plotfile='{}/gain_solution/phase_scan_page{}.png'.format(plotdir, page),
                    plotrange=[0,0,-180,180], showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct scan averaged phase table! Set the phase_scan parameter")
 
-    if os.path.exists(amp_scan):
-        print('Plotting {}'.format(amp_scan))
-        subgroups = group_antenna(amp_scan, subgroup_member=gridrows*gridcols)
+    if os.path.exists(ampcal_scan):
+        print('Plotting {}'.format(ampcal_scan))
+        subgroups = group_antenna(ampcal_scan, subgroup_member=gridrows*gridcols)
         for page, antenna in enumerate(subgroups):
             for yaxis in ['amp', 'phase']:
-                plotms(vis=amp_scan, gridrows=gridrows, gridcols=gridcols, xaxis='time',
+                plotms(vis=ampcal_scan, gridrows=gridrows, gridcols=gridcols, xaxis='time',
                        yaxis=yaxis, antenna=antenna, iteraxis='antenna', coloraxis='corr',
                        plotfile='{}/gain_solution/{}_page{}.png'.format(plotdir, yaxis, page),
                        showgui=False, dpi=dpi, overwrite=True)
