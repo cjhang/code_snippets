@@ -414,10 +414,10 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
     if plot_time:
         print("Plot time related calibration for field: {} ...".format(field))
         os.system('mkdir -p {}/time_{}/'.format(plotdir, ydatacolumn))
-        for yaxis in ['amplitude', 'phase']:
-            # plot the general consistency of each field
-            for field_single in field.split(','):
-                print(">> field: {}".format(field_single))
+        for field_single in field.split(','):
+            print(">> field: {}".format(field_single))
+            for yaxis in ['amplitude', 'phase']:
+                # plot the general consistency of each field
                 if refant == 'all':
                     pass
                     # for spw_single in spw.split(','):
