@@ -295,7 +295,7 @@ def check_tsys(vis=None, tdmspws=None, ants_subgroups=None, gridcols=2,
                    plotfile='{}/tsys/spw{}_tsys_vs_freq.page{}.png'.format(plotdir, spw, page))
 
 def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
-              field='',
+              field='', yaxis=['amplitude', 'phase'],
               plot_freq=True, plot_time=True, plot_uvdist=True,
               overwrite=True, showgui=False, 
               avgtime='1e8', avgchannel='1e8',
@@ -376,16 +376,16 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         os.system('mkdir -p {}/freq_{}/'.format(plotdir, ydatacolumn))
         for field_single in field.split(','):
             print(">> field: {}".format(field_single))
-            for yaxis in ['amplitude', 'phase']:
+            for yx in yaxis:
                 if refant == 'all':
                     pass
                     # for spw_single in spw.split(','):
-                        # plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
+                        # plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yx,
                                # spw=spw_single, avgtime=avgtime, avgscan=False, coloraxis='corr',
                                # ydatacolumn=ydatacolumn, showgui=showgui,
                                # dpi = dpi, overwrite=overwrite, verbose=False,
                                # plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
-                                        # plotdir, ydatacolumn, field_single, spw_single, yaxis))
+                                        # plotdir, ydatacolumn, field_single, spw_single, yx))
                 else: 
                     if refant == '':
                         iteraxis = 'antenna'
@@ -400,14 +400,14 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                 mycoloraxis = 'spw'
                             else:
                                 mycoloraxis = 'corr'
-                            plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yaxis,
+                            plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yx,
                                    spw=spw_single, avgtime=avgtime, avgscan=False, 
                                    coloraxis=mycoloraxis,
                                    antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
                                    showgui=showgui, gridrows=gridrows, gridcols=gridcols,
                                    dpi = dpi, overwrite=overwrite, verbose=False,
                                    plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.page{}.png'.format(
-                                             plotdir, ydatacolumn, field_single, spw_single, yaxis, page))
+                                             plotdir, ydatacolumn, field_single, spw_single, yx, page))
 
     # the phase should be significantly improved after bandpass calibration
     # especially for the phase calibrator
@@ -416,14 +416,14 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
         os.system('mkdir -p {}/time_{}/'.format(plotdir, ydatacolumn))
         for field_single in field.split(','):
             print(">> field: {}".format(field_single))
-            for yaxis in ['amplitude', 'phase']:
+            for yx in yaxis:
                 # plot the general consistency of each field
                 if refant == 'all':
                     pass
                     # for spw_single in spw.split(','):
-                        # plotms(vis=vis, field=field_single, xaxis='time', yaxis=yaxis, spw=spw_single, 
+                        # plotms(vis=vis, field=field_single, xaxis='time', yaxis=yx, spw=spw_single, 
                                # avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
-                               # plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field_single, yaxis),
+                               # plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(plotdir, ydatacolumn, field_single, yx),
                                # showgui=showgui, dpi = dpi, overwrite=overwrite)
                 else:
                     if refant == '':
@@ -437,12 +437,12 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
                                 mycoloraxis = 'spw'
                             else:
                                 mycoloraxis = 'corr'
-                            plotms(vis=vis, field=field_single, xaxis='time', yaxis=yaxis,
+                            plotms(vis=vis, field=field_single, xaxis='time', yaxis=yx,
                                    spw=spw_single, avgchannel=avgchannel, coloraxis=mycoloraxis,
                                    antenna=subgroup, iteraxis=iteraxis, ydatacolumn=ydatacolumn,
                                    showgui=showgui, gridrows=gridrows, gridcols=gridcols,
                                    plotfile='{}/time_{}/field{}_spw{}_{}_vs_time.page{}.png'.format(
-                                             plotdir, ydatacolumn, field_single, spw_single, yaxis, page),
+                                             plotdir, ydatacolumn, field_single, spw_single, yx, page),
                                    dpi = dpi, overwrite=overwrite)
 
     if plot_uvdist:
