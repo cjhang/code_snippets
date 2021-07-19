@@ -64,10 +64,10 @@ def stacking(dlist, plot=True, norm=True, norm_func=np.mean):
     """
     first_item = dlist[0]
     if isinstance(first_item, str):
-        data = np.loadtxt(df)
+        data = np.loadtxt(first_item)
     elif isinstance(dat, (list, np.ndarray)):
         data = dat
-    dtype = type(dat)
+    dtype = type(first_item)
     stacked_flux = np.zeros(len(data))
 
     if dtype == str:
@@ -89,11 +89,17 @@ def stacking(dlist, plot=True, norm=True, norm_func=np.mean):
         ax = fig.add_subplot(1,1,1)
         for i,data in enumerate(data_list):
             if norm:
-                ax.plot(data[:,0], data[:,1]/norm_func(data[:,1]), label="data{}".format(i))
+                ax.step(data[:,0], data[:,1]/norm_func(data[:,1]), 
+                        label="data{}".format(i), where='mid')
             else:
-                ax.plot(data[:,0], data[:,1], label='data{}'.format(i))
+                ax.step(data[:,0], data[:,1], label='data{}'.format(i), where='mid')
         #plot the stacked data
-        ax.plot(data[:,0], stacked_flux, label='Stacked')
+        if norm:
+            ax.step(data[:,0], stacked_flux/norm_func(stacked_flux), 
+                    label='Stacked', where='mid', lw=4, alpha=0.8)
+        else:
+            ax.step(data[:,0], stacked_flux, label='Stacked', where='mid', lw=4, alpha=0.8)
+        plt.legend()
         plt.show()
 
                 
