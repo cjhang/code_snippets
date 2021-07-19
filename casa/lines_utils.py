@@ -95,10 +95,10 @@ def stacking(dlist, plot=True, norm=True, norm_func=np.mean):
                 ax.step(data[:,0], data[:,1], label='data{}'.format(i), where='mid')
         #plot the stacked data
         if norm:
-            ax.step(data[:,0], stacked_flux/norm_func(stacked_flux), 
+            ax.step(data[:,0], stacked_flux/norm_func(stacked_flux), color='black',
                     label='Stacked', where='mid', lw=4, alpha=0.8)
         else:
-            ax.step(data[:,0], stacked_flux, label='Stacked', where='mid', lw=4, alpha=0.8)
+            ax.step(data[:,0], stacked_flux, label='Stacked', where='mid', lw=4, color='black', alpha=0.8)
         plt.legend()
         plt.show()
 
