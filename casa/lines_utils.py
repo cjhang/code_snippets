@@ -34,6 +34,9 @@ def print_lines(format='freq', z=0.0):
     H2O = OrderedDict([('H2O_110-101', 556.93598770*u.GHz), ('H2O_211-202', 752.03314300*u.GHz),
                        ('H2O_422-331', 916.17158000*u.GHz), ('H2O_423-330', 448.00107750*u.GHz),
                        ('H2O_414-321', 380.19735980*u.GHz), ('H2O_532-441', 620.70095490*u.GHz)])
+    HCN = OrderedDict([('HCN_1-0', 88.63160230*u.GHz), ('HCN_2-1', 177.26111150*u.GHz), 
+                       ('HCN_3-2', 265.8864343*u.GHz), ('HCN_4-3', 354.50547790*u.GHz),
+                       ('HCN_5-4', 443.1161493*u.GHz)])
 
     for line, freq in CO_family.items():
         if 'freq' in format:
@@ -47,6 +50,11 @@ def print_lines(format='freq', z=0.0):
         elif 'wave' in format:
             print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
     for line, freq in C_ion.items():
+        if 'freq' in format:
+            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
+        elif 'wave' in format:
+            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
+    for line, freq in HCN.items():
         if 'freq' in format:
             print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
         elif 'wave' in format:
