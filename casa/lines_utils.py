@@ -14,7 +14,7 @@ import astropy.units as u
 import astropy.constants as const
 
 
-def print_lines(format='freq', z=0.0):
+def print_lines(format='freq', z=0.0, mode='simple'):
     '''
 
     Parameters
@@ -29,7 +29,13 @@ def print_lines(format='freq', z=0.0):
                  ('12C16O_7-6', 806.6518028*u.GHz),  ('12C16O_8-7', 921.7997056*u.GHz),
                  ('12C16O_9-8', 1036.9123861*u.GHz), ('12C16O_10-9', 1151.9854444*u.GHz)])
     CO_family2 = OrderedDict([('13C16O_1-0', 110.20135487*u.GHz), ('13C16O_2-1', 220.39868527*u.GHz),
-                               ('13C16O_3-2', 330.58796682*u.GHz), ('13C16O_4-3', 440.76517539*u.GHz)])
+                              ('13C16O_3-2', 330.58796682*u.GHz), ('13C16O_4-3', 440.76517539*u.GHz),
+                              ('13C18O_1-0', 104.711393*u.GHz), ('13C17O_1-0', 107.288945*u.GHz),
+                              ('13C17O_2-1', 214.574077*u.GHz)])
+    CO_family3 = OrderedDict([('12C17O_1-0_multi', 112.358988*u.GHz), ('12C17O_2-1_multi', 224.714187*u.GHz),
+                              ('12C18O_3-2_multi', 337.0609880*u.GHz),
+                              ('12C18O_1-0', 109.782176*u.GHz), ('12C18O_2-1', 219.560358*u.GHz),
+                              ('12C18O_3-2', 329.330552*u.GHz), ('12C18O_6-5', 658.553278*u.GHz)])
     C_ion = OrderedDict([('CI_1-0', 492.16065100*u.GHz),])
     H2O = OrderedDict([('H2O_110-101', 556.93598770*u.GHz), ('H2O_211-202', 752.03314300*u.GHz),
                        ('H2O_422-331', 916.17158000*u.GHz), ('H2O_423-330', 448.00107750*u.GHz),
@@ -37,33 +43,21 @@ def print_lines(format='freq', z=0.0):
     HCN = OrderedDict([('HCN_1-0', 88.63160230*u.GHz), ('HCN_2-1', 177.26111150*u.GHz), 
                        ('HCN_3-2', 265.8864343*u.GHz), ('HCN_4-3', 354.50547790*u.GHz),
                        ('HCN_5-4', 443.1161493*u.GHz)])
-
-    for line, freq in CO_family.items():
-        if 'freq' in format:
-            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
-        elif 'wave' in format:
-            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
-
-    for line, freq in CO_family2.items():
-        if 'freq' in format:
-            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
-        elif 'wave' in format:
-            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
-    for line, freq in C_ion.items():
-        if 'freq' in format:
-            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
-        elif 'wave' in format:
-            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
-    for line, freq in HCN.items():
-        if 'freq' in format:
-            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
-        elif 'wave' in format:
-            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
-    for line, freq in H2O.items():
-        if 'freq' in format:
-            print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
-        elif 'wave' in format:
-            print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
+    Other = OrderedDict([('CN_1-0_multi', 113.490982*u.GHz), ('CS_2-1', 97.9809533*u.GHz),
+                         ('CS_3-2', 146.9690287*u.GHz), ('CS_4-3', 195.9542109*u.GHz),
+                         ('CS_5-4', 244.9355565*u.GHz), ('CS_6-5', 293.9120865*u.GHz),
+                         ('CS_7-6', 342.8828503*u.GHz), ('CS_8-7', 391.8468898*u.GHz),
+                         ('CS_9-8', 440.8032320*u.GHz), ('CS_10-9', 489.7509210*u.GHz)])
+    if mode == 'simple':
+        family_select = [CO_family, C_ion]
+    else:
+        family_select = [CO_family, CO_family2, CO_family3, C_ion, H2O, HCN, Other]
+    for family in family_select:
+        for line, freq in family.items():
+            if 'freq' in format:
+                print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
+            elif 'wave' in format:
+                print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
     return
 
 
