@@ -115,21 +115,14 @@ def source_finder(fitsimage=None, image_file=None, pbcor_file=None, pb_file=None
     table_objs = hstack([table_newcols, Table(objects)])
     # aperture photometry based on the shape of the sources
     flux, fluxerr, fluxflag = sep.sum_ellipse(image_pbcor, objects['x'], objects['y'],
-                                    aperture_scale*objects['a'], aperture_scale*objects['b'], objects['theta'], err=std, gain=1.0)
-    print('flux', flux)
-    print(table_objs['flux'])
+                                    aperture_scale*objects['a'], aperture_scale*objects['b'],\
+                                    objects['theta'], err=std, gain=1.0)
     table_objs['flux'] = flux / beamsize
-    # table_objs['fluxerr'] = fluxerr
-    # table_objs['fluxflag'] = fluxflag
-    # objs_return = np.array(['', 0., 0., 0., 0], 
-            # dtypes=[('name', '<U20'), ('ra', '<f8'), ('dec', '<f8'), ('fluxerr', '<f8'), 
-                    # ('fluxflag', '<i')])
-    # objs_return = np.lib.recfunctions.append_fields(objects, 'name', [""]*n_objects, dtypes="U20")
-    # objs_return = np.lib.recfunctions.append_fields(objs_return, ['ra', 'dec', 'fluxerr', 'fluxflag'], np.zeros((4,n_objects)), dtypes='float64')
-
+    table_objs['fluxflag'] = fluxflag
     for i in range(n_objects):
         obj = table_objs[i]
-        obj['fluxerr'] = np.sqrt(np.pi*aperture_scale**2*obj['a']*obj['b']) * std / beamsize / image_pb[int(obj['x']), int(obj['y'])]
+        obj['fluxerr'] = np.sqrt(np.pi*aperture_scale**2*obj['a']*obj['b']) * (std / beamsize 
+                / image_pb[int(obj['x']), int(obj['y'])])
         obj_skycoord = pixel_to_skycoord(obj['x'], obj['y'], fitsimage.wcs)
         obj['ra'], obj['dec'] = obj_skycoord.ra.to(u.deg).value, obj_skycoord.dec.to(u.deg).value
         obj['name'] = name + '-' + str(i)
@@ -141,7 +134,7 @@ def source_finder(fitsimage=None, image_file=None, pbcor_file=None, pb_file=None
                        vmin=-0.2*std, vmax=10.0*std, origin='lower')
 
         # plot an elliptical aperture for each object
-        for i in range(len(objects)):
+        for i in range(n_objects):
             e = Ellipse((objects['x'][i], objects['y'][i]),
                         width=2*aperture_scale*objects['a'][i],
                         height=2*aperture_scale*objects['b'][i],
@@ -151,7 +144,8 @@ def source_finder(fitsimage=None, image_file=None, pbcor_file=None, pb_file=None
             ax.add_artist(e)
             # show the flux in the image
             #print(flux[i]*1e3)
-            ax.text(objects['x'][i], 0.94*objects['y'][i], "{:.2f}mJy".format(flux[i]*1e3), color='white', 
+            ax.text(objects['x'][i], 0.94*objects['y'][i], "{:.2f}mJy".format(
+                    table_objs[i]['flux']*1e3), color='white', 
                     horizontalalignment='center', verticalalignment='top',)
     if savefile:
         save_array(table_objs, savefile)
