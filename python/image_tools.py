@@ -174,7 +174,6 @@ def source_finder(fitsimage=None, plot=False,
     beamsize = fitsimage.beamsize
     std = fitsimage.std
 
-
     if method == 'sep':
         try:
             import sep
@@ -183,8 +182,8 @@ def source_finder(fitsimage=None, plot=False,
         objects = sep.extract(image, detection_threshold, err=std)
         n_objects = len(objects)
        
-        table_new_name = Table(np.array(['', '']*n_objects).reshape(n_objects, 2), 
-                               names={'name', 'comment'},dtype=['U32', 'U32'])
+        table_new_name = Table(np.array(['', '', '']*n_objects).reshape(n_objects, 3), 
+                               names={'name', 'code', 'comments'},dtype=['U32', 'U32', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0] * n_objects).reshape(n_objects, 4),
                            names={'ra', 'dec', 'fluxerr', 'fluxflag'})
         table_objs = hstack([table_new_name, table_new_data, Table(objects)])
@@ -222,8 +221,8 @@ def source_finder(fitsimage=None, plot=False,
         sources_found.add_column(sources_found['peak_value'], name='flux') # / beamsize
         n_found = len(sources_found)
 
-        table_new_name = Table(np.array(['', '']*n_found).reshape(n_found, 2), 
-                               names={'name', 'comment'},dtype=['U32', 'U32'])
+        table_new_name = Table(np.array(['', '', '']*n_found).reshape(n_found, 3), 
+                               names={'name', 'code', 'comments'},dtype=['U32', 'U32', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0., 0.] * n_found).reshape(n_found, 5),
                            names={'ra', 'dec', 'a', 'b', 'theta'})
         table_objs = hstack([table_new_name, table_new_data, sources_found])
@@ -231,9 +230,9 @@ def source_finder(fitsimage=None, plot=False,
             obj = table_objs[i]
             obj_skycoord = pixel_to_skycoord(obj['x'], obj['y'], fitsimage.wcs)
             obj['ra'], obj['dec'] = obj_skycoord.ra.to(u.deg).value, obj_skycoord.dec.to(u.deg).value
-            obj['name'] = name + '-' + str(i)
-        table_objs['a'] = bmaj
-        table_objs['b'] = bmin
+            obj['name'] = name + '_' + str(i)
+        table_objs['a'] = bmaj * 0.5
+        table_objs['b'] = bmin * 0.5
         table_objs['theta'] = theta
 
     if method == 'DAOStarFinder':
@@ -249,13 +248,13 @@ def source_finder(fitsimage=None, plot=False,
         sources_found['flux'] = sources_found['peak'] #/ beamsize
         n_found = len(sources_found)
 
-        table_new_name = Table(np.array(['', '']*n_found).reshape(n_found, 2), 
-                               names={'name', 'comment'},dtype=['U32', 'U32'])
+        table_new_name = Table(np.array(['', '', '']*n_found).reshape(n_found, 3), 
+                               names={'name', 'code', 'comments'},dtype=['U32', 'U32', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0., 0.] * n_found).reshape(n_found, 5),
                            names={'ra', 'dec', 'a', 'b', 'theta'})
         table_objs = hstack([table_new_name, table_new_data, sources_found])
-        table_objs['a'] = bmaj
-        table_objs['b'] = bmin
+        table_objs['a'] = bmaj * 0.5
+        table_objs['b'] = bmin * 0.5
         table_objs['theta'] = theta
 
     if plot:
@@ -297,7 +296,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
     image_norm = image / image_scale
     p_init = models.Gaussian2D(amplitude=1, x_mean=x_mean, y_mean=y_mean, 
             x_stddev=x_stddev, y_stddev=y_stddev, theta=theta, 
-            bounds={"x_mean":(-xsize/2.,xsize/2.), "y_mean":(-ysize/2.,ysize/2.), 
+            bounds={"x_mean":(-xsize*0.2,xsize*0.2), "y_mean":(-ysize*0.2,ysize*0.2), 
                     "x_stddev":(0., xsize/2.), "y_stddev":(0., ysize/2.)})
     fit_p = fitting.LevMarLSQFitter()
     p = fit_p(p_init, xrad, yrad, image_norm, 
@@ -333,7 +332,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
 def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None, 
         method='single-aperture', a=None, b=None, theta=None, n_boostrap=100,
         apertures_scale=2.0, gaussian_segment_scale=4.0,
-        plot=False, ax=None):
+        plot=False, ax=None, color='white'):
     """Accurate flux measure
     """
     if detections:
@@ -416,7 +415,7 @@ def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None,
                 pixel_pbcor = 1./fitsimage.image_pb[int(np.round(x)), int(np.round(y))]
                 fluxerr[i] = fluxerr[i] * pixel_pbcor 
     if method == 'gaussian':
-        seg_size = 3*np.int(fitsimage.bmaj_pixel)
+        seg_size = gaussian_segment_scale*np.int(fitsimage.bmaj_pixel)
         segments = RectangularAperture(pixel_coords, seg_size, seg_size, theta=0)
         segments_mask = segments.to_mask(method='center')
         for i,s in enumerate(segments_mask):
@@ -454,10 +453,10 @@ def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None,
 
         for i in range(n_sources):
             obj = pixel_coords[i]
-            im = detections_apers[i].plot(color='white', lw=1, alpha=0.8)
-            ax.text(obj[0], 0.94*obj[1], "{:.2f}mJy".format(
-                    flux[i]*1e3), color='white', 
-                    horizontalalignment='center', verticalalignment='top',)
+            im = detections_apers[i].plot(color=color, lw=1, alpha=0.8)
+            ax.text(obj[0], (1.0-2.0*detections_apers[i].a/fitsimage.imagesize[0])*obj[1], 
+                    "{:.2f}mJy".format(flux[i]*1e3), 
+                    color=color, horizontalalignment='center', verticalalignment='top',)
         # # only for test
         # for ap in apertures_boostrap:
             # im = ap.plot(color='gray', lw=2, alpha=0.2)
