@@ -21,6 +21,7 @@ from astropy.table import Table, vstack, hstack
 from astropy.stats import sigma_clipped_stats
 from astropy.wcs import WCS
 from astropy import units as u
+from astropy import constants as const
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
@@ -89,6 +90,17 @@ class FitsImage(object):
 
         # calculations from the header
         deg2pixel_ra, deg2pixel_dec = abs(1./self.header['CDELT1']), abs(1./self.header['CDELT2'])
+        
+        # read the reference system
+        try:
+            refer = 'J'+str(int(self.header['EQUINOX']))
+        except:
+            refer = 'J2000'
+        self.direction = refer +' '+ SkyCoord(self.header['CRVAL1'], self.header['CRVAL2'], 
+                                          unit="deg").to_string('hmsdms')
+        self.reffreq = self.header['CRVAL3'] * u.Hz
+        self.reflam = (const.c / self.reffreq).to(u.um)
+
         # read sythesized beam, units in deg, deg, deg 
         self.bmaj, self.bmin, self.bpa = self.header['BMAJ'], self.header['BMIN'], self.header['BPA'] 
         self.bmaj_pixel = self.header['BMAJ'] * deg2pixel_ra
@@ -111,13 +123,28 @@ class FitsImage(object):
         return np.ma.array(self.data.reshape(self.imagesize), mask=self.imagemask)
     @property
     def image_pbcor(self):
-        return self.data_pbcor.reshape(self.imagesize)
+        if self.has_pbcor:
+            return self.data_pbcor.reshape(self.imagesize)
+        else:
+            return None
     @property
     def image_pb(self):
-        return self.data_pb.reshape(self.imagesize)
+        if self.has_pbcor:
+            return self.data_pb.reshape(self.imagesize)
+        else:
+            return None
     @property
     def imagemask(self):
         return self.invalid_mask.reshape(self.imagesize)
+
+    def get_fov(self, D=12.):
+        """get the field of view
+
+        Parameters:
+        D : float
+            the diameter of the telesope
+        """
+        return 1.02 * (self.reflam / (12*u.m)).decompose().value * 206264.806
 
     def imstat(self):
         # image based calculations
@@ -125,6 +152,9 @@ class FitsImage(object):
         self.invalid_mask = image_masked.mask
         # sigma clipping to remove any sources before calculating the RMS
         self.mean, self.median, self.std = sigma_clipped_stats(image_masked.data, sigma=5.0, mask=self.invalid_mask)
+
+    def plot(self):
+        pass
 
 def save_array(array, savefile=None, overwrite=False, debug=False):
     if savefile:
@@ -149,7 +179,7 @@ def read_array(datafile):
                 
 def source_finder(fitsimage=None, plot=False, 
                   name=None, method='sep',
-                  aperture_scale=3.0, detection_threshold=3.0, 
+                  aperture_scale=3.0, detection_threshold=5.0, 
                   ax=None, savefile=None):
     """a source finder and flux measurement wrapper of SEP
     It is designed to handle the interferometric data
@@ -473,4 +503,23 @@ def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None,
             # tab_item['dec'] = detections['dec'][i]
             # tab_item['flux'] = name
             # tab_item['fluxerr'] = name
+
+def make_blank_image(fitsimage, mask_aperture=2, **kwargs):
+    # remove all the detections, return blank image
+    image = fitsimage.image.copy()
+    # try:
+    detections = source_finder(fitsimage, **kwargs)
+    ra = np.array([detections['ra']])
+    dec = np.array([detections['dec']])
+    skycoords = SkyCoord(ra.flatten(), dec.flatten(), unit='deg')
+    pixel_coords = np.array(list(zip(*skycoord_to_pixel(skycoords, fitsimage.wcs))))
+    for i,coord in enumerate(pixel_coords):
+        aper = EllipticalAperture(coord, mask_aperture, mask_aperture, 0)
+        mask = aper.to_mask().to_image(shape=fitsimage.imagesize) > 0
+        image[mask] = fitsimage.std
+    # except:
+        # return False
+
+    return image
+
 
