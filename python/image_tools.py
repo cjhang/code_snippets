@@ -108,7 +108,7 @@ class FitsImage(object):
         self.beamsize = 1/(np.log(2)*4.0) * np.pi * self.bmaj * self.bmin * (deg2pixel_ra * deg2pixel_dec)
         # assign the image data
         ndim = self.data.ndim
-        if ndim > 2:
+        if ndim >= 2:
             self.imagesize = self.data.shape[-2:]
         elif ndim < 2:
             raise ValueError('Unsupport image files, at least 2 dimentional is needed!')

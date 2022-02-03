@@ -30,10 +30,8 @@ def gkern(bmin=1., bmaj=1, theta=0, size=21,):
     
     return kernel_rot / np.sum(kernel_rot)
 
-
-
 def make_random_source(direction, reffreq=None, n=None, radius=5, 
-        prune=True, prune_threshold=1., debug=False, savefile=None, clname=None,
+        prune=True, prune_threshold=3., debug=False, savefile=None, clname=None,
         fluxrange=[0, 1], fluxunit='Jy', known_sources=None,
         sampler=np.random.uniform, sampler_params={}, budget=None):
     """This function used to add random source around a given direction
@@ -211,7 +209,6 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
         hdu.writeto(os.path.join(outdir , outname+'.fits'), overwrite=True)
         return 
 
-
 def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename=None,
                 fluxrange = None, snr=[1, 20], fov_scale=1.5,
                 n=20, start=0, repeat=1, debug=False, **kwargs):
@@ -252,7 +249,8 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
         known_sources = source_finder(fitsimage)
         for i in range(repeat):
             i = i + start
-            print('run {}'.format(i))
+            if debug:
+                print('run {}'.format(i))
             basename_repeat = basename + '.run{}'.format(i)
             complist_file = os.path.join(outdir, basename_repeat+'.txt')
             mycomplist = make_random_source(mydirection, reffreq=myfreq, 
