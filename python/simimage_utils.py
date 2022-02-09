@@ -7,14 +7,14 @@ from scipy import signal, ndimage
 from scipy.interpolate import CubicSpline
 from scipy import interpolate
 from astropy import units as u
-from astropy.coordinates import SkyCoord
-from astropy.table import Table
+from astropy.coordinates import SkyCoord, search_around_sky
+from astropy.table import Table, vstack
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel, pixel_to_skycoord
 from astropy.convolution import Gaussian2DKernel, convolve
 
-from image_tools import FitsImage, source_finder
+from image_tools import FitsImage, source_finder, flux_measure
 
 def gkern(bmin=1., bmaj=1, theta=0, size=21,):
     """
@@ -129,7 +129,7 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
         with open(savefile, 'w+') as sfile:
             sfile.write('# ra[deg]  dec[deg]  flux[{}]\n'.format(fluxunit))
             for ra, dec, flux in zip(ra_random, dec_random, flux_input):
-                sfile.write('{:.5f} {:.6f} {:.4f}\n'.format(ra, dec, flux))
+                sfile.write('{:.6f} {:.6f} {:.9f}\n'.format(ra, dec, flux))
         # np.savetxt(savefile, [[ra_random], [dec_random], [flux_random]], 
                 # header='#ra[arcsec]  dec[arcsec]  flux[{}]'.format(fluxunit))
 
@@ -246,7 +246,7 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
         myfreq = "{:.2f}GHz".format(fitsimage.reffreq.to(u.GHz).value)
 
         fluxrange = np.array(snr) * fitsimage.std
-        known_sources = source_finder(fitsimage)
+        known_sources = source_finder(fitsimage, detection_threshold=2.5)
         for i in range(repeat):
             i = i + start
             if debug:
@@ -362,4 +362,75 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
                         # uvtaper_scale=uvtaper_scale, basename=basename_new, known_file=known_file, 
                         # inverse_image=inverse_image, fluxrange=fluxrange, debug=debug, **kwargs)
 
+def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10, 
+        basename=None, savefile=None, fov_scale=1.5, second_check=False,
+        detection_threshold=3.5, apertures_scale=5.0,
+        plot=False, snr_mode='peak', debug=False,
+        snr=[1,20], **kwargs):
+    """simulation the completeness of source finding algorithm
+
+    mode:
+        peak: snr is the peak value
+        integrated: snr is the integrated value
+
+    The second_check is set to false to get the completeness across the whole SNR
+    """
+    baseimage = FitsImage(image_file=baseimage)
+
+    # known_sources = source_finder(baseimage, fov_scale=fov_scale)
+    if basename is None:
+        basename = os.path.basename(baseimage)
+
+    # define the statistical variables
+    snr_array = np.linspace(*snr, 39)
+    # comp_table = Table([snr_array, np.zeros_like(snr_array), np.zeros_like(snr_array)], 
+                       # names=['snr_peak', 'n_missing', 'n_input']) 
+    # fake_table = Table([snr_array, np.zeros_like(snr_array), np.zeros_like(snr_array)], 
+                       # names=['snr_peak', 'n_fake', 'n_found']) 
+    boosting_table = Table(names=['snr_peak','flux_input','flux_aperture','flux_gaussian'],
+                     dtype=['f8', 'f8', 'f8', 'f8'])
+    
+    for run in np.arange(repeat):
+        if debug:
+            print("calculating run: {}".format(run))
+        simimage_imagefile = "{basename}.run{run}.fits".format(basename=basename, run=run)
+        simimage_sourcefile = "{basename}.run{run}.txt".format(basename=basename, run=run)
+        simimage_fullpath = os.path.join(simfolder, simimage_imagefile)
+        simimage_sourcefile_fullpath = os.path.join(simfolder, simimage_sourcefile)
+        # print("simulated image:", simimage_fullpath)
+        # print("simulated sources:", simimage_sourcefile_fullpath)
+        
+        sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
+        sources_input_coords = SkyCoord(ra=sources_input['ra[deg]']*u.deg, 
+                                        dec=sources_input['dec[deg]']*u.deg)
+
+        simimage = FitsImage(simimage_fullpath)
+        sources_found = source_finder(simimage, detection_threshold=detection_threshold, 
+                                      method='sep')
+        sources_found_coords = SkyCoord(ra=sources_found['ra']*u.deg, 
+                                        dec=sources_found['dec']*u.deg)
+        
+        seplimit = 1*u.arcsec # in arcsec
+        if len(sources_input) > 0:
+            if len(sources_found) > 0:
+                idx_input, idx_found, d2d, d3d = search_around_sky(sources_input_coords, 
+                                                                   sources_found_coords,
+                                                                   seplimit)
+                idx_input_comp = np.array(list(set(range(len(sources_input))) - set(idx_input)), dtype=int)
+                idx_found_comp = np.array(list(set(range(len(sources_found))) - set(idx_found)), dtype=int)
+                
+                snr_array = sources_found['peak_flux'][idx_found] / baseimage.std
+                flux_aperture, flux_aperture_err = flux_measure(simimage, 
+                                                                detections=sources_found[idx_found], 
+                                                                apertures_scale=apertures_scale,
+                                                                method='single-aperture')
+                flux_gaussian, flux_gaussian_err = flux_measure(simimage, 
+                                                                detections=sources_found[idx_found], 
+                                                                method='gaussian')
+                flux_input = sources_input['flux[Jy]'][idx_input]
+                boosting_single = Table([snr_array, flux_input, flux_aperture, flux_gaussian],
+                                    names=['snr_peak','flux_input','flux_aperture','flux_gaussian'])
+                boosting_table = vstack([boosting_table, boosting_single])
+                
+    return boosting_table
 
