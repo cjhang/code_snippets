@@ -14,7 +14,7 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel, pixel_to_skycoord
 from astropy.convolution import Gaussian2DKernel, convolve
 
-from image_tools import FitsImage, source_finder, flux_measure
+from image_tools import FitsImage, source_finder, measure_flux
 
 def gkern(bmin=1., bmaj=1, theta=0, size=21,):
     """

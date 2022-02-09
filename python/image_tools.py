@@ -374,7 +374,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
         ax[2].set_title("Residual")
     return dict_return
 
-def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None, 
+def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None, 
         method='single-aperture', a=None, b=None, theta=None, n_boostrap=100,
         apertures_scale=2.0, gaussian_segment_scale=4.0,
         plot=False, ax=None, color='white', debug=False):
@@ -519,22 +519,20 @@ def flux_measure(fitsimage, detections=None, pixel_coords=None, skycoords=None,
             # tab_item['flux'] = name
             # tab_item['fluxerr'] = name
 
-def make_blank_image(fitsimage, mask_aperture=2, **kwargs):
+def make_blank_image(fitsimage, mask_detection=True, detections=None, mask_aperture=2, **kwargs):
     # remove all the detections, return blank image
     image = fitsimage.image.copy()
-    # try:
-    detections = source_finder(fitsimage, **kwargs)
-    ra = np.array([detections['ra']])
-    dec = np.array([detections['dec']])
-    skycoords = SkyCoord(ra.flatten(), dec.flatten(), unit='deg')
-    pixel_coords = np.array(list(zip(*skycoord_to_pixel(skycoords, fitsimage.wcs))))
-    for i,coord in enumerate(pixel_coords):
-        aper = EllipticalAperture(coord, mask_aperture, mask_aperture, 0)
-        mask = aper.to_mask().to_image(shape=fitsimage.imagesize) > 0
-        image[mask] = fitsimage.std
-    # except:
-        # return False
-
+    if mask_detection:
+        if detections is None:
+            detections = source_finder(fitsimage, **kwargs)
+        ra = np.array([detections['ra']])
+        dec = np.array([detections['dec']])
+        skycoords = SkyCoord(ra.flatten(), dec.flatten(), unit='deg')
+        pixel_coords = np.array(list(zip(*skycoord_to_pixel(skycoords, fitsimage.wcs))))
+        for i,coord in enumerate(pixel_coords):
+            aper = EllipticalAperture(coord, mask_aperture, mask_aperture, 0)
+            mask = aper.to_mask().to_image(shape=fitsimage.imagesize) > 0
+            image[mask] = fitsimage.std
     return image
 
 
