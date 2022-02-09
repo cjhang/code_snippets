@@ -431,6 +431,8 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10,
                 boosting_single = Table([snr_array, flux_input, flux_aperture, flux_gaussian],
                                     names=['snr_peak','flux_input','flux_aperture','flux_gaussian'])
                 boosting_table = vstack([boosting_table, boosting_single])
+    if savefile:
+        boosting_table.write(savefile, format='ascii')
                 
     return boosting_table
 
