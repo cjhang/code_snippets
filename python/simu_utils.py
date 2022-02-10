@@ -16,10 +16,12 @@ from astropy.convolution import Gaussian2DKernel, convolve
 
 from image_tools import FitsImage, source_finder, measure_flux
 
-def gkern(bmin=1., bmaj=1, theta=0, size=21,):
+def gkern(bmaj=1., bmin=None, theta=0, size=21,):
     """
     creates gaussian kernel with side length l and a sigma of sig
     """
+    if bmin is None:
+        bmin = bmaj
     size = np.max([size, 2*int(bmaj)+1])
     FWHM2sigma = 2.*np.sqrt(2*np.log(2))
     gkernx = signal.gaussian(size, std=bmin/FWHM2sigma).reshape(size, 1)
@@ -150,13 +152,14 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
         return np.vstack([ra_random, dec_random, flux_input]).T
 
 def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./', 
-        make_image=True, outname=None, debug=False, **kwargs):
+        source_shape=None, outname=None, debug=False, **kwargs):
     """
     The sources will be injected to the original file, so only pass in the copied data!
     Args:
-        radius : in arcsec
+        radius (float): in arcsec
         budget: can be a single value, or a list, [mean, low_boundary, high_boundary]
         flux: units in Jy
+        source_shape (list,tuple): [bmaj, bmin, theta] for the gaussian shape 
 
     Notes:
         1. To make the reading and writing more efficiently, the model will be added directly
@@ -191,7 +194,7 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
         beamsize = np.pi*a*b/(4*np.log(2))
 
         # kernel = Gaussian2DKernel(stddev=0.25*(a+b))
-        kernel = gkern(bmaj=a, bmin=b, theta=theta)
+        image_kernel = gkern(bmaj=a, bmin=b, theta=theta)
         # print('mycomplist', mycomplist)
         # hdr = wcs.to_header()
         # hdr['OBSERVER'] = 'Your name'
@@ -203,7 +206,10 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
             # print(ra_pix, dec_pix, flux)
             mycomplist_pixels.append([int(ra_pix), int(dec_pix), flux])
             blank_image[int(dec_pix), int(ra_pix)] = flux
-        fake_image = convolve(blank_image, kernel)*beamsize + data_masked # in units of Jy/beam
+        if source_shape:
+            source_kernel = gkern(*source_shape)
+            blank_image = convolve(blank_image, source_kernel)
+        fake_image = convolve(blank_image, image_kernel)*beamsize + data_masked # in units of Jy/beam
         fake_image = fake_image.filled(np.nan)
         hdu = fits.PrimaryHDU(header=header, data=fake_image)
         hdu.writeto(os.path.join(outdir , outname+'.fits'), overwrite=True)
@@ -364,7 +370,7 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
 
 def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10, 
         basename=None, savefile=None, fov_scale=1.5, second_check=False,
-        detection_threshold=3.5, apertures_scale=5.0,
+        detection_threshold=2.5, apertures_scale=5.0,
         plot=False, snr_mode='peak', debug=False,
         snr=[1,20], **kwargs):
     """simulation the completeness of source finding algorithm
@@ -420,11 +426,11 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10,
                 idx_found_comp = np.array(list(set(range(len(sources_found))) - set(idx_found)), dtype=int)
                 
                 snr_array = sources_found['peak_flux'][idx_found] / baseimage.std
-                flux_aperture, flux_aperture_err = flux_measure(simimage, 
+                flux_aperture, flux_aperture_err = measure_flux(simimage, 
                                                                 detections=sources_found[idx_found], 
                                                                 apertures_scale=apertures_scale,
                                                                 method='single-aperture')
-                flux_gaussian, flux_gaussian_err = flux_measure(simimage, 
+                flux_gaussian, flux_gaussian_err = measure_flux(simimage, 
                                                                 detections=sources_found[idx_found], 
                                                                 method='gaussian')
                 flux_input = sources_input['flux[Jy]'][idx_input]
