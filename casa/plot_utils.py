@@ -10,7 +10,20 @@
 import os
 import random
 import numpy as np
-from casa import tbtool, plotms, plotants
+
+try:
+    from casa import tbtool, plotms, plotants
+except:
+    from casatools import table as tbtool
+    from casaplotms import plotms
+    from casatasks import plotants
+
+def spw_expand(spws):
+    """expand casa spws string format into single spw"""
+    spw_list = []
+    for spw in spws.split(','):
+        spw_list.append(spw.strip()) 
+    return spw_list
 
 def list2str(ll):
     """convert list into string with seperator ','
@@ -24,7 +37,7 @@ def list2str(ll):
         string += str(i)+','
     return string[:-1]
 
-def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
+def group_antenna(vis=None, ants=None, refant='', subgroup_member=6):
     """group a large number of antenna into small subgroup
 
     It can be help to plot several baseline and antenna into one figure.
@@ -43,11 +56,12 @@ def group_antenna(vis, antenna_list=[], refant='', subgroup_member=6):
     -------
     A list of subgroups
     """
-    # Extract the antenna list from ms
-    tb = tbtool()
-    tb.open(vis+'/ANTENNA', nomodify=True)
-    ants = tb.getcol('NAME')
-    tb.close()
+    if ants is None:
+        # Extract the antenna list from ms
+        tb = tbtool()
+        tb.open(vis+'/ANTENNA', nomodify=True)
+        ants = tb.getcol('NAME')
+        tb.close()
  
     subgroups = []
     # generate the baseline list
@@ -241,58 +255,56 @@ def check_info(vis=None, showgui=False, plotdir='./plots/info', spw='',
                plotfile='{}/target_amp_freq.png'.format(plotdir),
                showgui=showgui, overwrite=overwrite)
 
-def check_tsys(vis=None, tdmspws=None, ants_subgroups=None, gridcols=2, 
-               gridrows=3, plotdir='./plots', showgui=False):
+def check_tsys(tsystable=None, spws=None, ants_subgroups=None, gridcols=2, gridrows=3,
+               basename=None, basedir='./', plotdir='./plots', showgui=False,
+               dpi=400):
     """the stand alone plot function for tsys
     
-    
-    Parameters
-    ----------
-    vis : str
-        visibility of the measurement file
-    tdmspws : str
-        time domain mode spws
-    ants_subgroups : list
-        the list contains the subgroups to be plot into one figure
-    tdmspws : str
-        time domain mode spws 
-        for example: '2,3,4' or '2~3'
-    gridrows : int
-        the rows for subplots
-    gridcols : int
-        the columns for subplots
-    plotdir : str
-        the directory where to generate the plots
-    showgui : bool
-        set to "True" to open the gui window
-    """
-    if ants_subgroups is None:
-        # Extract the antenna list from ms
-        tb = tbtool()
-        tb.open(vis+'/ANTENNA', nomodify=True)
-        ants = tb.getcol('NAME')
-        tb.close()
-        
-        ants_subgroups = group_antenna(ants, subgroup_member=gridrows*gridcols)
+    Args:
+    vis (str): visibility of the measurement file
+    tdmspws (str): time domain mode spws, seperated with comma
+    ants_subgroups (list): the list contains the subgroups to be plot into one figure
+    spws (str): time domain mode spws, for example: '2,3,4' or '2~3'
+    gridrows (int): the rows for subplots
+    gridcols (int): the columns for subplots
+    plotdir (str): the directory where to generate the plots
+    showgui (bool): set to "True" to open the gui window
 
-    os.system('mkdir -p {}/tsys/'.format(plotdir))
+    Example: 
+        check_tsys(tsystable='msfile1.tsys')
+        check_tsys(tsystable='msfile1.tsys', spws='13,15,17,19')
+        
+    """
+    if basename is None:
+        basename = os.path.basename(tsystable)
+    if ants_subgroups is None:
+        ants_subgroups = group_antenna(vis=tsystable, subgroup_member=gridrows*gridcols)
+
+    outdir =  '{}/{}_tsys'.format(plotdir, basename)
+    os.system('mkdir -p {}'.format(outdir))
 
     # plot tsys vs time, to pick out bad antenna
     for page,antenna in enumerate(ants_subgroups):
-        plotms(vis=vis+'.tsys', xaxis='time', yaxis='Tsys', 
+        plotms(vis=tsystable, xaxis='time', yaxis='Tsys', 
                coloraxis='spw', antenna=antenna,
                gridcols=2, gridrows=gridrows, iteraxis='antenna',
-               showgui=showgui,
-               plotfile='{}/tsys/Tsys_vs_time.page{}.png'.format(plotdir, page))
+               showgui=showgui, dpi=dpi, highres=True,
+               plotfile='{}/Tsys_vs_time.page{}.png'.format(outdir, page))
 
         # plot tsys vs frequency
-        if tdmspws is None:
-            raise ValueError("No tdmspws founded!")
-        for spw in spw_expand(tdmspws):
-            plotms(vis=vis+'.tsys', xaxis='freq', yaxis='Tsys', spw=spw,
+        if spws is not None:
+            for spw in spw_expand(spws):
+                plotms(vis=tsystable, xaxis='channel', yaxis='Tsys', spw=spw,
+                       gridcols=2, gridrows=gridrows, iteraxis='antenna',
+                       coloraxis='corr', antenna=antenna, showgui=showgui,
+                       plotfile='{}/spw{}_tsys_vs_freq.page{}.png'.format(outdir, spw, page),
+                       dpi=dpi, highres=True)
+        else:
+            plotms(vis=tsystable, xaxis='freq', yaxis='Tsys', spw='',
                    gridcols=2, gridrows=gridrows, iteraxis='antenna',
                    coloraxis='corr', antenna=antenna, showgui=showgui,
-                   plotfile='{}/tsys/spw{}_tsys_vs_freq.page{}.png'.format(plotdir, spw, page))
+                   plotfile='{}/tsys_vs_freq.page{}.png'.format(outdir, page),
+                   dpi=dpi, highres=True)
 
 def check_cal(vis='', spw='', refant='', ydatacolumn='corrected',
               field='', yaxis=['amplitude', 'phase'],
