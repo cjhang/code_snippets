@@ -25,7 +25,7 @@ from astropy import constants as const
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
+from matplotlib import patches
 from astropy.modeling import models, fitting
 
 from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture
@@ -56,7 +56,42 @@ class FitsImage(object):
             else: 
                 self.data = hdu[0].data
             self.header = hdu[0].header
-            self.wcs = WCS(self.header)
+            try:
+                self.wcs = WCS(self.header)
+            except:
+                self.wcs = None
+
+        # calculations the from header
+        ## image dimensions
+        self.ndim = self.header['NAXIS']
+        if self.ndim >= 2:
+            self.imagesize = (self.header['NAXIS2'], self.header['NAXIS1']) # higher dimension first
+        else:
+            raise ValueError('Unsupport image files, at least 2 dimentional is needed!')
+        if self.ndim >= 3:
+            self.nfreq = self.header['NAXIS3']
+        if self.ndim >= 4:
+            self.nstocks = self.header['NAXIS4']
+        ## read the reference system
+        try:
+            refer = 'J'+str(int(self.header['EQUINOX']))
+        except:
+            refer = 'J2000'
+        self.direction = refer +' '+ SkyCoord(self.header['CRVAL1'], self.header['CRVAL2'], 
+                                          unit="deg").to_string('hmsdms')
+        self.pixel_center = [np.abs(self.header['CRPIX1']), np.abs(self.header['CRPIX1'])]
+        self.sky_center = [self.header['CRVAL1'], self.header['CRVAL2']]
+        if self.ndim >= 3:
+            self.reffreq = self.header['CRVAL3'] * u.Hz
+            self.reflam = (const.c / self.reffreq).to(u.um)
+        self.pixel2deg_ra, self.pixel2deg_dec = abs(self.header['CDELT1']), abs(self.header['CDELT2'])
+        # read sythesized beam, units in deg, deg, deg 
+        self.bmaj, self.bmin, self.bpa = self.header['BMAJ'], self.header['BMIN'], self.header['BPA'] 
+        self.bmaj_pixel = self.header['BMAJ'] / self.pixel2deg_ra
+        self.bmin_pixel = self.header['BMIN'] / self.pixel2deg_dec 
+        self.beamsize = 1/(np.log(2)*4.0) * np.pi * self.bmaj * self.bmin \
+                        / (self.pixel2deg_ra * self.pixel2deg_dec)
+ 
         
         # name of the image
         if name is None:
@@ -88,32 +123,7 @@ class FitsImage(object):
         if self.data_pbcor is not None:
             self.has_pbcor = True
 
-        # calculations from the header
-        deg2pixel_ra, deg2pixel_dec = abs(1./self.header['CDELT1']), abs(1./self.header['CDELT2'])
-        
-        # read the reference system
-        try:
-            refer = 'J'+str(int(self.header['EQUINOX']))
-        except:
-            refer = 'J2000'
-        self.direction = refer +' '+ SkyCoord(self.header['CRVAL1'], self.header['CRVAL2'], 
-                                          unit="deg").to_string('hmsdms')
-        self.reffreq = self.header['CRVAL3'] * u.Hz
-        self.reflam = (const.c / self.reffreq).to(u.um)
-        self.pixel_center = [np.abs(self.header['CRPIX1']), np.abs(self.header['CRPIX1'])]
-        self.sky_center = [self.header['CRVAL1'], self.header['CRVAL2']]
-
-        # read sythesized beam, units in deg, deg, deg 
-        self.bmaj, self.bmin, self.bpa = self.header['BMAJ'], self.header['BMIN'], self.header['BPA'] 
-        self.bmaj_pixel = self.header['BMAJ'] * deg2pixel_ra
-        self.bmin_pixel = self.header['BMIN'] * deg2pixel_dec 
-        self.beamsize = 1/(np.log(2)*4.0) * np.pi * self.bmaj * self.bmin * (deg2pixel_ra * deg2pixel_dec)
-        # assign the image data
-        ndim = self.data.ndim
-        if ndim >= 2:
-            self.imagesize = self.data.shape[-2:]
-        elif ndim < 2:
-            raise ValueError('Unsupport image files, at least 2 dimentional is needed!')
+       # assign the image data
         self.imstat()
 
         # shorts cuts to access the main image
@@ -155,8 +165,53 @@ class FitsImage(object):
         # sigma clipping to remove any sources before calculating the RMS
         self.mean, self.median, self.std = sigma_clipped_stats(image_masked.data, sigma=5.0, mask=self.invalid_mask)
 
-    def plot(self):
-        pass
+    def plot(self, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
+             show_pbcor=False, show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
+             show_detections=False, detections=None, aperture_scale=2.0, **kwargs):
+        # build-in image visualization function
+        if ax == None:
+            fig = plt.figure(figsize=figsize)
+            ax = fig.add_subplot(111)
+        if name is None:
+            name = self.name
+        ax.set_title(name)
+        ny, nx = self.imagesize
+        x_index = (np.arange(0, nx) - nx/2.0) * self.pixel2deg_ra * 3600 # to arcsec
+        y_index = (np.arange(0, ny) - ny/2.0) * self.pixel2deg_dec * 3600 # to arcsec
+        #x_map, y_map = np.meshgrid(x_index, y_index)
+        #ax.pcolormesh(x_map, y_map, data_masked)
+        extent = [np.min(x_index), np.max(x_index), np.min(y_index), np.max(y_index)]
+        if show_pbcor: 
+            ax.imshow(self.image_pbcor, origin='lower', extent=extent, interpolation='none', 
+                      vmax=vmax*self.std, vmin=vmin*self.std, **kwargs)
+        else:
+            ax.imshow(self.image, origin='lower', extent=extent, interpolation='none', 
+                      vmax=vmax*self.std, vmin=vmin*self.std, **kwargs)
+        if show_center:
+            ax.text(0, 0, '+', color='r', fontsize=24, fontweight=100, horizontalalignment='center',
+                    verticalalignment='center')
+        if not show_axis:
+            ax.axis('off')
+        if show_fwhm:
+            ellipse = patches.Ellipse((0.8*np.min(x_index), 0.8*np.min(y_index)), 
+                                  width=self.bmin*3600, height=self.bmaj*3600, 
+                                  angle=self.bpa, facecolor='orange', edgecolor=None, alpha=0.8)
+            ax.add_patch(ellipse)
+        if show_fov:    
+            ellipse_fov = patches.Ellipse((0, 0), width=fov, height=fov, 
+                                    angle=0, fill=False, facecolor=None, edgecolor='gray', 
+                                    alpha=0.8)
+            ax.add_patch(ellipse_fov)
+        if show_detections:
+            for det in detections:
+                xdet = (det['x']-nx/2.0)*self.pixel2deg_ra*3600
+                ydet = (det['y']-ny/2.0)*self.pixel2deg_dec*3600
+                ellipse_det = patches.Ellipse((xdet, ydet), width=det['a']*aperture_scale, 
+                        height=det['b']*aperture_scale, angle=det['theta']*180/np.pi, 
+                        facecolor=None, edgecolor='white', alpha=0.8, fill=False)
+                ax.add_patch(ellipse_det)
+                ax.text(xdet, ydet-2.0, "{:.2f}mJy".format(det['flux']*1e3), color='white',
+                        horizontalalignment='center', verticalalignment='top')
 
 def save_array(array, savefile=None, overwrite=False, debug=False):
     if savefile:
@@ -311,7 +366,7 @@ def source_finder(fitsimage=None, plot=False,
         n_found = len(table_objs)
         for i in range(n_found):
             obj = table_objs[i]
-            e = Ellipse((obj['x'], obj['y']),
+            e = patches.Ellipse((obj['x'], obj['y']),
                         width=2*aperture_scale*obj['a'],
                         height=2*aperture_scale*obj['b'],
                         angle=obj['theta'] * 180. / np.pi)
@@ -359,7 +414,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
         im0 = ax[0].imshow(image_norm, origin='lower', interpolation='none', 
                            extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
         plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
-        gaussian_init = Ellipse((p_init.x_mean, p_init.y_mean), height=p_init.y_stddev.value, 
+        gaussian_init = patches.Ellipse((p_init.x_mean, p_init.y_mean), height=p_init.y_stddev.value, 
                 width=p_init.x_stddev.value, angle=p_init.theta.value/np.pi*180,
                 linewidth=1, facecolor=None, fill=None, edgecolor='orange', alpha=0.8)
         ax[0].add_patch(gaussian_init)
