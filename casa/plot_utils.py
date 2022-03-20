@@ -569,3 +569,19 @@ def check_gain(phasecal_int='phase_int.gcal', phasecal_scan='phase_scan.gcal', a
                        showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct amp_scan calibration table! Set the amp_scan parameter")
+
+def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=None,
+                overwrite=True, gridrows=2, gridcols=3, dpi=600, 
+               **kwargs):
+    if basename is None:
+        basename = os.path.basename(Dtermtable)
+    outdir = os.path.join(plotdir, "Dterm-"+basename)
+    os.system('mkdir -p {}'.format(outdir))
+
+    for yaxis in ['amp', 'real', 'imag']:
+        subgroups = group_antenna(Dtermtable, subgroup_member=gridrows*gridcols)
+        for page, subgroup in enumerate(subgroups):
+            plotms(vis=Dtermtable, xaxis='frequency', yaxis=yaxis, antenna=subgroup,
+                   spw=spw, iteraxis='antenna', coloraxis='corr', 
+                   plotfile='{}/freq_{}.page{}.png'.format(outdir, yaxis, page), 
+                   showgui=showgui, highres=True, **kwargs)
