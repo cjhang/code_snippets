@@ -264,7 +264,7 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
                     radius=fov_scale*0.5*0.9*fitsimage.get_fov(), 
                     debug=debug, fluxrange=fluxrange, savefile=complist_file, n=n, 
                     sampler=np.random.uniform, sampler_params={},
-                    known_sources=known_sources, **kwargs) 
+                    known_sources=known_sources) 
             add_random_sources(fitsimage=imagefile, mycomplist=mycomplist,
                     outdir=outdir, outname=basename_repeat, debug=debug, **kwargs)
     # adding source in uv has not been test for new scheme
