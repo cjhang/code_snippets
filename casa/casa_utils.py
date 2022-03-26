@@ -1,9 +1,55 @@
-"""utilities with measurements set, casa table
+# a collection of utilities to handle measurements and asdm files and casa tables
+# it only works alongside with casa
 
-"""
+# by Jianhang Chen
+# cjhastro@gmail.com 
+# History: 
+#   2020.03.21, first release
+
 import os
 import re
+import glob
 import numpy as np
+
+# import tools from casa
+## for casa 6
+try:
+    from casatools import table as tbtool
+    from casatasks import listobs, importasdm
+except:
+    pass
+
+## for casa 5
+try:
+    from importasdm import importasdm
+    from listobs_cli import listobs_cli as listobs
+except:
+    pass
+
+def import_rawdata(rawdir='../raw', outdir='./', overwrite=False, **kwargs):
+    """This function is used to importasdm and generate the file descriptions
+    """
+    # import the asdm data into outdir
+    for asdm in glob.glob(os.path.join(rawdir, '*.asdm.sdm')):
+        basename = os.path.basename(asdm)[:-9]
+        msfile = basename + '.ms'
+        msfile_fullpath = os.path.join(outdir, msfile)
+        if os.path.isdir(msfile_fullpath):
+            if not overwrite:
+                print("Reused existing data, set overwrite=True to overwrite.")
+                continue
+            else:
+                print("Overwriting existing files...")
+        importasdm(asdm=asdm, vis=os.path.join(outdir, basename+'.ms'), overwrite=overwrite, **kwargs)
+    # generate the data disscription
+    for obs in glob.glob(os.path.join(outdir, '*.ms')):
+        obs_listobs = obs + '.listobst.txt'
+        if os.path.isfile(obs_listobs):
+            print("Reused existing listobs")
+            continue
+        else:
+            listobs(vis=obs, listfile=obs_listobs, verbose=True, overwrite=overwrite)
+
 
 def vis_jackknif(vis, copy=False, outdir=None):
     """make jackknifed image with only noise"""
