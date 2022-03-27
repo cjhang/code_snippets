@@ -167,7 +167,8 @@ class FitsImage(object):
 
     def plot(self, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
              show_pbcor=False, show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
-             show_detections=False, detections=None, aperture_scale=2.0, **kwargs):
+             show_detections=False, detections=None, aperture_scale=2.0, 
+             show_detections_yoffset='-1x', fontsize=12, **kwargs):
         # build-in image visualization function
         if ax == None:
             fig = plt.figure(figsize=figsize)
@@ -210,8 +211,13 @@ class FitsImage(object):
                         height=det['b']*aperture_scale, angle=det['theta']*180/np.pi, 
                         facecolor=None, edgecolor='white', alpha=0.8, fill=False)
                 ax.add_patch(ellipse_det)
-                ax.text(xdet, ydet-2.0, "{:.2f}mJy".format(det['flux']*1e3), color='white',
-                        horizontalalignment='center', verticalalignment='top')
+                if 'x' in show_detections_yoffset:
+                    yoffset = float(show_detections_yoffset[:-1]) * 0.5 * (det['a'] + det['b'])
+                else:
+                    yoffset = show_detections_yoffset
+
+                ax.text(xdet, ydet+yoffset, "{:.2f}mJy".format(det['flux']*1e3), color='white',
+                        horizontalalignment='center', verticalalignment='top', fontsize=fontsize)
 
 def save_array(array, savefile=None, overwrite=False, debug=False):
     if savefile:
