@@ -28,6 +28,25 @@ except:
 
 def import_rawdata(rawdir='../raw', outdir='./', overwrite=False, **kwargs):
     """This function is used to importasdm and generate the file descriptions
+
+    Paramters
+    ---------
+    rawdir : str
+        the directory of raw files, ended with .asdm
+    outdir : str
+        the output directory
+    overwrite : bool
+        overwriting exisiting  folder with the same names
+    kwargs:
+        the kwargs passed to importasdm
+    
+    Examples
+    --------
+    In the project directory
+
+        os.system('mkdir ./data')
+        import_rawdata(rawdir='../raw', outdir='./data', overwrite=False)
+    
     """
     # import the asdm data into outdir
     for asdm in glob.glob(os.path.join(rawdir, '*.asdm.sdm')):
@@ -49,7 +68,6 @@ def import_rawdata(rawdir='../raw', outdir='./', overwrite=False, **kwargs):
             continue
         else:
             listobs(vis=obs, listfile=obs_listobs, verbose=True, overwrite=overwrite)
-
 
 def vis_jackknif(vis, copy=False, outdir=None):
     """make jackknifed image with only noise"""
@@ -99,3 +117,5 @@ def read_spw(vis):
             spw_specrange[key] = [freq_min, freq_max, freq_interv, freq_nchan]
 
     return list(spw_specrange.values())
+
+
