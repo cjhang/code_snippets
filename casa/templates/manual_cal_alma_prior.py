@@ -1,4 +1,9 @@
 # Simple manual prior calibration for ALMA data
+# This script works for prior calibration with local ms files
+#
+# The input files for this script is the every associated executive block, where in the end they will
+# be merged into one visibility that only contains the scientific spw
+#
 #
 # Author: Jianhang Chen
 # Email: cjhastro@gmail.com
@@ -14,6 +19,33 @@
 # CALIBRATE_FLUX:
 # OBSERVE_TARGET: 
 
+
+#######################################################
+#                  Data Importing
+#######################################################
+# rawdata_dir = '../raw'
+# data_dir = './data'
+# #> Prepare the ms data
+# #>> import asdm into local data folder
+# asdm_list = glob.glob('../raw/*.asdm.sdm')
+# for asdm in asdm_list:
+    # basename = os.path.basename(asdm)[:-9]
+    # msfile = basename + '.ms'
+    # vis_fullpath = os.path.join(data_dir, msfile)
+    # if not os.path.isdir(vis_fullpath):
+        # importasdm(asdm=asdm, vis=vis_fullpath)
+    # else:
+        # print('Using existing: {}'.format(vis_fullpath))
+# #>> generate info file for every observation
+# obs_list = glob.glob(os.path.join(data_dir, '*.ms'))
+# for obs in obs_list:
+    # os.system('rm {}.listobs.txt'.format(obs))
+    # listobs(vis=obs, listfile=obs+'.listobs.txt', verbose=True)
+
+#>>>>>>>>>>>>
+# #> Or, with casa_utils 
+# #>> import_rawdata(rawdir='../raw', outdir=data_dir) 
+
 #######################################################
 #                  Data Preparation
 #######################################################
@@ -23,18 +55,21 @@ bandpass_field = 'J2258-2758'
 fluxcal_field = 'J2258-2758'
 gaincal_field = 'J0038-2459'
 target_field = 'NGC_253'
-fields_unique = [bandpass_field, gaincal_field, polcal_field, target_field]
+fields_unique = [bandpass_field, gaincal_field, target_field] #,polcal_field,] 
 fields_tied_wvr = [target_field, gaincal_field] # the first one has wvr info, check CALIBRATE_ATMOSPHERE
 
 refant = 'DV23'
 science_spw = '17,19,21,23'
+tsys_spw = '9,11,13,15'
 mysolint = 'int'    # integration time
-tsysmap = [] # mapping tsys spw to science spw, check CALIBRATE_ATMOSPHERE
+#> mapping tsys spw to science spw, check CALIBRATE_ATMOSPHERE
+tsysmap = list(range(0,24)) 
+tsysmap[17:25] = list(range(9,17))
 is_fixsyscaltimes = False # Fix the ASDM SYSCal table issue, data before 2015
 toffset = 0  # wvr time offset, -1 for cycle 0
 
-rawdata_dir = '../raw'
 data_dir = './data'
+cal_dir = './prior'  # the directory to store the calibration tables
 caldata_dir = './data_cal'
 
 try:
@@ -44,38 +79,17 @@ except:
     have_ploter = False
 
 
-#> Prepare the ms data
-#>> import asdm into local data folder
-asdm_list = glob.glob('../raw/*.asdm.sdm')
-for asdm in asdm_list:
-    basename = os.path.basename(asdm)[:-9]
-    msfile = basename + '.ms'
-    vis_fullpath = os.path.join(data_dir, msfile)
-    if not os.path.isdir(vis_fullpath):
-        importasdm(asdm=asdm, vis=vis_fullpath)
-    else:
-        print('Using existing: {}'.format(vis_fullpath))
-#>> generate info file for every observation
-obs_list = glob.glob(os.path.join(data_dir, '*.ms'))
-for obs in obs_list:
-    basename = os.path.basename(obs)
-    os.system('rm {}.listobs.txt'.format(basename))
-    listobs(vis=obs, listfile=basename+'.listobs.txt', verbose=True)
-#> Or, with casa_utils 
-#>> import_rawdata(rawdir='../raw', outdir=data_dir) 
-
-
 #> Flagging the useless data
 obs_list = glob.glob(os.path.join(data_dir, '*.ms'))
 for obs in obs_list:
     # flagdata(vis=msfile, mode='unflag', flagbackup=False)
     # flagmanager(vis=msfile, mode='list')
-    flagdata(vis=msfile, mode='manual', autocorr=True, flagbackup=False)
+    flagdata(vis=obs, mode='manual', autocorr=True, flagbackup=False)
     flagdata(vis=obs, mode='manual', intent='*POINTING*,*SIDEBAND_RATIO*,*ATMOSPHERE*', flagbackup=False)
-    flagdata(vis=msfile, mode='shadow', flagbackup=False)
+    flagdata(vis=obs, mode='shadow', flagbackup=False)
     #>> Flag edge channel
-    # flagdata(vis = msfile, spw='17:0~3,19:0~3,21:0~3,23:0~3')
-    flagmanager(vis=msfile, mode='save', versionname='priori_flag')
+    #flagdata(vis = msfile, spw='17:0~3,19:0~3,21:0~3,23:0~3')
+    flagmanager(vis=obs, mode='save', versionname='priori_flag')
 
     if False:
         #>> Fix the ASDM SYSCal table issue, data before 2015
@@ -96,7 +110,7 @@ print("\n==============> Start Prior Calibration <=============\n")
 #>> It gives the first-order correction for atmospheric opacity as a funcction of time and freq
 for obs in obs_list:
     basename = os.path.basename(obs)
-    os.system("rm -rf {}.tsys".format(msfile))
+    os.system("rm -rf {}.tsys".format(obs))
     gencal(vis=obs, caltable=basename+'.tsys', caltype='tsys')
     
     #> save the output of WVR
@@ -137,11 +151,12 @@ for obs in obs_list:
 
 for obs in obs_list:
     #> General calibrators that have their own Tsys
+    basename = os.path.basename(obs)
     for field_name in list(set(fields_unique) - set(fields_tied_wvr[-1])):
         applycal(vis = obs,
                  field = field_name,
                  spw = science_spw,
-                 gaintable = [uid+'.tsys', uid+'.wvr'],
+                 gaintable = [basename+'.tsys', basename+'.wvr'],
                  gainfield = [field_name, field_name],
                  interp = 'linear',
                  spwmap = [tsysmap,[]],
@@ -152,7 +167,7 @@ for obs in obs_list:
     applycal(vis = obs,
              field = fields_tied_wvr[-1],
              spw = science_spw,
-             gaintable = [uid+'.tsys', uid+'.wvr'],
+             gaintable = [basename+'.tsys', basename+'.wvr'],
              gainfield = fields_tied_wvr,
              interp = 'linear',
              #spwmap = [tsysmap,[]], no need for spwmap

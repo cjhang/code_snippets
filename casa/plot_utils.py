@@ -184,7 +184,7 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
                avgchannel=avgchannel, avgtime='60', coloraxis='field',
                plotfile='{}/all_observations.png'.format(outdir),
                showgui=showgui, overwrite=overwrite, **kwargs)
-    if show_uv:
+    if show_uv and not os.path.isfile('{}/uvcoverage.png'.format(outdir)):
         plotms(vis=vis, xaxis='U', yaxis='V', coloraxis='field', highres=True, 
                spw=spw, showgui=showgui, avgchannel=avgchannel, 
                plotfile='{}/uvcoverage.png'.format(outdir),
@@ -193,17 +193,17 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
         myintent_name = myintent[1:-1]
         # amp change with time
         plotms(vis=vis, intent=myintent, xaxis='time', yaxis='amp', antenna=refant,
-               avgchannel=avgchannel, spw=spw, coloraxis='spw', ydatacolumn='data',
+               avgchannel=avgchannel, spw=spw, coloraxis='spw',
                plotfile='{}/{}_amp_time.png'.format(outdir, myintent_name), 
                highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
         # amplitude change with freq
         plotms(vis=vis, intent=myintent, xaxis='freq', yaxis='amp', antenna=refant,
-               avgtime=avgtime,spw=spw, coloraxis='scan', ydatacolumn='data',
+               avgtime=avgtime,spw=spw, coloraxis='scan',
                plotfile='{}/{}_amp__freq.png'.format(outdir, myintent_name), 
                highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
         # amp change with uvdist
         plotms(vis=vis, intent=myintent, xaxis='uvdist', yaxis='amp', antenna=refant,
-               avgchannel=avgchannel, spw=spw, coloraxis='spw', ydatacolumn='data',
+               avgchannel=avgchannel, spw=spw, coloraxis='spw',
                plotfile='{}/{}_amp_uvdist.png'.format(outdir, myintent_name), 
                highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
 
@@ -569,6 +569,57 @@ def check_gain(phasecal_int='phase_int.gcal', phasecal_scan='phase_scan.gcal', a
                        showgui=False, dpi=dpi, overwrite=True)
     else:
         print("Warning: you should give the correct amp_scan calibration table! Set the amp_scan parameter")
+
+
+def check_pol_info(vis, ):
+    pass
+
+def check_pol_kcross(vis):
+    """ check the correction for linear phase variation and select suitable scan
+
+    """
+    plotms(vis=vis, ydatacolumn='corrected',
+           xaxis='freq', yaxis='phase',
+           field= polcal_field, 
+           avgtime='1e9',
+           correlation='XY,YX',
+           spw='', antenna='DA48',
+           iteraxis='baseline',coloraxis='corr',
+           showgui=True,
+           plotrange=[0,0,-180,180])
+
+def check_XYfQU(vis):
+    """check the correction for small non-linear absolute phase variation in different antenna
+    """
+    plotms(vis=vis,
+           ydatacolumn='corrected',
+           xdatacolumn='corrected',
+           xaxis='real', yaxis='imag',
+           field=polcal_field,
+           avgtime='1e9',
+           avgchannel='64',
+           avgbaseline=True,
+           correlation='XY,YX',
+           spw='3', 
+           coloraxis='corr',
+           showgui=True,
+           plotrange=[-0.06,0.06,-0.06,0.06])
+ 
+
+def check_polgain(obs_apint_pcal, polcal_field='',):
+    """check the solution of amp of polarisation calibrator
+
+    This function should be used to for two gain solutions, one with unpolarized source model
+    another one with polarised model. 
+    The first solution should absorb the polarised single (amp change with parallactic angle or time)
+    The second solution should have no such signal if the correct model is used
+    """
+    if isinstance(obs_apint_pcal, (list, tuple)):
+        # ToDo: generate the comparsion bettween this two solutions
+        pass
+    plotms(vis=obs_apint_pcal, xaxis='time', yaxis='amp', field=polcal_field, 
+           correlation='/', coloraxis='antenna1', showgui=True)
+
 
 def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=None,
                 overwrite=True, gridrows=2, gridcols=3, dpi=600, 
