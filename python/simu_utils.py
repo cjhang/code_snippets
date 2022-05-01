@@ -370,7 +370,7 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
 
 def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10, 
         basename=None, savefile=None, fov_scale=1.5, second_check=False,
-        detection_threshold=2.5, apertures_scale=5.0,
+        detection_threshold=2.5, aperture_scale=5.0,
         plot=False, snr_mode='peak', debug=False,
         snr=[1,20], **kwargs):
     """simulation the completeness of source finding algorithm
@@ -428,7 +428,7 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10,
                 snr_array = sources_found['peak_flux'][idx_found] / baseimage.std
                 flux_aperture, flux_aperture_err = measure_flux(simimage, 
                                                                 detections=sources_found[idx_found], 
-                                                                apertures_scale=apertures_scale,
+                                                                aperture_scale=aperture_scale,
                                                                 method='single-aperture')
                 flux_gaussian, flux_gaussian_err = measure_flux(simimage, 
                                                                 detections=sources_found[idx_found], 
