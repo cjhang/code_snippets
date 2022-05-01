@@ -70,6 +70,11 @@ class FitsImage(object):
             raise ValueError('Unsupport image files, at least 2 dimentional is needed!')
         if self.ndim >= 3:
             self.nfreq = self.header['NAXIS3']
+            try:
+                self.reffreq = self.header['CRVAL3'] * u.Hz
+                self.reflam = (const.c / self.reffreq).to(u.um)
+            except:
+                pass
         if self.ndim >= 4:
             self.nstocks = self.header['NAXIS4']
         ## read the reference system
@@ -81,9 +86,6 @@ class FitsImage(object):
                                           unit="deg").to_string('hmsdms')
         self.pixel_center = [np.abs(self.header['CRPIX1']), np.abs(self.header['CRPIX1'])]
         self.sky_center = [self.header['CRVAL1'], self.header['CRVAL2']]
-        if self.ndim >= 3:
-            self.reffreq = self.header['CRVAL3'] * u.Hz
-            self.reflam = (const.c / self.reffreq).to(u.um)
         self.pixel2deg_ra, self.pixel2deg_dec = abs(self.header['CDELT1']), abs(self.header['CDELT2'])
         # read sythesized beam, units in deg, deg, deg 
         self.bmaj, self.bmin, self.bpa = self.header['BMAJ'], self.header['BMIN'], self.header['BPA'] 
@@ -167,6 +169,7 @@ class FitsImage(object):
 
     def plot(self, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
              show_pbcor=False, show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
+             show_rms=False,
              show_detections=False, detections=None, aperture_scale=2.0, 
              show_detections_yoffset='-1x', fontsize=12, **kwargs):
         # build-in image visualization function
@@ -203,8 +206,11 @@ class FitsImage(object):
                                     angle=0, fill=False, facecolor=None, edgecolor='gray', 
                                     alpha=0.8)
             ax.add_patch(ellipse_fov)
+        if show_rms:
+            ax.text(0.6*np.max(x_index), 0.8*np.min(y_index), 'rms={:.0f}uJy'.format(self.std*1e6), 
+                    fontsize=0.8*fontsize, horizontalalignment='center', verticalalignment='top', color='white')
         if show_detections:
-            for det in detections:
+            for idx,det in enumerate(detections):
                 xdet = (det['x']-nx/2.0)*self.pixel2deg_ra*3600
                 ydet = (det['y']-ny/2.0)*self.pixel2deg_dec*3600
                 ellipse_det = patches.Ellipse((xdet, ydet), width=det['a']*aperture_scale, 
@@ -367,7 +373,7 @@ def source_finder(fitsimage=None, plot=False,
         if ax is None:
             fig, ax = plt.subplots(figsize=(8,6))
         im = ax.imshow(image, interpolation='nearest',
-                       vmin=-0.2*std, vmax=10.0*std, origin='lower')
+                       vmin=-2.*std, vmax=5.0*std, origin='lower')
         ax.set_title(name)
         n_found = len(table_objs)
         for i in range(n_found):
@@ -437,7 +443,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
 
 def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None, 
         method='single-aperture', a=None, b=None, theta=None, n_boostrap=100,
-        apertures_scale=2.0, gaussian_segment_scale=4.0,
+        aperture_scale=2.0, gaussian_segment_scale=4.0,
         plot=False, ax=None, color='white', debug=False):
     """Accurate flux measure
     """
@@ -471,13 +477,13 @@ def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None,
     
     # define aperture for all the detections
     if isinstance(a, (list, np.ndarray)):
-        a_aper = apertures_scale*a
+        a_aper = aperture_scale*a
     else:
-        a_aper = np.full(n_sources, apertures_scale*a)
+        a_aper = np.full(n_sources, aperture_scale*a)
     if isinstance(b, (list, np.ndarray)):
-        b_aper = apertures_scale*b
+        b_aper = aperture_scale*b
     else:
-        b_aper = np.full(n_sources, apertures_scale*b)
+        b_aper = np.full(n_sources, aperture_scale*b)
     if not isinstance(theta, (list, np.ndarray)):
         theta = np.full(n_sources, theta)
     apertures = []
