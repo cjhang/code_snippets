@@ -15,6 +15,7 @@ Requirement:
 import os
 import sys
 import numpy as np
+import scipy.ndimage as ndimage
 import warnings
 from astropy.io import fits
 from astropy.table import Table, vstack, hstack
@@ -27,6 +28,7 @@ from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
 from matplotlib import patches
 from astropy.modeling import models, fitting
+
 
 from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture
 
@@ -72,7 +74,9 @@ class FitsImage(object):
             self.nfreq = self.header['NAXIS3']
             try:
                 self.reffreq = self.header['CRVAL3'] * u.Hz
+                self.restfreq = self.header['RESTFRQ'] * u.Hz
                 self.reflam = (const.c / self.reffreq).to(u.um)
+                self.restlam = (const.c / self.restfreq).to(u.um)
             except:
                 pass
         if self.ndim >= 4:
@@ -125,13 +129,16 @@ class FitsImage(object):
         if self.data_pbcor is not None:
             self.has_pbcor = True
 
-       # assign the image data
+        self.imagemask = self.mask_image(mask_invalid=True)
         self.imstat()
 
         # shorts cuts to access the main image
     @property
     def image(self):
         return self.data.reshape(self.imagesize)
+    @property
+    def image_pbcor(self):
+        return self.data_pbcor.reshape(self.imagesize)
     @property
     def masked_image(self):
         return np.ma.array(self.data.reshape(self.imagesize), mask=self.imagemask)
@@ -147,9 +154,16 @@ class FitsImage(object):
             return self.data_pb.reshape(self.imagesize)
         else:
             return None
-    @property
-    def imagemask(self):
-        return self.invalid_mask.reshape(self.imagesize)
+
+    def mask_image(self, mask=None, mask_invalid=True):
+        imagemask = np.zeros_like(self.image, dtype=bool)
+        if mask_invalid:
+            image_masked = np.ma.masked_invalid(self.data)
+            invalid_mask = image_masked.mask.reshape(self.imagesize)
+            imagemask = imagemask | invalid_mask
+        if mask is not None:
+            imagemask = imagemask | mask
+        return imagemask
 
     def get_fov(self, D=12.):
         """get the field of view
@@ -162,14 +176,48 @@ class FitsImage(object):
 
     def imstat(self):
         # image based calculations
-        image_masked = np.ma.masked_invalid(self.data)
-        self.invalid_mask = image_masked.mask
+        mask = self.imagemask
         # sigma clipping to remove any sources before calculating the RMS
-        self.mean, self.median, self.std = sigma_clipped_stats(image_masked.data, sigma=5.0, mask=self.invalid_mask)
+        self.mean, self.median, self.std = sigma_clipped_stats(self.image, sigma=5.0, mask=mask)
 
-    def plot(self, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
+    def find_structure(self, sigma=3.0, iterations=1, opening_iters=None, 
+                       dilation_iters=None, plot=False):
+        """find structures above a centain sigma
+
+        Firstly, this function will find the 3sigma large structure;
+        after that, it applys the binary opening to remove small structures
+        then, binary dilation is used to exclude all the all the faint 
+        extended emission
+        This function can be used for find extended emission regions and generate
+        additional masking
+
+        Args:
+            sigma: the sigma level to start the structure searching
+            iterations: the opening and dilation iterations
+            opening_iters: specifically set the opening iterations
+            dilation_iters: specifically set the dilation iterations
+            plot: plot the marked regions.
+
+        Return:
+            image: binary image with masked region with 1 and the others 0
+        """
+        mean, median, std = sigma_clipped_stats(self.image, sigma=sigma,
+                maxiters=1, mask=self.imagemask)
+        struct_above_sigma = self.image > sigma*std
+        if opening_iters is None:
+            opening_iters = iterations
+        if dilation_iters is None:
+            dilation_iters = iterations
+        struct_opening = ndimage.binary_opening(struct_above_sigma, iterations=opening_iters)
+        struct_dilation = ndimage.binary_dilation(struct_opening, iterations=dilation_iters)
+        if plot:
+            self.plot(data=struct_dilation, name=self.name+'_{}_structures'.format(sigma))
+
+        return struct_dilation
+
+    def plot(self, data=None, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
              show_pbcor=False, show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
-             show_rms=False,
+             show_rms=False, show_sky_sources=[], show_pixel_sources=[],
              show_detections=False, detections=None, aperture_scale=2.0, 
              show_detections_yoffset='-1x', fontsize=12, **kwargs):
         # build-in image visualization function
@@ -178,19 +226,21 @@ class FitsImage(object):
             ax = fig.add_subplot(111)
         if name is None:
             name = self.name
+        if data is None:
+            if show_pbcor:
+                data = self.image_pbcor
+            else:
+                data = self.image
         ax.set_title(name)
         ny, nx = self.imagesize
+        pixel_rescale = self.pixel2deg_ra * 3600
         x_index = (np.arange(0, nx) - nx/2.0) * self.pixel2deg_ra * 3600 # to arcsec
         y_index = (np.arange(0, ny) - ny/2.0) * self.pixel2deg_dec * 3600 # to arcsec
         #x_map, y_map = np.meshgrid(x_index, y_index)
         #ax.pcolormesh(x_map, y_map, data_masked)
         extent = [np.min(x_index), np.max(x_index), np.min(y_index), np.max(y_index)]
-        if show_pbcor: 
-            ax.imshow(self.image_pbcor, origin='lower', extent=extent, interpolation='none', 
-                      vmax=vmax*self.std, vmin=vmin*self.std, **kwargs)
-        else:
-            ax.imshow(self.image, origin='lower', extent=extent, interpolation='none', 
-                      vmax=vmax*self.std, vmin=vmin*self.std, **kwargs)
+        ax.imshow(data, origin='lower', extent=extent, interpolation='none', 
+                  vmax=vmax*self.std, vmin=vmin*self.std, **kwargs)
         if show_center:
             ax.text(0, 0, '+', color='r', fontsize=24, fontweight=100, horizontalalignment='center',
                     verticalalignment='center')
@@ -213,10 +263,15 @@ class FitsImage(object):
             for idx,det in enumerate(detections):
                 xdet = (det['x']-nx/2.0)*self.pixel2deg_ra*3600
                 ydet = (det['y']-ny/2.0)*self.pixel2deg_dec*3600
-                ellipse_det = patches.Ellipse((xdet, ydet), width=det['a']*aperture_scale, 
-                        height=det['b']*aperture_scale, angle=det['theta']*180/np.pi, 
+                ellipse_det = patches.Ellipse((xdet, ydet), 
+                        width=det['a']*2.*aperture_scale * pixel_rescale, 
+                        height=det['b']*2.*aperture_scale * pixel_rescale, 
+                        angle=det['theta']*180/np.pi, 
                         facecolor=None, edgecolor='white', alpha=0.8, fill=False)
                 ax.add_patch(ellipse_det)
+                # ellipse_det = EllipticalAperture([xdet, ydet], det['a']*aperture_scale, 
+                                                 # det['b']*aperture_scale, det['theta'])
+                # ellipse_det.plot(color='white', lw=1, alpha=0.8)
                 if 'x' in show_detections_yoffset:
                     yoffset = float(show_detections_yoffset[:-1]) * 0.5 * (det['a'] + det['b'])
                 else:
@@ -224,6 +279,29 @@ class FitsImage(object):
 
                 ax.text(xdet, ydet+yoffset, "{:.2f}mJy".format(det['flux']*1e3), color='white',
                         horizontalalignment='center', verticalalignment='top', fontsize=fontsize)
+        if show_sky_sources != []:
+            try:
+                n_sky_sources = len(show_sky_sources)
+            except:
+                n_sky_sources = 1
+            if n_sky_sources == 1:
+                show_sky_sources = [show_sky_sources,]
+            for s in show_sky_sources:
+                pixel_sources = skycoord_to_pixel(s, self.wcs)
+                xs = (pixel_sources[0]-nx/2.0)*self.pixel2deg_ra*3600
+                ys = (pixel_sources[1]-ny/2.0)*self.pixel2deg_dec*3600
+                ax.text(xs, ys, 'x', fontsize=24, fontweight=100, horizontalalignment='center',
+                    verticalalignment='center', color='white')
+        if show_pixel_sources != []:
+            n_pixel_sources = len(show_pixel_sources)
+            if n_pixel_sources == 1:
+                show_pixel_sources = [show_pixel_sources,]
+            for s in show_pixel_sources:
+                xp = (s[0]-nx/2.0)*self.pixel2deg_ra*3600
+                yp = (s[1]-ny/2.0)*self.pixel2deg_dec*3600
+                ax.text(xp, yp, 'x', fontsize=24, fontweight=100, horizontalalignment='center',
+                    verticalalignment='center', color='white')
+
 
 def save_array(array, savefile=None, overwrite=False, debug=False):
     if savefile:
@@ -246,8 +324,8 @@ def read_array(datafile):
     """
     return Table.read(datafile, format='ascii')
                 
-def source_finder(fitsimage=None, plot=False, 
-                  name=None, method='sep',
+def source_finder(fitsimage=None, plot=False, mask=None, 
+                  name=None, method='sep', show_flux=True,
                   aperture_scale=3.0, detection_threshold=5.0, 
                   ax=None, savefile=None):
     """a source finder and flux measurement wrapper of SEP
@@ -279,12 +357,12 @@ def source_finder(fitsimage=None, plot=False,
             import sep
         except:
             raise ValueError("SEP not installed!")
-        objects = sep.extract(image, detection_threshold, err=std)
+        objects = sep.extract(image, detection_threshold, err=std, mask=mask, filter_kernel=None)
         n_objects = len(objects)
        
         table_new_name = Table(np.array(['', '', '', '']*n_objects).reshape(n_objects, 4), 
                                names={'pname', 'name', 'code', 'comments'},
-                               dtype=['U32', 'U32', 'U32', 'U80'])
+                               dtype=['U64', 'U64', 'U64', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0.] * n_objects).reshape(n_objects, 4),
                            names={'ra', 'dec', 'fluxerr', 'radial_distance'})
         table_objs = hstack([table_new_name, table_new_data, Table(objects)])
@@ -310,8 +388,9 @@ def source_finder(fitsimage=None, plot=False,
                 obj['fluxerr'] = np.sqrt(np.pi*aperture_scale**2*obj['a']*obj['b']) * std / beamsize
             obj_skycoord = pixel_to_skycoord(obj['x'], obj['y'], fitsimage.wcs)
             obj['ra'], obj['dec'] = obj_skycoord.ra.to(u.deg).value, obj_skycoord.dec.to(u.deg).value
-            obj['radial_distance'] = np.sqrt((obj['ra']-sky_center[0])**2 
-                                             + (obj['dec']-sky_center[1])**2) * 3600 # to arcsec
+            # calculate the projected radial distance
+            obj['radial_distance'] = obj_skycoord.separation(SkyCoord(*fitsimage.sky_center, 
+                                                                      unit='deg')).to(u.arcsec).value
             obj['pname'] = name
             obj['name'] = name + '_' + str(i)
 
@@ -330,7 +409,7 @@ def source_finder(fitsimage=None, plot=False,
 
         table_new_name = Table(np.array(['', '', '', '']*n_found).reshape(n_found, 4), 
                                names={'pname', 'name', 'code', 'comments'},
-                               dtype=['U32', 'U32', 'U32', 'U80'])
+                               dtype=['U64', 'U64', 'U8', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0., 0.,0.] * n_found).reshape(n_found, 6),
                            names={'ra', 'dec', 'a', 'b', 'theta', 'radial_distance'})
         table_objs = hstack([table_new_name, table_new_data, sources_found])
@@ -361,7 +440,7 @@ def source_finder(fitsimage=None, plot=False,
 
         table_new_name = Table(np.array(['', '', '', '']*n_objects).reshape(n_objects, 4), 
                                names={'pname', 'name', 'code', 'comments'},
-                               dtype=['U32', 'U32', 'U32', 'U80'])
+                               dtype=['U64', 'U64', 'U8', 'U80'])
         table_new_data = Table(np.array([0., 0., 0., 0., 0.] * n_found).reshape(n_found, 5),
                            names={'ra', 'dec', 'a', 'b', 'theta'})
         table_objs = hstack([table_new_name, table_new_data, sources_found])
@@ -385,17 +464,24 @@ def source_finder(fitsimage=None, plot=False,
             e.set_facecolor('none')
             e.set_edgecolor('white')
             ax.add_artist(e)
-            ax.text(obj['x'], 0.94*obj['y'], "{:.2f}mJy".format(
-                    obj['flux']*1e3), color='white', 
-                    horizontalalignment='center', verticalalignment='top',)
+            if show_flux:
+                ax.text(obj['x'], 0.94*obj['y'], "{:.2f}mJy".format(
+                        obj['flux']*1e3), color='white', 
+                        horizontalalignment='center', verticalalignment='top',)
     if savefile:
         save_array(table_objs, savefile)
     else:
         return table_objs
 
-def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False):
+def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
+                       xbounds=None, ybounds=None, center_bounds_scale=0.125):
     """Apply two dimentional Gaussian fitting
+    
+    Args:
+        center_bounds = ((xlow, xup), (ylow, yup))
+        center_bounds_scale: the bounds are determined by the fraction of the image size
     """
+
     ysize, xsize = image.shape
     y_center, x_center = ysize/2., xsize/2.
     flux_list = []
@@ -406,9 +492,13 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
 
     image_scale = np.max(image)
     image_norm = image / image_scale
+    if xbounds is None:
+        xbounds = (-xsize*center_bounds_scale,xsize*center_bounds_scale)
+    if ybounds is None:
+        ybounds = (-ysize*center_bounds_scale,ysize*center_bounds_scale)
     p_init = models.Gaussian2D(amplitude=1, x_mean=x_mean, y_mean=y_mean, 
             x_stddev=x_stddev, y_stddev=y_stddev, theta=theta, 
-            bounds={"x_mean":(-xsize*0.2,xsize*0.2), "y_mean":(-ysize*0.2,ysize*0.2), 
+            bounds={"x_mean": xbounds, "y_mean": ybounds, 
                     "x_stddev":(0., xsize/2.), "y_stddev":(0., ysize/2.)})
     fit_p = fitting.LevMarLSQFitter()
     p = fit_p(p_init, xrad, yrad, image_norm, 
@@ -443,9 +533,25 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
 
 def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None, 
         method='single-aperture', a=None, b=None, theta=None, n_boostrap=100,
-        aperture_scale=2.0, gaussian_segment_scale=4.0,
+        minimal_aperture_size=2, 
+        aperture_size=None, aperture_scale=6.0, gaussian_segment_scale=4.0,
         plot=False, ax=None, color='white', debug=False):
     """Accurate flux measure
+
+    Args:
+        fitsimage: the FitsImage class
+        detections: astropy.table, including all source position and shapes
+        pixel_coords: the pixel coordinates of the detections
+        skycoords: the sky coordinates of the detections.
+        aperture_size: the fixed size of the aperture, in arcsec
+        minimal_aperture_size: if the aperture_size is None, this can control the
+            minial aperture_size for the fain source, where the adaptive aperture 
+            could not be securely measured
+        aperture_scale: the source shape determined aperture, lower priority than
+                        aperture_size
+    Note:
+        When several coordinates parameters are provided, detections has the
+        higher priority
     """
     if detections:
         if len(detections) < 1:
@@ -453,21 +559,22 @@ def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None,
         ra = np.array([detections['ra']])
         dec = np.array([detections['dec']])
         skycoords = SkyCoord(ra.flatten(), dec.flatten(), unit='deg')
-        if a is None:
-            if 'a' in detections.colnames:
-                a = detections['a']
-            else:
-                a = fitsimage.bmaj_pixel
-        if b is None:
-            if 'b' in detections.colnames:
-                b = detections['b']
-            else:
-                b = fitsimage.bmin_pixel
-        if theta is None:
-            if 'theta' in detections.colnames:
-                theta = detections['theta']
-            else:
-                theta = fitsimage.bpa # in deg
+        if aperture_scale is not None:
+            if a is None:
+                if 'a' in detections.colnames:
+                    a = detections['a']
+                else:
+                    a = fitsimage.bmaj_pixel
+            if b is None:
+                if 'b' in detections.colnames:
+                    b = detections['b']
+                else:
+                    b = fitsimage.bmin_pixel
+            if theta is None:
+                if 'theta' in detections.colnames:
+                    theta = detections['theta']
+                else:
+                    theta = fitsimage.bpa # in deg
         if pixel_coords is None:
             pixel_coords = np.array(list(zip(*skycoord_to_pixel(skycoords, fitsimage.wcs))))
     if pixel_coords is None:
@@ -476,16 +583,26 @@ def measure_flux(fitsimage, detections=None, pixel_coords=None, skycoords=None,
     n_sources = len(pixel_coords)
     
     # define aperture for all the detections
-    if isinstance(a, (list, np.ndarray)):
-        a_aper = aperture_scale*a
-    else:
-        a_aper = np.full(n_sources, aperture_scale*a)
-    if isinstance(b, (list, np.ndarray)):
-        b_aper = aperture_scale*b
-    else:
-        b_aper = np.full(n_sources, aperture_scale*b)
-    if not isinstance(theta, (list, np.ndarray)):
-        theta = np.full(n_sources, theta)
+    if aperture_scale is not None:
+        if isinstance(a, (list, np.ndarray)):
+            a_aper = aperture_scale*a
+        else:
+            a_aper = np.full(n_sources, aperture_scale*a)
+        if isinstance(b, (list, np.ndarray)):
+            b_aper = aperture_scale*b
+        else:
+            b_aper = np.full(n_sources, aperture_scale*b)
+        if minimal_aperture_size is not None:
+            minimal_aperture_size_in_pixel = minimal_aperture_size / (fitsimage.pixel2deg_ra*3600)
+            a_aper[a_aper < minimal_aperture_size_in_pixel] = minimal_aperture_size_in_pixel
+            b_aper[b_aper < minimal_aperture_size_in_pixel] = minimal_aperture_size_in_pixel
+        if not isinstance(theta, (list, np.ndarray)):
+            theta = np.full(n_sources, theta)
+    if aperture_size is not None:
+        aperture_size_pixel = aperture_size / (3600*fitsimage.pixel2deg_ra)
+        a_aper = np.full(n_sources, aperture_size_pixel)
+        b_aper = np.full(n_sources, aperture_size_pixel)
+        theta = np.full(n_sources, 0)
     apertures = []
     for i,coord in enumerate(pixel_coords):
         apertures.append(EllipticalAperture(coord, a_aper[i], b_aper[i], theta[i]))
