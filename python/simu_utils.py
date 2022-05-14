@@ -35,8 +35,9 @@ def gkern(bmaj=1., bmin=None, theta=0, size=21,):
 def make_random_source(direction, reffreq=None, n=None, radius=5, 
         prune=True, prune_threshold=3., debug=False, savefile=None, clname=None,
         fluxrange=[0, 1], fluxunit='Jy', known_sources=None,
+        wcs=None, mask=None, prune_threshold_pixel=5.0,
         sampler=np.random.uniform, sampler_params={}, budget=None):
-    """This function used to add random source around a given direction
+    """Generate random source around a given direction
         
     This is a proximate solution, which treat the field of view as a plane.
     Then calculate the longtitude and latitue using sin and cos functions.
@@ -47,9 +48,14 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
         radius: the largest radius that the points can be put, in arcsec
                 it can be a list whose format is [r_min, r_max] both in arcsec
         prune: remove close pairs, make it easier for pointsource testing
+        prune_threshold: in arcsec for known_sources, but pixel for masks
+        prune_threshold_pixel: pixel distance for masks
         savefile: save the coordination files
         clname: the component list filename
         budget: The total flux density, conflict with flux
+        wcs: the wcs to covert the sky coordinates into pixel coordinates
+        mask: the pixel space coordinates based mask, which used to exclude 
+            the random sources within the mask
         
     Example:
         direction = 'J2000 13h03m49.215900s -55d40m31.60870s'
@@ -73,36 +79,41 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
     if debug:
         print('fluxrange', fluxrange)
         print('radius', radius)
-    if n:
-        theta = 2*np.pi*np.random.uniform(0, 1, n)
-        if isinstance(radius, (float, int)):
-            rho = radius * np.sqrt(np.random.uniform(0, 1, n))
-        elif isinstance(radius, (list, np.ndarray)):
-           rho = np.diff(radius)*np.sqrt(np.random.uniform(0, 1, n)) + radius[0]
-        flux_sampling = np.array([sampler(**sampler_params) for i in range(n)])
-        flux_input = flux_sampling * np.diff(fluxrange) + fluxrange[0]
-        if debug:
-            print('flux range {} [{}]'.format(fluxrange, fluxunit))
+    theta = 2*np.pi*np.random.uniform(0, 1, n)
+    if isinstance(radius, (float, int)):
+        rho = radius * np.sqrt(np.random.uniform(0, 1, n))
+    elif isinstance(radius, (list, np.ndarray)):
+       rho = np.diff(radius)*np.sqrt(np.random.uniform(0, 1, n)) + radius[0]
+    flux_sampling = np.array([sampler(**sampler_params) for i in range(n)])
+    flux_input = flux_sampling * np.diff(fluxrange) + fluxrange[0]
+    if debug:
+        print('flux range {} [{}]'.format(fluxrange, fluxunit))
 
-    delta_ra = np.array(rho) * np.cos(theta)/(np.cos(skycoord.dec).value)
-    delta_dec = np.array(rho) * np.sin(theta)
+    # delta_ra = np.array(rho) * np.cos(theta)/(np.cos(skycoord.dec).value)
+    # delta_dec = np.array(rho) * np.sin(theta)
+    sky_sources = []
+    for i in range(n):
+        sky_sources.append(skycoord.directional_offset_by(theta[i], rho[i]*u.arcsec))
+    sky_sources = SkyCoord(sky_sources)
+    # TODO: maybe a more efficienty ways is injections in pixel plane and the convert they
+    # by pixel_to_skycoord
 
     if prune:
-        select_idx = []
-        n_sources = len(flux_input)
-        for i in range(0, n_sources-1):
-            if np.sum((delta_ra[i+1:]-delta_ra[i])**2 + (delta_dec[i+1:]-delta_dec[i])**2\
-                       < prune_threshold**2) > 0:
+        select_idx = [0]
+        for i in range(1, n):
+            # if np.sum((delta_ra[i+1:]-delta_ra[i])**2 + (delta_dec[i+1:]-delta_dec[i])**2\
+                       # < prune_threshold**2) > 0:
+                # continue
+            if np.sum(sky_sources[i].separation(sky_sources[:i]) < prune_threshold*u.arcsec) > 0:
                 continue
             select_idx.append(i)
-        delta_ra = delta_ra[select_idx]
-        delta_dec = delta_dec[select_idx]
+        sky_sources = sky_sources[select_idx]
         flux_input = flux_input[select_idx]
         if debug:
             print("Pruned {} sources.".format(n - len(select_idx)))
 
-    ra_random = (delta_ra*u.arcsec + skycoord.ra).to(u.deg).value
-    dec_random = (delta_dec*u.arcsec+ skycoord.dec).to(u.deg).value
+    ra_random = sky_sources.ra.to(u.deg).value
+    dec_random = sky_sources.dec.to(u.deg).value
 
     if (known_sources is not None) and (len(known_sources) > 0):
         if isinstance(known_sources, Table):
@@ -126,6 +137,25 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
         flux_input = flux_input[select_idx]
         if debug:
             print("Remove {} close-by sources.".format(n - len(select_idx)))
+    if mask is not None:
+        if wcs is not None:
+            select_idx = []
+            xpix, ypix = skycoord_to_pixel(SkyCoord(ra=ra_random, dec=dec_random, unit='deg'), 
+                                             wcs=wcs)
+            n_sources = len(flux_input)
+            mask_pix = np.where(mask)
+            for i in range(n_sources):
+                if np.sum((xpix[i]-mask_pix[1])**2 + (ypix[i]-mask_pix[0])**2 < 
+                           prune_threshold_pixel**2) > 0: # first return of np.where is y axis
+                    continue
+                select_idx.append(i)
+            ra_random = ra_random[select_idx]
+            dec_random = dec_random[select_idx]
+            flux_input = flux_input[select_idx]
+            if debug:
+                print("Remove {} close to the mask.".format(n_sources - len(select_idx)))
+        else:
+            raise ValueError("Mask should be provide with wcs")
 
     if savefile:
         with open(savefile, 'w+') as sfile:
@@ -152,10 +182,15 @@ def make_random_source(direction, reffreq=None, n=None, radius=5,
         return np.vstack([ra_random, dec_random, flux_input]).T
 
 def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./', 
-        source_shape=None, outname=None, debug=False, **kwargs):
-    """
+        source_shape=None, outname=None, debug=False, overwrite=True, **kwargs):
+    """Inject the sources into images 
+
     The sources will be injected to the original file, so only pass in the copied data!
+    
     Args:
+        vis: the visibility, it is needed if sources are injected into visibility
+        fitsimage: the image, it is needed if sources are injected into image
+        mycomplist: the flux densities of injected sources
         radius (float): in arcsec
         budget: can be a single value, or a list, [mean, low_boundary, high_boundary]
         flux: units in Jy
@@ -163,7 +198,8 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
 
     Notes:
         1. To make the reading and writing more efficiently, the model will be added directly
-           into original measurement. It is suggested to make a copy before calling this func
+           into original measurement. It is suggested to make a copy before calling this 
+           function
     """
     
     if not os.path.isdir(outdir):
@@ -176,22 +212,31 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
         clearcal(vis=vis)
     if fitsimage:
         # add random sources directly into the image
-        hdu = fits.open(fitsimage)
-        header = hdu[0].header
-        wcs = WCS(header)
-        data = hdu[0].data
-        ny, nx = data.shape[-2:]
-        data_masked = np.ma.masked_invalid(data.reshape(ny, nx))
-        # mean, median, std = sigma_clipped_stats(data_masked, sigma=10.0)  
+        if isinstance(fitsimage, FitsImage):
+            wcs = fitsimage.wcs
+            header = fitsimage.header
+            a = fitsimage.bmaj_pixel
+            b = fitsimage.bmin_pixel
+            theta = fitsimage.bpa
+            ny, nx = fitsimage.imagesize
+            beamsize = fitsimage.beamsize
+            data_masked = np.ma.masked_invalid(fitsimage.image)
+        else:
+            hdu = fits.open(fitsimage)
+            header = hdu[0].header
+            wcs = WCS(header)
+            data = hdu[0].data
+            ny, nx = data.shape[-2:]
+            data_masked = np.ma.masked_invalid(data.reshape(ny, nx))
+            # mean, median, std = sigma_clipped_stats(data_masked, sigma=10.0)  
 
-        # for DAOStarFinder, in pixel space
-        pixel_scale = 1/np.abs(header['CDELT1'])
-        fwhm = header['BMAJ']*3600*u.arcsec
-        fwhm_pixel = header['BMAJ']*pixel_scale
-        a, b = header['BMAJ']*pixel_scale, header['BMIN']*pixel_scale
-        ratio = header['BMIN'] / header['BMAJ']
-        theta = header['BPA']
-        beamsize = np.pi*a*b/(4*np.log(2))
+            # for DAOStarFinder, in pixel space
+            pixel_scale = 1/np.abs(header['CDELT1'])
+            fwhm = header['BMAJ']*3600*u.arcsec
+            fwhm_pixel = header['BMAJ']*pixel_scale
+            a, b = header['BMAJ']*pixel_scale, header['BMIN']*pixel_scale
+            theta = header['BPA']
+            beamsize = np.pi*a*b/(4*np.log(2))
 
         # kernel = Gaussian2DKernel(stddev=0.25*(a+b))
         image_kernel = gkern(bmaj=a, bmin=b, theta=theta)
@@ -212,11 +257,11 @@ def add_random_sources(vis=None, fitsimage=None, mycomplist=None, outdir='./',
         fake_image = convolve(blank_image, image_kernel)*beamsize + data_masked # in units of Jy/beam
         fake_image = fake_image.filled(np.nan)
         hdu = fits.PrimaryHDU(header=header, data=fake_image)
-        hdu.writeto(os.path.join(outdir , outname+'.fits'), overwrite=True)
+        hdu.writeto(os.path.join(outdir , outname+'.fits'), overwrite=overwrite)
         return 
 
-def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename=None,
-                fluxrange = None, snr=[1, 20], fov_scale=1.5,
+def gen_sim_images(mode='image', vis=None, fitsimage=None, outdir='./', basename=None,
+                fluxrange = None, snr=[1, 20], fov_scale=1.5, prune_threshold=3.0,
                 n=20, start=0, repeat=1, debug=False, **kwargs):
     """generate the fake images with man-made sources
 
@@ -241,18 +286,15 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
     if basename is None:
         basename = os.path.basename(imagefile)
     if mode == 'image':
-        if not imagefile:
-            raise ValueError("The image file must be given!")
-        fitsimage = FitsImage(imagefile, name=basename)
-        try:
-            refer = 'J'+str(int(header['EQUINOX']))
-        except:
-            refer = 'J2000'
+        if not isinstance(fitsimage, FitsImage):
+            if not os.path.isfile(fitsimage):
+                raise ValueError("The image file must be given!")
+            fitsimage = FitsImage(imagefile, name=basename)
         mydirection = fitsimage.direction
         myfreq = "{:.2f}GHz".format(fitsimage.reffreq.to(u.GHz).value)
 
         fluxrange = np.array(snr) * fitsimage.std
-        known_sources = source_finder(fitsimage, detection_threshold=2.5)
+        known_sources = source_finder(fitsimage, detection_threshold=5.0)
         for i in range(repeat):
             i = i + start
             if debug:
@@ -262,10 +304,12 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
             mycomplist = make_random_source(mydirection, reffreq=myfreq, 
                     # add 0.9 to aviod puting source to the edge 
                     radius=fov_scale*0.5*0.9*fitsimage.get_fov(), 
+                    wcs=fitsimage.wcs, mask=fitsimage.imagemask,
                     debug=debug, fluxrange=fluxrange, savefile=complist_file, n=n, 
+                    prune_threshold=prune_threshold,
                     sampler=np.random.uniform, sampler_params={},
                     known_sources=known_sources) 
-            add_random_sources(fitsimage=imagefile, mycomplist=mycomplist,
+            add_random_sources(fitsimage=fitsimage, mycomplist=mycomplist,
                     outdir=outdir, outname=basename_repeat, debug=debug, **kwargs)
     # adding source in uv has not been test for new scheme
     if mode == 'uv':
@@ -368,77 +412,105 @@ def gen_sim_images(mode='image', vis=None, imagefile=None, outdir='./', basename
                         # uvtaper_scale=uvtaper_scale, basename=basename_new, known_file=known_file, 
                         # inverse_image=inverse_image, fluxrange=fluxrange, debug=debug, **kwargs)
 
-def calculate_sim_images(simfolder, vis=None, baseimage=None, repeat=10, 
+def calculate_sim_images(simfolder, vis=None, baseimage_file=None, repeat=10, 
         basename=None, savefile=None, fov_scale=1.5, second_check=False,
-        detection_threshold=2.5, aperture_scale=5.0,
-        plot=False, snr_mode='peak', debug=False,
-        snr=[1,20], **kwargs):
+        detection_threshold=2.5, aperture_size=None, aperture_scale=6.0,
+        plot=False, snr_mode='peak', debug=False, overwrite=True,
+        snr=[1,20], seplimit=0.2, **kwargs):
     """simulation the completeness of source finding algorithm
 
     mode:
         peak: snr is the peak value
         integrated: snr is the integrated value
+        seplimit: in arcsec
 
     The second_check is set to false to get the completeness across the whole SNR
     """
-    baseimage = FitsImage(image_file=baseimage)
-
+    baseimage = FitsImage(baseimage_file)
+    # recalibrate the std based one the masked image
+    baseimage.imagemask = baseimage.mask_image(mask=baseimage.find_structure(sigma=3.0))
+    baseimage.imstat()
     # known_sources = source_finder(baseimage, fov_scale=fov_scale)
     if basename is None:
-        basename = os.path.basename(baseimage)
+        basename = baseimage.name
 
     # define the statistical variables
-    snr_array = np.linspace(*snr, 39)
-    # comp_table = Table([snr_array, np.zeros_like(snr_array), np.zeros_like(snr_array)], 
-                       # names=['snr_peak', 'n_missing', 'n_input']) 
-    # fake_table = Table([snr_array, np.zeros_like(snr_array), np.zeros_like(snr_array)], 
-                       # names=['snr_peak', 'n_fake', 'n_found']) 
     boosting_table = Table(names=['snr_peak','flux_input','flux_aperture','flux_gaussian'],
                      dtype=['f8', 'f8', 'f8', 'f8'])
+    comp_table = Table(names=['snr_peak', 'is_recovered'], dtype=['f8', 'int']) 
+    fake_table = Table(names=['snr_peak', 'is_fake'], dtype=['f8','int']) 
     
     for run in np.arange(repeat):
         if debug:
             print("calculating run: {}".format(run))
-        simimage_imagefile = "{basename}.run{run}.fits".format(basename=basename, run=run)
-        simimage_sourcefile = "{basename}.run{run}.txt".format(basename=basename, run=run)
-        simimage_fullpath = os.path.join(simfolder, simimage_imagefile)
-        simimage_sourcefile_fullpath = os.path.join(simfolder, simimage_sourcefile)
-        # print("simulated image:", simimage_fullpath)
-        # print("simulated sources:", simimage_sourcefile_fullpath)
-        
-        sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
-        sources_input_coords = SkyCoord(ra=sources_input['ra[deg]']*u.deg, 
-                                        dec=sources_input['dec[deg]']*u.deg)
+        try:
+        # if True:
+            simimage_imagefile = "{basename}.run{run}.fits".format(basename=basename, run=run)
+            simimage_sourcefile = "{basename}.run{run}.txt".format(basename=basename, run=run)
+            simimage_fullpath = os.path.join(simfolder, simimage_imagefile)
+            simimage_sourcefile_fullpath = os.path.join(simfolder, simimage_sourcefile)
+            # print("simulated image:", simimage_fullpath)
+            # print("simulated sources:", simimage_sourcefile_fullpath)
+            
+            sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
+            sources_input_coords = SkyCoord(ra=sources_input['ra[deg]']*u.deg, 
+                                            dec=sources_input['dec[deg]']*u.deg)
 
-        simimage = FitsImage(simimage_fullpath)
-        sources_found = source_finder(simimage, detection_threshold=detection_threshold, 
-                                      method='sep')
-        sources_found_coords = SkyCoord(ra=sources_found['ra']*u.deg, 
-                                        dec=sources_found['dec']*u.deg)
-        
-        seplimit = 1*u.arcsec # in arcsec
-        if len(sources_input) > 0:
-            if len(sources_found) > 0:
-                idx_input, idx_found, d2d, d3d = search_around_sky(sources_input_coords, 
-                                                                   sources_found_coords,
-                                                                   seplimit)
-                idx_input_comp = np.array(list(set(range(len(sources_input))) - set(idx_input)), dtype=int)
-                idx_found_comp = np.array(list(set(range(len(sources_found))) - set(idx_found)), dtype=int)
-                
-                snr_array = sources_found['peak_flux'][idx_found] / baseimage.std
-                flux_aperture, flux_aperture_err = measure_flux(simimage, 
-                                                                detections=sources_found[idx_found], 
-                                                                aperture_scale=aperture_scale,
-                                                                method='single-aperture')
-                flux_gaussian, flux_gaussian_err = measure_flux(simimage, 
-                                                                detections=sources_found[idx_found], 
-                                                                method='gaussian')
-                flux_input = sources_input['flux[Jy]'][idx_input]
-                boosting_single = Table([snr_array, flux_input, flux_aperture, flux_gaussian],
-                                    names=['snr_peak','flux_input','flux_aperture','flux_gaussian'])
-                boosting_table = vstack([boosting_table, boosting_single])
+            simimage = FitsImage(simimage_fullpath)
+            sources_found = source_finder(simimage, detection_threshold=detection_threshold, 
+                                          method='sep')
+            sources_found_coords = SkyCoord(ra=sources_found['ra']*u.deg, 
+                                            dec=sources_found['dec']*u.deg)
+            
+            if len(sources_input) > 0:
+                if len(sources_found) > 0:
+                    idx_input, idx_found, d2d, d3d = search_around_sky(sources_input_coords, 
+                                                                       sources_found_coords,
+                                                                       seplimit*u.arcsec)
+                    idx_input_comp = np.array(list(set(range(len(sources_input))) - set(idx_input)), 
+                                              dtype=int)
+                    idx_found_comp = np.array(list(set(range(len(sources_found))) - set(idx_found)), 
+                                              dtype=int)
+                    
+                    # calculate the flux boosting
+                    snr_array = sources_found['peak_flux'][idx_found] / baseimage.std
+                    flux_aperture, flux_aperture_err = measure_flux(simimage, 
+                            detections=sources_found[idx_found], 
+                            aperture_size=aperture_size,
+                            aperture_scale=aperture_scale,
+                            minimal_aperture_size=simimage.bmaj*2*3600,
+                            method='single-aperture')
+                    flux_gaussian, flux_gaussian_err = measure_flux(simimage, 
+                                                                    detections=sources_found[idx_found], 
+                                                                    method='gaussian')
+                    flux_input = sources_input['flux[Jy]'][idx_input]
+                    boosting_single = Table([snr_array, flux_input, flux_aperture, flux_gaussian],
+                                        names=['snr_peak','flux_input','flux_aperture','flux_gaussian'])
+                    boosting_table = vstack([boosting_table, boosting_single])
+                    
+                    # calculate the completeness
+                    snr_input = sources_input['flux[Jy]']/baseimage.std
+                    is_recovered = np.zeros_like(snr_input).astype(int)
+                    is_recovered[idx_input] = 1
+                    is_recovered[idx_input_comp] = 0
+                    comp_single = Table([snr_input, is_recovered], names=['snr_peak', 'is_recovered'])
+                    comp_table = vstack([comp_table, comp_single])
+
+
+                    # calculate the false detection
+                    snr_found = sources_found['peak_flux']/baseimage.std
+                    is_fake = np.zeros_like(snr_found).astype(int)
+                    is_fake[idx_found] = 0
+                    is_fake[idx_found_comp] = 1
+                    fake_single = Table([snr_found, is_fake], names=['snr_peak', 'is_fake'])
+                    fake_table = vstack([fake_table, fake_single])
+        except:
+            print('Failed in run {}'.format(run))
+            continue
     if savefile:
-        boosting_table.write(savefile, format='ascii')
+        boosting_table.write(savefile+'_boosting.dat', format='ascii', overwrite=overwrite)
+        comp_table.write(savefile+'_completeness.dat', format='ascii', overwrite=overwrite)
+        fake_table.write(savefile+'_fake.dat', format='ascii', overwrite=overwrite)
                 
     return boosting_table
 
