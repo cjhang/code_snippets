@@ -98,6 +98,7 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
                show_elevation=True, show_allobs=True, show_uv=True,
                refant='1', overwrite=True, avgtime='1e8', avgchannel='1e8',
                intents=['*BANDPASS*','*FLUX*','*PHASE*','*TARGET*'],
+               fields=None,
                **kwargs):
     """ plot the basic information of the observation.
 
@@ -189,23 +190,46 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
                spw=spw, showgui=showgui, avgchannel=avgchannel, 
                plotfile='{}/uvcoverage.png'.format(outdir),
                overwrite=overwrite)
-    for myintent in intents:
-        myintent_name = myintent[1:-1]
-        # amp change with time
-        plotms(vis=vis, intent=myintent, xaxis='time', yaxis='amp', antenna=refant,
-               avgchannel=avgchannel, spw=spw, coloraxis='spw',
-               plotfile='{}/{}_amp_time.png'.format(outdir, myintent_name), 
-               highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
-        # amplitude change with freq
-        plotms(vis=vis, intent=myintent, xaxis='freq', yaxis='amp', antenna=refant,
-               avgtime=avgtime,spw=spw, coloraxis='scan',
-               plotfile='{}/{}_amp__freq.png'.format(outdir, myintent_name), 
-               highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
-        # amp change with uvdist
-        plotms(vis=vis, intent=myintent, xaxis='uvdist', yaxis='amp', antenna=refant,
-               avgchannel=avgchannel, spw=spw, coloraxis='spw',
-               plotfile='{}/{}_amp_uvdist.png'.format(outdir, myintent_name), 
-               highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+    if fields is not None:
+        if isinstance(fields, (list, tuple)):
+            fields_list = fields
+        elif isinstance(fields, str):
+            fields_list = fields.split(',')
+        for myfield in fields:
+            # amp change with time
+            plotms(vis=vis, field=myfield, xaxis='time', yaxis='amp', antenna=refant,
+                   avgchannel=avgchannel, spw=spw, coloraxis='spw',
+                   plotfile='{}/field{}_amp_time.png'.format(outdir, myfield), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+            # amplitude change with freq
+            plotms(vis=vis, field=myfield, xaxis='freq', yaxis='amp', antenna=refant,
+                   avgtime=avgtime,spw=spw, coloraxis='scan',
+                   plotfile='{}/field{}_amp__freq.png'.format(outdir, myfield), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+            # amp change with uvdist
+            plotms(vis=vis, field=myfield, xaxis='uvdist', yaxis='amp', antenna=refant,
+                   avgchannel=avgchannel, spw=spw, coloraxis='spw',
+                   plotfile='{}/field{}_amp_uvdist.png'.format(outdir, myfield), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+    elif intents is not None:
+        for myintent in intents:
+            myintent_name = myintent[1:-1]
+            # amp change with time
+            plotms(vis=vis, intent=myintent, xaxis='time', yaxis='amp', antenna=refant,
+                   avgchannel=avgchannel, spw=spw, coloraxis='spw',
+                   plotfile='{}/{}_amp_time.png'.format(outdir, myintent_name), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+            # amplitude change with freq
+            plotms(vis=vis, intent=myintent, xaxis='freq', yaxis='amp', antenna=refant,
+                   avgtime=avgtime,spw=spw, coloraxis='scan',
+                   plotfile='{}/{}_amp__freq.png'.format(outdir, myintent_name), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+            # amp change with uvdist
+            plotms(vis=vis, intent=myintent, xaxis='uvdist', yaxis='amp', antenna=refant,
+                   avgchannel=avgchannel, spw=spw, coloraxis='spw',
+                   plotfile='{}/{}_amp_uvdist.png'.format(outdir, myintent_name), 
+                   highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
+
 
 def check_tsys(tsystable=None, spws=None, ants_subgroups=None, gridcols=2, gridrows=3,
                basename=None, basedir='./', plotdir='./plots', showgui=False,
@@ -359,14 +383,13 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected', basename=None,
             print(">> field: {}".format(field_single))
             for yx in yaxis:
                 if refant == 'all':
-                    pass
-                    # for spw_single in spw.split(','):
-                        # plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yx,
-                               # spw=spw_single, avgtime=avgtime, avgscan=False, coloraxis='corr',
-                               # ydatacolumn=ydatacolumn, showgui=showgui,
-                               # dpi = dpi, overwrite=overwrite, verbose=False,
-                               # plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
-                                        # outdir, ydatacolumn, field_single, spw_single, yx))
+                    for spw_single in spw.split(','):
+                        plotms(vis=vis, field=field_single, xaxis='frequency', yaxis=yx,
+                               spw=spw_single, avgtime=avgtime, avgscan=False, coloraxis='corr',
+                               ydatacolumn=ydatacolumn, showgui=showgui,
+                               dpi = dpi, overwrite=overwrite, verbose=False,
+                               plotfile='{}/freq_{}/field{}-spw{}-{}_vs_freq.all.png'.format(
+                                        outdir, ydatacolumn, field_single, spw_single, yx))
                 else: 
                     if refant == '':
                         iteraxis = 'antenna'
@@ -401,12 +424,11 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected', basename=None,
             for yx in yaxis:
                 # plot the general consistency of each field
                 if refant == 'all':
-                    pass
-                    # for spw_single in spw.split(','):
-                        # plotms(vis=vis, field=field_single, xaxis='time', yaxis=yx, spw=spw_single, 
-                               # avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
-                               # plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(outdir, ydatacolumn, field_single, yx),
-                               # showgui=showgui, dpi = dpi, overwrite=overwrite)
+                    for spw_single in spw.split(','):
+                        plotms(vis=vis, field=field_single, xaxis='time', yaxis=yx, spw=spw_single, 
+                               avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
+                               plotfile='{}/time_{}/field{}_{}_vs_time.png'.format(outdir, ydatacolumn, field_single, yx),
+                               showgui=showgui, dpi = dpi, overwrite=overwrite)
                 else:
                     if refant == '':
                         iteraxis = 'antenna'
@@ -570,7 +592,6 @@ def check_gain(phasecal_int='phase_int.gcal', phasecal_scan='phase_scan.gcal', a
     else:
         print("Warning: you should give the correct amp_scan calibration table! Set the amp_scan parameter")
 
-
 def check_pol_info(vis, ):
     pass
 
@@ -604,7 +625,6 @@ def check_XYfQU(vis):
            coloraxis='corr',
            showgui=True,
            plotrange=[-0.06,0.06,-0.06,0.06])
- 
 
 def check_polgain(obs_apint_pcal, polcal_field='',):
     """check the solution of amp of polarisation calibrator
@@ -619,7 +639,6 @@ def check_polgain(obs_apint_pcal, polcal_field='',):
         pass
     plotms(vis=obs_apint_pcal, xaxis='time', yaxis='amp', field=polcal_field, 
            correlation='/', coloraxis='antenna1', showgui=True)
-
 
 def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=None,
                 overwrite=True, gridrows=2, gridcols=3, dpi=600, 
