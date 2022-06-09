@@ -60,7 +60,7 @@ def pretty_output(counter):
         output += "{}[{}] ".format(item[0], item[1])
     return output
 
-def generate_timerange(time_list, intt=5.0, avgtime=None):
+def generate_timerange(time_list, intt=1.0, avgtime=None):
     """comparing the string, find the smallest time string and the largest
     
     Parameters
@@ -120,7 +120,7 @@ def generate_spw(chan_list):
                 end_chan = item_int
     return '*:' + str(start_chan) + '~' + str(end_chan)
 
-def locating_flag(logfile, n=5, vis='', intt=5.0, avgtime=None,
+def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
                   mode='stat', flagfile=None,
                   show_timerange=True, show_spw=False, debug=False,):
     """Searching flag information in logfile
