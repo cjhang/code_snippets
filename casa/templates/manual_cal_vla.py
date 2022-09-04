@@ -1,4 +1,4 @@
-# Simple manual calibration script for EVLA data
+# Simple manual calibration script for E/J-VLA data
 #
 # Author: Jianhang Chen
 # Email: cjhastro@gmail.com
@@ -14,27 +14,35 @@
 
 # reduce the size
 # split out the emission line spw
-split(vis='', outputvis='', spw='', datacolumn='data')
+vis_raw = ''
+listobs(vis_raw, listfile=os.path.basename(vis_raw)+'.listobs.txt')
+basename = '' # basename for all the following analysis: shortname for msfile, calibration tables
+msfile = basename+'.ms' 
+split(vis=vis_raw, outputvis=msfile, spw='0,1', datacolumn='data', 
+      correlation='RR,LL', field='1,3,4')
+listobs(vis=msfile, listfile=msfile+'.listobs.txt')
 
 # define the global variables
-msfile = ''
 fcal = '0'
 bcal = '0'
 gcal = '1'
-allcal = fcal +','+ bcal +','+ gcal
+calibrators = '0,1'#fcal +','+ bcal +','+ gcal
 target = '2'
 
-myspw = ''
-spw_bpphase =''        # the spw window with small variation
-myrefant = '1'      # reference antenna
-mysolint = 'int'       # integration time
-myminsnr = 3.0  # minimal snr requirement for solutions
+myspw = '0,1'
+myrefant = 'ea02'      # reference antenna
+myreffreq = '36GHz'
+myminsnr = 2.0  # minimal snr requirement for solutions
 mycalwt = False        # calculate the weight, must be false for EVLA
 
+mysolint = '10s'       # integration time
+spw4bpphase = '*:10~50' # the channls with small variation in freq
+                 # used for derive better bandpass solution 
 
-cal_antpos = False  # update the antenna position online
-cal_gceff = False
-cal_opacity = False
+cal_antpos = True  # update the antenna position online
+cal_gceff = True   # important for high frequency band
+cal_opacity = True # useful for high frequency, e.g. K, Ku, Ka, Q bands
+cal_tec = False    # important for low frequency, e.g P band 
 
 # optional
 # clearcal(vis=msfile)
@@ -46,12 +54,6 @@ try:
 except:
     plot_results = False
 
-#######################################################
-#                  Data Pre-inspection
-#######################################################
-# listobs
-default(listobs)
-listobs(vis=msfile, listfile=msfile+'.listobs.txt')
 
 #######################################################
 #                  Prior Flagging
@@ -61,19 +63,25 @@ flagdata(vis=msfile, autocorr=True, flagbackup=False)
 flagdata(vis=msfile, mode='shadow', flagbackup=False)
 #> remove zero data
 flagdata(vis=msfile, mode='clip', clipzeros=True, flagbackup=False)
+#flagdata(vis=msfile, intent='*POINTING*,*FOCUS*,*ATMOSPHERE*,*SIDEBAND_RATIO*, *UNKNOWN*, *SYSTEM_CONFIGURATION*, *UNSPECIFIED#UNSPECIFIED*')
 #> remove the first 5s and the end 5s data (optional, see the amp_vs_time)
-# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
-# flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='endb', flagbackup=False)
+flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
+flagdata(vis=msfile, mode='quack', quackinterval=2.0, quackmode='endb', flagbackup=False)
 #> remove edge channels, 5% channels can be enough
-# flagdata(vis=msfile, mode='manual', spw='*:0~100;900~1000',flagbackup=False)
+flagdata(vis=msfile, mode='manual', spw='*:0~3;60~63',flagbackup=False)
 #> saving prior flags 
 flagmanager(vis=msfile, mode='save', versionname='Prior')
 
 if plot_results:
-    plot_utils.check_info(vis=msfile, spw='', bcal_field=bcal, gcal_field=gcal, target_field=target, refant=myrefant, plotdir='plots/Prior')
+    # to get general info about the quality of the data (only calibrators)
+    plot_utils.check_info(vis=msfile, spw=myspw, refant=myrefant,
+                          show_fields=True, fields=calibrators, plotdir='plots/rawdata_info')
+    # check the staibility of baselines with freq and time, useful to setup the spw4bpphase and solint 
+    plot_utils.check_cal(vis=msfile, refant=myrefant, ydatacolumn='data', 
+                         field=calibrators, spw=myspw, plotdir='plots/rawdata_refant')
 
-
-if False: #tfcrop RFI flagging
+#tfcrop RFI flagging, 
+if False:
     pass
     #>> Testing
     flagdata(vis='vis', mode='tfcrop', spw='0', datacolumn='data', 
@@ -87,16 +95,18 @@ if False: #tfcrop RFI flagging
          timedevscale=5.0, freqdevscale=5.0, flagbackup=False)
     flagmanager(vis=msfile, mode='save', versionname='AfterTFcrop')
 
+## Additional manual flagging
 if True:
-    pass
-    ## Additional manual flagging
-    try:
+    # flagdata(vis=msfile, mode='manual', antenna='ea04', correlation='RR', flagbackup=False)
+    try: # another way to make flagging
         execfile('flag.py')
     except:
         pass
-
-    # flagmanager(vis=msfile, mode='save', versionname='ManualFlag')
-
+    flagmanager(vis=msfile, mode='save', versionname='ManualFlag')
+    plot_utils.check_cal(vis=msfile, refant=myrefant, ydatacolumn='data', 
+                         field=calibrators, spw=myspw, plotdir='plots/rawdata_refant_flagged')
+    plot_utils.check_cal(vis=msfile, refant='', ydatacolumn='data', yaxis=['amplitude'],
+                         field=calibrators, spw=myspw, plotdir='plots/rawdata_antenna_flagged')
 
 #######################################################
 #                  Prior Calibration
@@ -107,35 +117,54 @@ prior_calfield = []
 ##Atenna Poistion
 if cal_antpos:
     # Correction for antenna position, automatic fetch from online database
-    os.system('rm -rf antpos.cal')
-    gencal(vis=msfile, caltable='antpos.cal', caltype='antpos', antenna='')
-    if os.path.isdir('antpos.cal')
-        prior_caltable.append('antpos.cal')
+    antpos_cal = f'{basename}_antpos.cal'
+    rmtables(antpos_cal)
+    gencal(vis=msfile, caltable=antpos_cal, caltype='antpos', antenna='')
+    if os.path.isdir(antpos_cal):
+        prior_caltable.append(antpos_cal)
         prior_calfield.append('')
 
-## Antenna efficiency and Gain curve (VLA only)
+## Antenna efficiency and Gain curve
 if cal_gceff:
-    os.system('rm -rf gaincurve.cal')
-    gencal(vis=msfile, caltable='gaincurve.cal', caltype='gceff')
-    prior_caltable.append('gaincurve.cal')
+    gceff_cal = f'{basename}_gaincurve.cal'
+    rmtables(gceff_cal)
+    gencal(vis=msfile, caltable=gceff_cal, caltype='gceff')
+    prior_caltable.append(gceff_cal)
     prior_calfield.append('')
 
-### Opacity correction 
+## delay due to Total Electron Content (TEC), inversely proportional to the square of the frequency
+## important for low-frequency p band observation, it needs data from IGS website
+if cal_tec:
+    from recipes import tec_maps
+    tec_image, tec_rms_image, plotname = tec_maps.create(vis='3C129_pband.ms', doplot=True)
+    #NOTE: If you are using CASA 5.0.0, or earlier only tec_image, tec_rms_image will be returned
+    tec_cal = f'{basename}_tec.cal'
+    gencal(vis=msfile, caltable=tec_cal, caltype='tecim', infile=tec_image)
+    prior_caltable.append(tec_cal)
+    prior_calfield.append('')
+
+## Opacity correction 
 ##> only for high frequency (e.g., Ku, K, Ka, and Q band)
 if cal_opacity:
     myTau = plotweather(vis=msfile, doPlot=True) #it will generate the weather plot
-    gencal(vis=msfile, caltable='opacity.cal', caltype='opac', parameter=myTau)
-    prior_caltable.append('opacity.cal')
+    
+    opacity_cal = f'{basename}_opacity.cal'
+    rmtables(opacity_cal)
+    gencal(vis=msfile, caltable=opacity_cal, caltype='opac', parameter=myTau, spw=myspw)
+    prior_caltable.append(opacity_cal)
     prior_calfield.append('')
+
 # Apply the Prior calibration if there are
-for cal_field in allcal.split(','):
+for cal_field in calibrators.split(','):
     applycal(vis=msfile, field=cal_field,
          gaintable=prior_caltable,
          gainfield=prior_calfield,  
-         calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
+         calwt=mycalwt, flagbackup=False)
 # split out the data after prior calibration
-msfile2 = os.path.basename(msfile)[:-3]+'.afterprior.ms'
-split(vis=msfile, outputvis=msfile2)
+basename_aprior = basename+'.aprior'
+msfile_aprior = basename_aprior + '.ms'
+rmtables(msfile_aprior)
+split(vis=msfile, outputvis=msfile_aprior)
 
 
 #######################################################
@@ -146,7 +175,7 @@ split(vis=msfile, outputvis=msfile2)
 ##> list all the avaible model
 # setjy(vis=msfile ,listmodels=True)
 # for resolved calibrators, one should specify the model
-setjy(vis=msfile2, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
+setjy(vis=msfile_aprior, field=fcal, spw=myspw, scalebychan=True, )#model='3C286_K.im', reffreq=myreffreq)
 
 
 #######################################################
@@ -155,71 +184,72 @@ setjy(vis=msfile2, field=fcal) #, spw='0',scalebychan=True, model='3C286_L.im')
 print("\n==============> Start Calibration <=============\n")
 print("\n==============> Generating Bandpass Calibration <=============\n")
 # delay calibration
-os.system('rm -rf delays.cal')
-gaincal(vis=msfile2, caltable='delays.cal', field=bcal, refant=myrefant, 
+delays_cal = f'{basename_aprior}_delays.gcal'
+rmtables(delays_cal)
+gaincal(vis=msfile_aprior, caltable=delays_cal, field=bcal, refant=myrefant, 
         gaintype='K', solint='inf', combine='scan', minsnr=myminsnr, 
         gaintable='')
 
 # integration bandpass calibration
-os.system('rm -rf bpphase.gcal')
-default(gaincal)
-gaincal(vis=msfile2, caltable="bpphase.gcal", field=bcal, spw=spw_bpphase, 
+bpphase_gcal = f'{basename_aprior}_bpphase.gcal'
+rmtables('bpphase.gcal')
+gaincal(vis=msfile_aprior, caltable=bpphase_gcal, field=bcal, spw=spw4bpphase, 
         solint=mysolint, refant=myrefant, minsnr=myminsnr, gaintype='G', calmode="p",
-        gaintable='delays.cal')
+        gaintable=delays_cal)
 
 # bandpass calinration
-os.system('rm -rf bandpass.bcal')
-default(bandpass)
-bandpass(vis=msfile2, caltable='bandpass.bcal', field=bcal, spw='', refant=myrefant, 
+bandpass_bcal = f'{basename_aprior}_bandpass.bcal'
+rmtables(bandpass_bcal)
+bandpass(vis=msfile_aprior, caltable=bandpass_bcal, field=bcal, spw=myspw, refant=myrefant, 
          combine='scan', solint='inf', bandtype='B', minsnr=myminsnr,
-         gaintable=['bpphase.gcal','delays.cal'])
+         gaintable=[delays_cal, bpphase_gcal])
 
 # testing the bandpass calibration, applying the calibration to bandpass calibrator
-# applycal(vis=msfile2, field=bcal, calwt=False,
-        # gaintable=['gaincurve.cal', 'delays.cal', 'bandpass.bcal'],
+# applycal(vis=msfile_aprior, field=bcal, calwt=False,
+        # gaintable=[gaincurve_cal, delays_cal, bandpass_bcal],
         # gainfield=['' ,bcal, bcal])
 
 
 print("\n==============> Generating Gain Calibration <=============\n")
 # phase calibration for quick time variation
-os.system('rm -rf phase_int.gcal')
-default(gaincal)
-gaincal(vis=msfile2, caltable='phase_int.gcal', field=allcal, refant=myrefant, 
-        calmode='p', solint=mysolint, minsnr=myminsnr, spw='',
-        gaintable=['bandpass.bcal','delays.cal'])
+phase_int_gcal = f'{basename_aprior}_phase_int.gcal'
+rmtables(phase_int_gcal)
+gaincal(vis=msfile_aprior, caltable=phase_int_gcal, field=calibrators, refant=myrefant, 
+        calmode='p', solint=mysolint, minsnr=myminsnr, spw=myspw,
+        gaintable=[delays_cal, bandpass_bcal])
 
 # phase calibration for long time variation
-os.system('rm -rf phase_scan.gcal')
-default(gaincal)
-gaincal(vis=msfile2, caltable='phase_scan.gcal', field=allcal, refant=myrefant, 
-        calmode='p', solint='inf', minsnr=myminsnr, spw='',
-        gaintable=['bandpass.bcal', 'delays.cal'])
+phase_scan_gcal = f'{basename_aprior}_phase_scan.gcal'
+rmtables(phase_scan_gcal)
+gaincal(vis=msfile_aprior, caltable=phase_scan_gcal, field=calibrators, refant=myrefant, 
+        calmode='p', solint='inf', minsnr=myminsnr, spw=myspw,
+        gaintable=[delays_cal, bandpass_bcal])
 
 # amplitude calibration
-os.system('rm -rf amp_scan.gcal')
-default(gaincal)
-gaincal(vis=msfile2, caltable='amp_scan.gcal', field=allcal, refant=myrefant, 
-        calmode='ap', solint='inf', minsnr=myminsnr, spw='',
-        gaintable=['bandpass.bcal','phase_int.gcal', 'delays.cal'])
+amp_scan_gcal = f'{basename_aprior}_amp_scan.gcal'
+rmtables(amp_scan_gcal)
+gaincal(vis=msfile_aprior, caltable=amp_scan_gcal, field=calibrators, refant=myrefant, 
+        calmode='ap', solint='inf', minsnr=myminsnr, spw=myspw,
+        gaintable=[delays_cal, bandpass_bcal, phase_int_gcal])
 
 # fluxscale
-os.system('rm -rf flux.cal')
-default(fluxscale)
-myscale = fluxscale(vis=msfile2, caltable='amp_scan.gcal', fluxtable='flux.cal',
+flux_cal = f'{basename_aprior}_flux.cal'
+rmtables(flux_cal)
+myscale = fluxscale(vis=msfile_aprior, caltable=amp_scan_gcal, fluxtable=flux_cal,
                     reference=fcal, incremental=True)
-print(myscale)
+with open(f'{basename_aprior}_flux.txt','w+') as fp:
+    print(myscale, file=fp)
 
 
 print("\n==============> Applying the Calibration <=============\n")
 # Applying the caltable to the calibrators
-default(applycal)
-for cal_field in allcal.split(','):
-    applycal(vis=msfile2, field=cal_field,
-         gaintable=['delays.cal', 'bandpass.bcal', 'phase_int.gcal', 
-                    'amp_scan.gcal', 'flux.cal'],
+for cal_field in calibrators.split(','):
+    applycal(vis=msfile_aprior, field=cal_field,
+         gaintable=[delays_cal, bandpass_bcal, phase_int_gcal, 
+                    amp_scan_gcal, flux_cal],
          gainfield=[bcal, bcal, cal_field, cal_field, cal_field],  
          # interp = ['nearest', '', '', ''],
-         calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
+         calwt=mycalwt, flagbackup=False)
 
 if False: # RFI flagging by rflag
     pass
@@ -230,27 +260,51 @@ if False: # RFI flagging by rflag
              display='both', timedevscale=5.0, freqdevscale=5.0, 
              flagbackup=False)
     #>> Applying, run after applying the calibration
-    flagdata(vis=msfile2, mode='rflag', spw='', field=allcal, scan='', 
+    flagdata(vis=msfile_aprior, mode='rflag', spw='', field=calibrators, scan='', 
              datacolumn='corrected', action='apply', display='none',
              ntime='scan', combinescans=False,
              timedevscale=5.0, freqdevscale=3.0, flagbackup=False)
-    flagmanager(vis=msfile2, mode='save', versionname='AfterRflag')
+    flagmanager(vis=msfile_aprior, mode='save', versionname='AfterRflag')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile2, spw='', field='0,1', refant='', plotdir='plots/antenna_cal')
-    plot_utils.check_cal(vis=msfile2, spw='', field='0,1', refant='all', plotdir='plots/all_cal')
+    plot_utils.check_cal(vis=msfile_aprior, spw=myspw, field=calibrators, refant='', plotdir='plots/antenna_cal')
+    plot_utils.check_cal(vis=msfile_aprior, spw=myspw, field=calibrators, refant='all', plotdir='plots/all_cal')
 
 # apply the caltable to the target
-default(applycal)
-applycal(vis=msfile2, field=target,
-         gaintable=['delays.cal', 'bandpass.bcal', 'phase_scan.gcal', 
-                    'amp_scan.gcal','flux.cal'],
+applycal(vis=msfile_aprior, field=target,
+         gaintable=[delays_cal, bandpass_bcal, phase_scan_gcal, 
+                    amp_scan_gcal,flux_cal],
          gainfield=[bcal, bcal, gcal, gcal, gcal],  
          # interp = ['nearest', '', '', ''],
          calwt=mycalwt, applymode='calflagstrict', flagbackup=False)
 
-flagmanager(vis=msfile2, mode='save', versionname='AfterApplycal')
+flagmanager(vis=msfile_aprior, mode='save', versionname='AfterApplycal')
+
+
+# flag the science target
+if False:
+    flagmanager(vis=msfile_aprior, mode='save', versionname='TargetManualFlag')
 
 if plot_results:
-    plot_utils.check_cal(vis=msfile2, spw='', refant='all', field='2', plotdir='plots/target')
+    plot_utils.check_cal(vis=msfile_aprior, spw=myspw, refant=myrefant, yaxis=['amplitude'], field=target, plotdir='plots/target_refant')
+    plot_utils.check_cal(vis=msfile_aprior, spw=myspw, refant='', yaxis=['amplitude'], field=target, plotdir='plots/target_antenna')
+    plot_utils.check_cal(vis=msfile_aprior, spw=myspw, refant='all', yaxis=['amplitude'], field=target, plotdir='plots/target_all')
+
+msfile_target = f'{basename}_target.ms'
+rmtables(msfile_target)
+split(vis=msfile_aprior, field=target, outputvis=msfile_target, datacolumn='corrected')
+
+
+# simple code for quick imaging
+# FoV = 42'/f ; f in GHz
+cell = '0.4arcsec' # FoV/n : D = 4, A:B:C:D=3:1
+imsize = 150 
+for field in calibrators.split(','):
+    tclean(vis=msfile_aprior, field=field,
+           imagename=f'images/{basename}_field{field}',
+           cell=cell, imsize=imsize, niter=100)
+tclean(vis=msfile_target, imagename=f'images/{basename}_target_calibrated', datacolumn='data',
+       cell=cell, imsize=imsize, specmode='cube', 
+       restfreq=myreffreq,
+       start='35.94GHz', width='4MHz', nchan=40, niter=10)
 
