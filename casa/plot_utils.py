@@ -551,7 +551,21 @@ def check_gain(gaintable=None, plot_phase=True, plot_amp=False,
     else:
         print("Warning: you should give the correct gain table!")
 
-def check_pol_info(vis, ):
+
+## plot functions for full-polarisation calibration
+
+def check_pol_info(vis, field='', spw='', show_parangle=True, dpi=400, plotdir='./plots/polcal'):
+    """give a first impression on the data
+    """
+    # check amp vs parallel angle range, minimal requirement for ALMA is 60deg
+    if show_parangle:
+        plotms(vis=vis, field=field, spw=spw, xaxis='parang', yaxis='amp', 
+               correlation='XX,YY', ydatacolumn=thedatacol, showgui=False,
+               averagedata=True, avgchannel='1e6', avgbaseline=True, coloraxis='corr',
+               plotfile=mymsname+".amp-vs-pa.spw"+str(myspw)+".png"
+               plotfile='{}/parangle_field{}_spw{}.png'.format(plotdir, yaxis, field, spw),
+               dpi=dpi, highres=True, overwrite=True)
+    
     pass
 
 def check_pol_kcross(vis):
