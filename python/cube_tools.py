@@ -3,10 +3,9 @@
 
 Author: Jianhang Chen, cjhastro@gmail.com
 History:
-    2022-08-11: first release to handle spectrum of ALMACAL data
+    2022-02-16: first release to handle the datacube from ALMA
 
 Example:
-
         from cube_tools import read_fitscube_ALMA
         dc = read_fitscube_ALMA('test_data/alma_datacube_AR2623.image.fits')
         dc.chandata_in('km/s', reffreq=98.5*u.GHz)
@@ -26,6 +25,7 @@ Todo:
 import os
 import sys
 import re
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import astropy
@@ -37,7 +37,12 @@ from astropy.table import Table
 
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
+from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 import astropy.coordinates as coordinates
+
+# Filtering warnings
+from astropy.wcs import FITSFixedWarning
+warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 
 from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
 from astropy.modeling import models, fitting
@@ -48,7 +53,7 @@ class Cube(object):
     def __init__(self, data=None, header=None, wcs=None, chandata=None, beams=None):
         """initialize the cube
 
-        Params:
+        Args:
             data: the 3D data with units (equivalent to Jy)
             header: the header can be identified by WCS
             wcs: it can be an alternative to the header
@@ -75,6 +80,11 @@ class Cube(object):
     def __getitem__(self, i):
             return self.data[i]
     @property
+    def info(self):
+        # the shortcut to print basic info
+        print(f"The shape of the data: {self.data.shape}")
+        print(f"The median beams: {np.median(self.beams, axis=0)}")
+    @property
     def ndim(self):
         return np.ndim(self.data)
     @property
@@ -86,6 +96,9 @@ class Cube(object):
     def nchan(self):
         try: return self.data.shape[-3]
         except: return None
+    @property
+    def dchan(self):
+        return calculate_diff(self.chandata)
     @property
     def nstokes(self):
         try: return self.data.shape[-4]
@@ -103,7 +116,17 @@ class Cube(object):
         # because wcs.slice with change the reference channel, the generated ndarray should start with 1 
         self.chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * self.header['CDELT3']
                          )*u.Unit(self.header['CUNIT3'])
+    def pixel2skycoords(self, pixel_coords):
+        """covert from pixel to skycoords
 
+        Args:
+            pixel_coords: pixel coordinates, in the format of [[x1,y1], [x2,y2],...]
+        """
+        pixel_coords = np.array(pixel_coords).T
+        return pixel_to_skycoord(*pixel_coords, self.wcs)
+    def skycoords2pixels(self, skycoords):
+        return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
+ 
     def convert_chandata(self, unit_out, refwave=None, reffreq=None):
         """convert the units of the specdata 
         """
@@ -120,6 +143,8 @@ class Cube(object):
                          sky_aperture=None, plot=False, ax=None):
         """extract 1D spectrum from the datacube
     
+        Args:
+            pixel_coord (list): the pixel coordinate [x, y]
         """
         datashape = self.data.shape
         # make cutout image and calculate aperture
@@ -156,7 +181,7 @@ class Cube(object):
     def collapse_cube(self, chans='', return_header=False):
         """collapse the cube to make one channel image
 
-        Params:
+        Args:
             chans (str): follow the format of casa, like "20~30;45~90"
 
         Return:
@@ -181,6 +206,29 @@ class Cube(object):
         collapsed_header = self.wcs.sub(['longitude','latitude']).to_header()
         return [collapsed_image, collapsed_header, collapsed_beam]
     
+    def subcube(self, s_):
+        """extract the subsection of the datacube
+
+        Args:
+            s_ (object:slice): the slice object, should be four dimension
+
+        Return:
+            Cube
+        """
+        data_sliced = self.data[s_].copy() # force to use new memory
+        wcs_sliced = self.wcs[s_]
+        shape_sliced = data_sliced.shape
+        header_sliced = wcs_sliced.to_header()
+        header_sliced.set('NAXIS',len(shape_sliced))
+        header_sliced.set('NAXIS1',shape_sliced[3])
+        header_sliced.set('NAXIS2',shape_sliced[2])
+        header_sliced.set('NAXIS3',shape_sliced[1])
+        header_sliced.set('NAXIS4',shape_sliced[0])
+        if self.beams is not None:
+            beams_sliced = self.beams[s_[1]]
+        else: 
+            beams_sliced = None
+        return Cube(data=data_sliced, header=header_sliced, beams=beams_sliced)
 
     def writefits(self, filename, overwrite=False):
         """write datacube into fitsfile
@@ -212,7 +260,7 @@ class Cube(object):
                 print('Warning: automatically shifted the channel reference.')
         except: pass
         header.set('BUNIT', self.data.unit.to_string())
-        header.update({'history':'cleaned by cube_tools.Cube',})
+        header.update({'history':'created by cube_tools.Cube',})
         hdu_list = []
         hdu_list.append(fits.PrimaryHDU(data=self.data.value, header=header))
         if self.beams is not None:
@@ -223,31 +271,6 @@ class Cube(object):
             hdu_list.append(fits.BinTableHDU.from_columns([c1,c2,c3], name='BEAMS'))
         hdus = fits.HDUList(hdu_list)
         hdus.writeto(filename, overwrite=overwrite)
-
-    def subcube(self, s_):
-        """extract the subsection of the datacube
-
-        Params:
-            s (object:slice): the slice object, should be four dimension
-
-        ultimate goal is to seperate different source
-        should return another Cube with valid wcs, header and beams
-        """
-        data_sliced = self.data[s_]
-        wcs_sliced = self.wcs[s_]
-        shape_sliced = data_sliced.shape
-        header_sliced = wcs_sliced.to_header()
-        header_sliced.set('NAXIS',len(shape_sliced))
-        header_sliced.set('NAXIS1',shape_sliced[3])
-        header_sliced.set('NAXIS2',shape_sliced[2])
-        header_sliced.set('NAXIS3',shape_sliced[1])
-        header_sliced.set('NAXIS4',shape_sliced[0])
-        if self.beams is not None:
-            beams_sliced = self.beams[s_[1]]
-        else: 
-            beams_sliced = None
-        return Cube(data=data_sliced, header=header_sliced, beams=beams_sliced)
-
     def auto_measure(self):
         """designed for subcube
 
@@ -265,7 +288,9 @@ class Cube(object):
                 print(cube_hdu.info())
             cube_header = cube_hdu['primary'].header
             cube_data = cube_hdu['primary'].data
-            try: cube_beams = cube_hdu['beams'].data
+            try:
+                beams_data = cube_hdu['beams'].data
+                cube_beams = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
             except: cube_beams = None
         return Cube(data=cube_data, header=cube_header, beams=cube_beams)
 
@@ -277,28 +302,30 @@ class Spectrum(object):
         """
         self.specchan = specchan
         self.specdata = specdata
-
-    def velocity(self, reffreq=None, refwave=None):
-        return convert_spec(self.specchan, 'km/s', refwave=refwave, reffreq=reffreq)
+        self.specvel = None
 
     def to_restframe(self, z=0, restfreq=None):
         self.restfreq = convert_spec(self.specchan, 'GHz', reffreq=restfreq)
         self.restwave = convert_spec(self.restfreq, 'um')
 
-    def fit_gaussian(self, reffreq=None, refwave=None, plot=False, ax=None):
+    def velocity(self, reffreq=None, refwave=None):
+        return convert_spec(self.specchan, 'km/s', refwave=refwave, reffreq=reffreq)
+
+    def to_velocity(self, reffreq=None, refwave=None):
+        self.specvel = self.velocity(reffreq=reffreq, refwave=refwave)
+
+    def fit_gaussian(self, plot=False, ax=None):
         """fitting the single gaussian to the spectrum
         """
         fit_p = fitting.LevMarLSQFitter()
-        if (reffreq is not None) or (refwave is not None):
-            specvel = self.velocity(reffreq=reffreq, refwave=refwave)
+        if self.specvel is not None:
             p_init = models.Gaussian1D(amplitude=np.max(self.specdata), mean=0*u.km/u.s, 
                                        stddev=50*u.km/u.s)
                     # bounds={"mean":np.array([-1000,1000])*u.km/u.s, 
                             # "stddev":np.array([0., 1000])*u.km/u.s,})
-            p = fit_p(p_init, specvel, self.specdata)
-            specfit = p(specvel)
+            p = fit_p(p_init, self.specvel, self.specdata)
+            specfit = p(self.specvel)
         else:
-            specvel = None
             p_init = models.Gaussian1D(amplitude=np.max(self.specdata), mean=np.mean(self.specchan), 
                                        stddev=5*np.median(np.diff(self.specchan)))
             p = fit_p(p_init, self.specchan, self.specdata)
@@ -307,9 +334,9 @@ class Spectrum(object):
             if ax is None:
                 fig = plt.figure(figsize=(7,6))
                 ax = fig.add_subplot(111)
-            if specvel is not None:
-                ax.step(specvel, self.specdata, label='data')
-                ax.plot(specvel, specfit, label='mode')
+            if self.specvel is not None:
+                ax.step(self.specvel, self.specdata, label='data')
+                ax.plot(self.specvel, specfit, label='mode')
             else:
                 ax.step(self.specchan, self.specdata, label='data')
                 ax.plot(self.specchan, specfit, label='mode')
@@ -329,7 +356,7 @@ def read_fitscube_ALMA(fitscube, pbcor=False, debug=False,):
         if debug:
             print(cube_hdu.info())
         cube_header = cube_hdu['primary'].header
-        cube_data = cube_hdu['primary'].data
+        cube_data = cube_hdu['primary'].data * u.Unit(cube_header['BUNIT'])
         cube_beams = cube_hdu['beams'].data
     cube_shape = cube_data.shape
     imagesize = cube_shape[-2:]
@@ -347,15 +374,14 @@ def read_fitscube_ALMA(fitscube, pbcor=False, debug=False,):
     beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
 
     # convert the units
-    cube_data = cube_data / beamsize[:,None,None] * u.Jy
+    cube_data = cube_data / beamsize[:,None,None]
 
     return Cube(data=cube_data, header=cube_header, beams=cube_beams)
-
 
 def calculate_beamsize(beams, debug=False):
     """quick function to calculate the beams size
     
-    Params:
+    Args:
         beams (list, ndarray): it can be one dimension [bmaj, bmin, bpa] or two dimension, like [[bmaj,bmin,bpa],[bmaj,bmin,bpa],]
     """
     ndim = np.ndim(beams)
@@ -366,11 +392,10 @@ def calculate_beamsize(beams, debug=False):
     if ndim == 2:
         return 1/(np.log(2)*4.0) * np.pi * beams[:,0] * beams[:,1]
 
-
 def convert_spec(spec_in, unit_out, reffreq=None, refwave=None, mode='radio'):
     """convert the different spectral axis
 
-    Params:
+    Args:
         spec_in (astropy.Quantity): any valid spectral data with units
         unit_out (str or astropy.Unit): valid units for output spectral axis
         reffreq: reference frequency, with units
@@ -429,10 +454,14 @@ def calculate_diff(v):
 def integrate_spectrum(x, y):
     """calculate the area covered by the spectrum
 
-    Params:
+    Args:
         x (ndarray): the x axis of the curve, with units
         y (ndarray): the y axis of the curve, with units
     """
     return np.sum(calculate_diff(x)*y)
 
+def correct_pb(fitsfile, pbcorfile=None, pbfile=None, ):
+    """A helper function to derive the primary beam correction
+    """
+    pass
 
