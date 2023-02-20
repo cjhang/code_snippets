@@ -71,6 +71,11 @@ class Image(object):
         # shortcut for print all the basic info
         print(f"The shape of the data {self.data.shape}")
     @property
+    def unit(self):
+        if isinstance(self.data, u.Quantity):
+            return self.data.unit
+        else: return None
+    @property
     def imagesize(self):
         # the imagesize is in [ysize, xsize]
         try: return self.data.shape[-2:]
@@ -104,7 +109,6 @@ class Image(object):
         bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
                              + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
         return [bmaj_pixel, bmin_pixel, bpa]
-
 
     def update_wcs(self, wcs=None):
         if wcs is not None:
@@ -142,6 +146,7 @@ class Image(object):
         """
         pixel_coords = np.array(pixel_coords).T
         return pixel_to_skycoord(*pixel_coords, self.wcs)
+
     def skycoords2pixels(self, skycoords):
         return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
     
@@ -160,7 +165,7 @@ class Image(object):
              show_rms=False, show_flux=True, show_sky_sources=[], show_pixel_sources=[],
              show_detections=False, detections=None, aperture_scale=6.0, aperture_size=None, 
              show_detections_yoffset='-1x', show_detections_color='white', fontsize=12, 
-             figname=None, **kwargs):
+             figname=None, show_colorbar=True, **kwargs):
         """general plot function build on FitsImage
 
         Args:
@@ -174,7 +179,9 @@ class Image(object):
         if name is None:
             name = self.name
         if image is None:
-            image = self.image.value
+            if isinstance(self.image, u.Quantity):
+                image = self.image.value
+            else: image = self.image
         ax.set_title(name)
         ny, nx = self.imagesize
         x_index = (np.arange(0, nx) - nx/2.0) * self.pixel_sizes[0].value # to arcsec
@@ -184,24 +191,31 @@ class Image(object):
         #ax.pcolormesh(x_map, y_map, data_masked)
         extent = [np.max(x_index), np.min(x_index), np.min(y_index), np.max(y_index)]
         if self.std is not None:
-            vmax = vmax * self.std.value
-            vmin = vmin * self.std.value
-        ax.imshow(image, origin='lower', extent=extent, interpolation='none', 
-                  vmax=vmax, vmin=vmin, **kwargs)
+            if self.unit is not None:
+                vmax = vmax * self.std.value
+                vmin = vmin * self.std.value
+            else:
+                vmax = vmax * self.std
+                vmin = vmin * self.std
+        im = ax.imshow(image, origin='lower', extent=extent, interpolation='none', 
+                       vmax=vmax, vmin=vmin, **kwargs)
         # ax.invert_xaxis()
+        if show_colorbar:
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         if show_center:
             ax.text(0, 0, '+', color='r', fontsize=24, fontweight=100, horizontalalignment='center',
                     verticalalignment='center')
         if not show_axis:
             ax.axis('off')
         if show_fwhm:
-            # fits image angle start with north, go anti-color wise if the angle is positive
-            # pyplot ellipse, angle is start with long axis and goes to the negative direction of x
-            ellipse = patches.Ellipse((0.8*np.max(x_index), 0.8*np.min(y_index)), 
-                                  width=self.beam[1], height=self.beam[0], # put bmaj axis in north
-                                  angle=-self.beam[-1], #angle=self.bpa, 
-                                  facecolor='orange', edgecolor=None, alpha=0.8)
-            ax.add_patch(ellipse)
+            if self.beam is not None:
+                # fits image angle start with north, go anti-color wise if the angle is positive
+                # pyplot ellipse, angle is start with long axis and goes to the negative direction of x
+                ellipse = patches.Ellipse((0.8*np.max(x_index), 0.8*np.min(y_index)), 
+                                      width=self.beam[1], height=self.beam[0], # put bmaj axis in north
+                                      angle=-self.beam[-1], #angle=self.bpa, 
+                                      facecolor='orange', edgecolor=None, alpha=0.8)
+                ax.add_patch(ellipse)
         if False: # another way to show the beam size with photutils EllipticalAperture
             aper = EllipticalAperture((0.8*np.max(x_index), 0.8*np.min(y_index)), 
                                       0.5*self.bmin*3600, 0.5*self.bmaj*3600, # put bmaj axis in north
@@ -381,6 +395,9 @@ class Image(object):
         imagehdu = fits.PrimaryHDU(data=self.data.value, header=header)
         imagehdu.writeto(filename, overwrite=overwrite)
 
+    def correct_pb(self, pbfile, pbcorfile):
+        pass
+
     @staticmethod
     def read(fitsimage, name=None, debug=False):
         """read the fits file
@@ -396,11 +413,12 @@ class Image(object):
             except: 
                 image_beam = None
         if image_beam is not None:
-            pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
-            pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT1']).to(u.arcsec))       
-            pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
-            beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
-            image_data = image_data / beamsize * u.beam
+            if '/beam' in image_header['BUNIT']:
+                pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
+                pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
+                pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
+                beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
+                image_data = image_data / beamsize * u.beam
         if name is None:
             name = os.path.basename(fitsimage)
         return Image(data=image_data, header=image_header, beam=image_beam, name=name)
@@ -463,8 +481,6 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
         plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
         ax[2].set_title("Residual")
     return dict_return
-
-
 
 def source_finder(image=None, std=None, mask=None, 
                   beam=None, aperture_scale=6.0, 
@@ -845,5 +861,20 @@ def read_array(datafile):
     """
     return Table.read(datafile, format='ascii')
                 
-
+def solve_impb(datafile, pbfile=None, pbcorfile=None, pixel_coords=None, sky_coords=None,):
+    """This function derive the primary correction
+    """
+    with fits.open(datafile) as hdu:
+        data = hdu[0].data
+        header = hdu[0].header
+    if pbfile is not None:
+        with fits.open(pbfile) as hdu:
+            pbdata = hdu[0].data
+    elif pbcorfile is not None:
+        with fits.open(pbcorfile) as hdu:
+            pbcordata = hdu[0].data
+            pbdata = data / pbcordata
+    else:
+        raise ValueError("No valid primary beam information has been provided!")
+    return Image(data=pbdata, header=header, name='pb')
 

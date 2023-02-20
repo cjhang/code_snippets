@@ -50,7 +50,7 @@ from astropy.modeling import models, fitting
 class Cube(object):
     """The base data strcuture to handle 3D astronomy data
     """
-    def __init__(self, data=None, header=None, wcs=None, chandata=None, beams=None):
+    def __init__(self, data=None, header=None, wcs=None, chandata=None, beams=None, name=None):
         """initialize the cube
 
         Args:
@@ -67,6 +67,7 @@ class Cube(object):
         self.wcs = wcs
         self.chandata = chandata
         self.beams = beams
+        self.name = name
         if self.header is not None:
             if self.wcs is None:
                 self.update_wcs()
@@ -178,7 +179,8 @@ class Cube(object):
             ax_top.step(np.arange(self.nchan), spectrum, where='mid', alpha=0)
         return Spectrum(specchan=self.chandata, specdata=spectrum)
 
-    def collapse_cube(self, chans='', return_header=False):
+    def collapse_cube(self, chans='', chanunit=None, return_header=False, 
+                      reffreq=None, refwave=None):
         """collapse the cube to make one channel image
 
         Args:
@@ -199,6 +201,8 @@ class Cube(object):
         for chan_range in chan_ranges:
             # casa includes the last channel with the chan selection rules
             selected_indices.append(list(range(chan_range[0], chan_range[1]+1))) 
+        if chanunit is not None:
+            self.convert_chandata(chanunit, reffreq=reffreq, refwave=refwave)
         selected_indices = [item for sublist in selected_indices for item in sublist]
         dchan_selected = calculate_diff(self.chandata)[selected_indices]
         collapsed_image = np.sum(data[selected_indices] * dchan_selected[:,None,None], axis=0)
@@ -287,11 +291,19 @@ class Cube(object):
             if debug:
                 print(cube_hdu.info())
             cube_header = cube_hdu['primary'].header
-            cube_data = cube_hdu['primary'].data
+            cube_data = cube_hdu['primary'].data * u.Unit(cube_header['BUNIT'])
             try:
                 beams_data = cube_hdu['beams'].data
                 cube_beams = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
             except: cube_beams = None
+            if cube_beams is not None:
+                if '/beam' in cube_header['BUNIT']: # check whether it is beam^-1
+                    pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
+                    pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT2']).to(u.arcsec))       
+                    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec # in arcsec2
+                    beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
+                    cube_data = cube_data / beamsize[None,:,None,None] * u.beam
+
         return Cube(data=cube_data, header=cube_header, beams=cube_beams)
 
 class Spectrum(object):
@@ -374,7 +386,7 @@ def read_fitscube_ALMA(fitscube, pbcor=False, debug=False,):
     beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
 
     # convert the units
-    cube_data = cube_data / beamsize[:,None,None]
+    cube_data = cube_data / beamsize[None,:,None,None] * u.beam
 
     return Cube(data=cube_data, header=cube_header, beams=cube_beams)
 
@@ -460,8 +472,21 @@ def integrate_spectrum(x, y):
     """
     return np.sum(calculate_diff(x)*y)
 
-def correct_pb(fitsfile, pbcorfile=None, pbfile=None, ):
+def solve_cubepb(datafile, pbcorfile=None, pbfile=None, ):
     """A helper function to derive the primary beam correction
     """
-    pass
+    with fits.open(datafile) as hdu:
+        data = hdu[0].data
+        header = hdu[0].header
+    if pbfile is not None:
+        with fits.open(pbfile) as hdu:
+            pbdata = hdu[0].data
+    elif pbcorfile is not None:
+        with fits.open(pbcorfile) as hdu:
+            pbcordata = hdu[0].data
+            pbdata = data / pbcordata
+    else:
+        raise ValueError("No valid primary beam information has been provided!")
+    return Cube(data=pbdata, header=header, name='pb')
+
 
