@@ -28,21 +28,26 @@ import re
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
+
 import astropy
 import astropy.units as u
 import astropy.constants as const
 from astropy.cosmology import Planck18 as cosm
 from astropy.io import fits
 from astropy.table import Table
-
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
-import astropy.coordinates as coordinates
+from astropy import coordinates
+from astropy.stats import sigma_clipped_stats
 
 # Filtering warnings
 from astropy.wcs import FITSFixedWarning
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
+
+# ndimage
+from scipy import ndimage
+from scipy import optimize
 
 from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
 from astropy.modeling import models, fitting
@@ -72,7 +77,7 @@ class Cube(object):
             if self.wcs is None:
                 self.update_wcs()
             if self.chandata is None:
-                self.update_chandata(self.header)
+                self.update_chandata()
         if self.header is None:
             if self.wcs is not None:
                 self.header = self.wcs.to_header()
@@ -86,8 +91,11 @@ class Cube(object):
         print(f"The shape of the data: {self.data.shape}")
         print(f"The median beams: {np.median(self.beams, axis=0)}")
     @property
+    def shape(self):
+        return self.data.shape
+    @property
     def ndim(self):
-        return np.ndim(self.data)
+        return self.data.ndim
     @property
     def imagesize(self):
         # the imagesize is in [ysize, xsize]
@@ -98,12 +106,31 @@ class Cube(object):
         try: return self.data.shape[-3]
         except: return None
     @property
-    def dchan(self):
-        return calculate_diff(self.chandata)
-    @property
     def nstokes(self):
         try: return self.data.shape[-4]
         except: return None
+    @property
+    def dchan(self):
+        return calculate_diff(self.chandata)
+    @property
+    def cube(self):
+        # return the 3D cube, with stokes dimension
+        if self.ndim == 4:
+            return self.data[0]
+        else:
+            return self.data
+    @property
+    def wavelength(self):
+        return self.get_wavelength()
+    def get_wavelength(self, unit=u.mm):
+        return convert_spec(self.chandata, unit)
+    @property
+    def frequency(self):
+        return self.get_frequency()
+    def get_frequency(self, unit=u.GHz):
+        return convert_spec(self.chandata, unit)
+    def get_velocity(self, reffreq=None, refwave=None):
+        return convert_spec(self.chandata, 'km/s', refwave=refwave, reffreq=reffreq)
     def update(self):
         self.update_wcs()
         self.update_chandata()
@@ -112,20 +139,16 @@ class Cube(object):
             self.wcs = wcs
         else: 
             self.wcs = WCS(self.header)
-    def update_chandata(self, header):
+    def update_chandata(self):
         # the fits standard start with index 1
         # because wcs.slice with change the reference channel, the generated ndarray should start with 1 
-        self.chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * self.header['CDELT3']
-                         )*u.Unit(self.header['CUNIT3'])
+        self.chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * self.header['CDELT3'])*u.Unit(self.header['CUNIT3'])
     def pixel2skycoords(self, pixel_coords):
-        """covert from pixel to skycoords
-
-        Args:
-            pixel_coords: pixel coordinates, in the format of [[x1,y1], [x2,y2],...]
-        """
+        #covert from pixel to skycoords
         pixel_coords = np.array(pixel_coords).T
         return pixel_to_skycoord(*pixel_coords, self.wcs)
     def skycoords2pixels(self, skycoords):
+        #covert from pixel to skycoords
         return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
  
     def convert_chandata(self, unit_out, refwave=None, reffreq=None):
@@ -136,9 +159,6 @@ class Cube(object):
         if reffreq is not None:
             self.reffreq = reffreq
         self.chandata = convert_spec(self.chandata, unit_out, refwave=refwave, reffreq=reffreq)
-
-    def velocity(self, reffreq=None, refwave=None):
-        return convert_spec(self.chandata, 'km/s', refwave=refwave, reffreq=reffreq)
 
     def extract_spectrum(self, pixel_coord=None, sky_coord=None, pixel_aperture=None, 
                          sky_aperture=None, plot=False, ax=None):
@@ -180,7 +200,7 @@ class Cube(object):
         return Spectrum(specchan=self.chandata, specdata=spectrum)
 
     def collapse_cube(self, chans='', chanunit=None, return_header=False, 
-                      reffreq=None, refwave=None):
+                      reffreq=None, refwave=None, moment=0):
         """collapse the cube to make one channel image
 
         Args:
@@ -195,18 +215,33 @@ class Cube(object):
         if self.ndim == 4:
             data = self.data[0]
         else:
-            data = self.data
-        chan_par = re.compile(r"(\d+)~(\d+)")
-        chan_ranges = np.array(chan_par.findall(chans)).astype(int)
-        for chan_range in chan_ranges:
-            # casa includes the last channel with the chan selection rules
-            selected_indices.append(list(range(chan_range[0], chan_range[1]+1))) 
+            data = self.masked_data
         if chanunit is not None:
             self.convert_chandata(chanunit, reffreq=reffreq, refwave=refwave)
-        selected_indices = [item for sublist in selected_indices for item in sublist]
+        if chans == '':
+            selected_indices = list(range(self.chandata.size))
+        else:
+            chan_par = re.compile(r"(\d+)~(\d+)")
+            chan_ranges = np.array(chan_par.findall(chans)).astype(int)
+            for chan_range in chan_ranges:
+                # casa includes the last channel with the chan selection rules
+                selected_indices.append(list(range(chan_range[0], chan_range[1]+1))) 
+            selected_indices = [item for sublist in selected_indices for item in sublist]
         dchan_selected = calculate_diff(self.chandata)[selected_indices]
-        collapsed_image = np.sum(data[selected_indices] * dchan_selected[:,None,None], axis=0)
-        collapsed_beam = np.median(self.beams[selected_indices], axis=0)
+        chan_selected = self.chandata[selected_indices]
+        data_selected = data[selected_indices]
+        M0 = np.sum(data_selected * dchan_selected[:,None,None], axis=0)
+        if moment == 0:
+            collapsed_image = M0
+        if moment > 0:
+            M1 = np.sum(data_selected*chan_selected[:,None,None]*dchan_selected[:,None,None], axis=0)/M0
+            if moment == 1:
+                collapsed_image = M1
+            if moment > 1:
+                collapsed_image = np.sum(data_selected*(chan_selected[:,None,None]-M1[None,:,:])**moment*dchan_selected[:,None,None], axis=0)/M0
+        if self.beams is not None:
+            collapsed_beam = np.median(self.beams[selected_indices], axis=0)
+        else: collapsed_beam = None
         collapsed_header = self.wcs.sub(['longitude','latitude']).to_header()
         return [collapsed_image, collapsed_header, collapsed_beam]
     
@@ -233,6 +268,12 @@ class Cube(object):
         else: 
             beams_sliced = None
         return Cube(data=data_sliced, header=header_sliced, beams=beams_sliced)
+
+    def find_3Dstructure(self, **kwargs):
+        if self.ndim == 4:
+            return find_3Dstructure(self.data[0], **kwargs)
+        else:
+            return find_3Dstructure(self.data, **kwargs)
 
     def writefits(self, filename, overwrite=False):
         """write datacube into fitsfile
@@ -275,6 +316,7 @@ class Cube(object):
             hdu_list.append(fits.BinTableHDU.from_columns([c1,c2,c3], name='BEAMS'))
         hdus = fits.HDUList(hdu_list)
         hdus.writeto(filename, overwrite=overwrite)
+
     def auto_measure(self):
         """designed for subcube
 
@@ -489,4 +531,173 @@ def solve_cubepb(datafile, pbcorfile=None, pbfile=None, ):
         raise ValueError("No valid primary beam information has been provided!")
     return Cube(data=pbdata, header=header, name='pb')
 
+def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dilation_iters=1, mask=None, plot=False, debug=False):
+    """this function use scipy.ndimage.label to search for continuous structures in the datacube
+
+    To use this function, the image should not be oversampled! If so, increase the minsize is recommended
+
+    #TODO: ad support for bianry_opening and binary_dilation
+    """
+    s3d = np.array([[[0,0,0],[0,1,0],[0,0,0]],
+                            [[0,1,0],[1,1,1],[0,1,0]], 
+                            [[0,0,0],[0,1,0],[0,0,0]]])
+    if std is None:
+        mean, median, std = sigma_clipped_stats(data, sigma=sigma, maxiters=1, mask=mask)
+    sigma_struct = data > sigma *  std
+
+    if opening_iters > 0:
+        sigma_struct = ndimage.binary_opening(sigma_struct, iterations=opening_iters, 
+                                              structure=s3d)
+    if dilation_iters > 0:
+        sigma_struct = ndimage.binary_dilation(sigma_struct, iterations=dilation_iters,
+                                               structure=s3d)
+    labels, nb = ndimage.label(sigma_struct, structure=s3d)
+    if debug:
+        print('nb=', nb)
+    for i in range(nb):
+        struct_select = ndimage.find_objects(labels==i)
+        if sigma_struct[struct_select[0]].size < minsize:
+            sigma_struct[struct_select[0]] = False
+    if plot:
+        ax = plt.figure().add_subplot(projection='3d')
+        ax.voxels(sigma_struct)
+        ax.set(xlabel='channel', ylabel='y', zlabel='x')
+    return sigma_struct
+
+def make_moments(data, chandata, moment=0, mask=None):
+    data = np.ma.array(data, mask=mask)
+    dchan = calculate_diff(chandata)
+    M0 = np.sum(data * dchan[:,None,None], axis=0)
+    if moment == 0:
+        moment_image = M0
+    if moment > 0:
+        M1 = np.sum(data*chandata[:,None,None]*dchan[:,None,None], axis=0)/M0
+        if moment == 1:
+            moment_image = M1
+        if moment > 1:
+            moment_image = np.sum(data*(chandata[:,None,None]-M1[None,:,:])**moment*dchan[:,None,None], axis=0)/M0
+    return moment_image
+
+
+def gaussian1D(x, params):
+    """ 1-D gaussian function with/withou continuum
+    """
+    if len(params) == 3:
+        amp, mean, sigma = params
+        cont = 0
+    elif len(params) == 4: # fit the continuum
+        amp, mean, sigma, cont = params
+    return amp / ((2*np.pi)**0.5*sigma) * np.exp(-0.5*(x-mean)**2/sigma**2) + cont
+
+def chi2_cost(params, vel, spec, std):
+    return np.sum((spec-gaussian1D(vel, params))**2/std**2)
+
+def fitspec(vel, spec, std, vsig0=100, amp_bounds=[0, np.inf], vel_bounds=[-1000,1000], 
+            sigma_bouds=[20,2000], cont_bounds=[0, 1e-6], debug=False, fitcont=False,):
+    """fit one spectrum in the velocity convension
+    """
+    # guess the initial parameters
+    ## amplitude
+    spec_selection = spec > np.percentile(spec, 85)
+    ## central velocity
+    vel0 = np.median(vel[spec_selection])
+    ## amplitude
+    amp0 = np.mean(spec[spec_selection])
+    if fitcont: ## continuum
+        cont = np.median(spec[~spec_selection])
+        initial_guess = [amp0, vel0, vsig0, cont]
+        bounds = [amp_bounds, vel_bounds, sigma_bouds, cont_bounds]
+    else:
+        initial_guess = [amp0, vel0, vsig0]
+        bounds = [amp_bounds, vel_bounds, sigma_bouds]
+    args = vel, spec, std
+    result = optimize.minimize(chi2_cost, initial_guess, args=args,
+                bounds=bounds)
+    # make profile of the initial guess and best-fit.
+    guess = gaussian1D(vel, initial_guess)
+    bestfit = gaussian1D(vel, result.x)
+    if debug:
+        plt.clf()
+        plt.step(vel, spec, color='black', where='mid')
+        plt.plot(vel, guess, linestyle='dashed',color='blue')
+        plt.plot(vel, bestfit, color='red')
+        plt.show(block=False)
+        plt.pause(0.01)
+    # calculate chi2
+    chi2 = chi2_cost(result.x, *args)
+    return result.x, bestfit, chi2
+
+def fitcube(vel, cube, snr_limit, minaper=1, maxaper=4, debug=False,
+          vlow=-1000, vup=1000, return_fitcube=False, fitcont=False):
+    """run gaussian fitting for all the pixels
+
+    Args:
+    """
+    cube_shape = cube.shape
+    # set up 3D array to hold the best fit parameters
+    # including: amp, v_mean, v_sigma, cont, snr, aper,  
+    fitmaps = np.full((6, cube_shape[-2], cube_shape[-1]), fill_value=np.nan)
+    if return_fitcube:
+        fitcube = np.zeros_like(cube)
+    
+    # loop over all pixels in the cube and fit 1d spectra
+    for y in range(0, cube_shape[-2]):
+        for x in range(0, cube_shape[-1]):
+            # foundfit is 0 until a fit is found
+            foundfit = False
+            # loop over the range of adaptive binning vakues
+            for aper in range(minaper, maxaper+1):
+                # if foundfit is still zero, then attempt a fit.
+                if not foundfit:
+                    # deal with the edges of the cube
+                    sz = cube_shape
+                    xlo = x - aper
+                    xhi = x + aper
+                    ylo = y - aper
+                    yhi = y + aper
+                    # deal with the edges
+                    if xlo <= 0: xlo = 0
+                    if xhi > sz[2]: xhi = sz[2]
+                    if ylo <= 0: ylo = 0
+                    if yhi >= sz[1]: yhi = sz[1]
+                    
+                    # average the spectra within the aperture
+                    spec = np.mean(cube[:,ylo:yhi,xlo:xhi], axis=(1,2))
+
+                    if not np.isnan(np.sum(spec)):
+                        vel_wing = (vel < vlow) | (vel > vup)
+                        std = np.std(spec[vel_wing])                            
+                        cont = np.median(spec[vel_wing])
+                        
+                        # get chi^2 of straight line fit
+                        chi2_sline = np.sum((spec-cont)**2 / std**2)
+
+                        # do a 1D Gaussian profile fit of the line
+                        paramsfit, bestfit, chi2 = fitspec(vel, spec, std, debug=debug, fitcont=fitcont)
+
+                        # calculate the chi^2 of the Gaussian profile fit
+                        chi2_gaussian = np.sum((spec-bestfit)**2 / std**2)
+
+                        # calculate the S/N of the fit by comparing the chi^2 values.  sqrt(delta_chi^2)=S/N
+                        snr = (chi2_sline - chi2_gaussian)**0.5
+
+                        # if the S/N is above threshold, store the fit parameters and set foundfit=1
+                        if snr >= snr_limit:
+                            if debug:
+                                print(f'fit found at {(x,y)} with aper={aper} and S/N={snr}')
+                            foundfit = 1
+                            if len(paramsfit) == 3:
+                                fitmaps[0:3, y, x] = paramsfit # v, I, sigma
+                            elif len(paramsfit) == 4:
+                                fitmaps[0:4, y, x] = paramsfit # v, I, sigma, continuum
+                            fitmaps[4, y, x] = snr
+                            fitmaps[5, y, x] = aper
+                            if return_fitcube:
+                                fitcube[:,y,x] = bestfit
+                        else:
+                            if debug:
+                                print(f'no fit found at {(x,y)} with aperture size {aper} and S/N={snr}')
+    if return_fitcube:
+        return fitcube, fitmaps
+    return fitmaps
 
