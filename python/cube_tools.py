@@ -21,7 +21,6 @@ Todo:
 
 """
 
-
 import os
 import sys
 import re
@@ -89,7 +88,19 @@ class Cube(object):
     def info(self):
         # the shortcut to print basic info
         print(f"The shape of the data: {self.data.shape}")
-        print(f"The median beams: {np.median(self.beams, axis=0)}")
+        print(f"The median beam [arcsec, arcsec, deg]: {np.median(self.beams, axis=0)}")
+        print(f"Pixel size: {self.pixel_sizes}")
+        print(f"Channel width: {np.median(self.dchan)}")
+    @property
+    def pixel_sizes(self):
+        if self.header is not None:
+            # Return the pixel size encoded in the header
+            # In casa, it is in the units of deg, thus the returned value is pixel to deg
+            pixel2arcsec_ra = (abs(self.header['CDELT1'])*u.Unit(self.header['CUNIT1'])).to(u.arcsec)
+            pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec)
+        else:
+            pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
+        return [pixel2arcsec_ra, pixel2arcsec_dec]
     @property
     def shape(self):
         return self.data.shape
@@ -99,8 +110,10 @@ class Cube(object):
     @property
     def imagesize(self):
         # the imagesize is in [ysize, xsize]
-        try: return self.data.shape[-2:]
-        except: return None
+        try: 
+            return self.data.shape[-2:]
+        except: 
+            return None
     @property
     def nchan(self):
         try: return self.data.shape[-3]
@@ -109,6 +122,9 @@ class Cube(object):
     def nstokes(self):
         try: return self.data.shape[-4]
         except: return None
+    @property
+    def median_beam(self):
+        return np.median(self.beams, axis=0)
     @property
     def dchan(self):
         return calculate_diff(self.chandata)
@@ -161,7 +177,7 @@ class Cube(object):
         self.chandata = convert_spec(self.chandata, unit_out, refwave=refwave, reffreq=reffreq)
 
     def extract_spectrum(self, pixel_coord=None, sky_coord=None, pixel_aperture=None, 
-                         sky_aperture=None, plot=False, ax=None):
+                         sky_aperture=None, plot=False, ax=None, **kwargs):
         """extract 1D spectrum from the datacube
     
         Args:
@@ -197,7 +213,7 @@ class Cube(object):
             ax.set_ylabel('Flux [Jy]')
             ax_top = ax.twiny()
             ax_top.step(np.arange(self.nchan), spectrum, where='mid', alpha=0)
-        return Spectrum(specchan=self.chandata, specdata=spectrum)
+        return Spectrum(specchan=self.chandata, specdata=spectrum, **kwargs)
 
     def collapse_cube(self, chans='', chanunit=None, return_header=False, 
                       reffreq=None, refwave=None, moment=0):
@@ -287,6 +303,9 @@ class Cube(object):
                 header = wcs.to_header()
             else:
                 header = fits.Header()
+        # remove the History and comments of the header
+        header.remove('HISTORY', remove_all=True)
+        header.remove('COMMENT', remove_all=True)
         ysize, xsize = self.imagesize
         try: # shift the image reference pixel, tolerence is 4 pixels
             if header['CRPIX1'] < (xsize//2-4) or header['CRPIX1'] > (xsize//+4):
@@ -348,26 +367,49 @@ class Cube(object):
 
         return Cube(data=cube_data, header=cube_header, beams=cube_beams)
 
+
 class Spectrum(object):
     """the data structure to handle spectrum
     """
-    def __init__(self, specchan=None, specdata=None):
+    def __init__(self, specchan=None, specdata=None, reffreq=None, refwave=None, z=None):
         """ initialize the spectrum
         """
         self.specchan = specchan
         self.specdata = specdata
-        self.specvel = None
-
-    def to_restframe(self, z=0, restfreq=None):
-        self.restfreq = convert_spec(self.specchan, 'GHz', reffreq=restfreq)
-        self.restwave = convert_spec(self.restfreq, 'um')
-
+        self.reffreq = reffreq
+        self.refwave = refwave
+        if self.reffreq is None:
+            if self.refwave is not None:
+                self.reffreq = (const.c/self.refwave).to(u.GHz)
+        if self.refwave is None:
+            if self.reffreq is not None:
+                self.refwave = (const.c/self.reffreq).to(u.um)
+        if self.reffreq is not None:
+            self.specvel = self.velocity(reffreq=reffreq)
+        else:
+            self.specvel = None
+        if z is not None:
+            self.to_restframe(z)
+    @property
+    def channels(self):
+        return list(range(len(self.specchan)))
+    def wavelength(self, units=u.um):
+        return convert_spec(self.specchan, units)
+    def frequency(self, units=u.GHz):
+        return convert_spec(self.specchan, units)
+    def to_restframe(self, z):
+        self.restfreq = convert_spec(self.specchan, 'GHz')*(z+1)
+        self.restwave = convert_spec(self.specchan, 'um')/(z+1)
     def velocity(self, reffreq=None, refwave=None):
         return convert_spec(self.specchan, 'km/s', refwave=refwave, reffreq=reffreq)
-
-    def to_velocity(self, reffreq=None, refwave=None):
-        self.specvel = self.velocity(reffreq=reffreq, refwave=refwave)
-
+    def to_channel(self, values):
+        #convert the spectral axis
+        if values.unit.is_equivalent('km/s'): # velocity to channel
+            return array_mapping(values, self.specvel, self.channels)
+        elif values.unit.is_equivalent('um'): # velocity to channel
+            return array_mapping(values, self.wavelength(values.unit), self.channels)
+        elif values.unit.is_equivalent('GHz'): # velocity to channel
+            return array_mapping(values, self.frequency(values.unit), self.channels)
     def fit_gaussian(self, plot=False, ax=None):
         """fitting the single gaussian to the spectrum
         """
@@ -394,9 +436,7 @@ class Spectrum(object):
             else:
                 ax.step(self.specchan, self.specdata, label='data')
                 ax.plot(self.specchan, specfit, label='mode')
-        return specfit
-
-
+        return p
     def integral(self):
         return integral_spectrum(self.specvel, self.specdata)
 
@@ -531,7 +571,7 @@ def solve_cubepb(datafile, pbcorfile=None, pbfile=None, ):
         raise ValueError("No valid primary beam information has been provided!")
     return Cube(data=pbdata, header=header, name='pb')
 
-def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dilation_iters=1, mask=None, plot=False, debug=False):
+def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dilation_iters=1, mask=None, plot=False, ax=None, debug=False):
     """this function use scipy.ndimage.label to search for continuous structures in the datacube
 
     To use this function, the image should not be oversampled! If so, increase the minsize is recommended
@@ -556,10 +596,13 @@ def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dila
         print('nb=', nb)
     for i in range(nb):
         struct_select = ndimage.find_objects(labels==i)
+        if debug:
+            print("structure size: {}".format(sigma_struct[struct_select[0]].size))
         if sigma_struct[struct_select[0]].size < minsize:
             sigma_struct[struct_select[0]] = False
     if plot:
-        ax = plt.figure().add_subplot(projection='3d')
+        if ax is None:
+            ax = plt.figure().add_subplot(projection='3d')
         ax.voxels(sigma_struct)
         ax.set(xlabel='channel', ylabel='y', zlabel='x')
     return sigma_struct
@@ -578,7 +621,6 @@ def make_moments(data, chandata, moment=0, mask=None):
             moment_image = np.sum(data*(chandata[:,None,None]-M1[None,:,:])**moment*dchan[:,None,None], axis=0)/M0
     return moment_image
 
-
 def gaussian1D(x, params):
     """ 1-D gaussian function with/withou continuum
     """
@@ -592,9 +634,15 @@ def gaussian1D(x, params):
 def chi2_cost(params, vel, spec, std):
     return np.sum((spec-gaussian1D(vel, params))**2/std**2)
 
-def fitspec(vel, spec, std, vsig0=100, amp_bounds=[0, np.inf], vel_bounds=[-1000,1000], 
+def fit_gaussian1D(vel, spec, std, vsig0=100, amp_bounds=[0, np.inf], vel_bounds=[-1000,1000], 
             sigma_bouds=[20,2000], cont_bounds=[0, 1e-6], debug=False, fitcont=False,):
     """fit one spectrum in the velocity convension
+
+    Args:
+        vel: velocity
+        spec: spectrum data
+        std: the error or standard deviation of the spectrum
+        vsig0: initial guess for the velocity dispersion
     """
     # guess the initial parameters
     ## amplitude
@@ -673,7 +721,7 @@ def fitcube(vel, cube, snr_limit, minaper=1, maxaper=4, debug=False,
                         chi2_sline = np.sum((spec-cont)**2 / std**2)
 
                         # do a 1D Gaussian profile fit of the line
-                        paramsfit, bestfit, chi2 = fitspec(vel, spec, std, debug=debug, fitcont=fitcont)
+                        paramsfit, bestfit, chi2 = fit_gaussian1D(vel, spec, std, debug=debug, fitcont=fitcont)
 
                         # calculate the chi^2 of the Gaussian profile fit
                         chi2_gaussian = np.sum((spec-bestfit)**2 / std**2)
@@ -701,3 +749,7 @@ def fitcube(vel, cube, snr_limit, minaper=1, maxaper=4, debug=False,
         return fitcube, fitmaps
     return fitmaps
 
+def array_mapping(vals1, array1, array2):
+    """mapping the values from array2 at the position of vals1 relative to array1
+    """
+    return (vals1 - array1[0])/(array1[-1]- array1[0]) * (array2[-1]-array2[0])

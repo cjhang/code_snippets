@@ -148,7 +148,10 @@ class Image(object):
         return pixel_to_skycoord(*pixel_coords, self.wcs)
 
     def skycoords2pixels(self, skycoords):
-        return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
+        if skycoords.size == 1:
+            return np.array(skycoord_to_pixel(skycoords, self.wcs))
+        else:
+            return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
     
     def update_mask(self, mask=None, mask_invalid=True):
         newmask = np.zeros(self.imagesize, dtype=bool)
@@ -355,10 +358,23 @@ class Image(object):
             table_objs['flux_err'] = fluxerr
         return table_objs
 
-    def measure_flux(self):
+    def measure_flux(self, dets=None, coords=None, apertures=None, **kwargs):
         """shortcut for flux measurement of existing detections
+
+        Args:
+            dets (`astropy.table`): the table includes all the detections
+                required informations are:
+                name  x   y   a   b  theta
+                unit pix pix pix pix radian
+
+        TODO: add support for aperture support
         """
-        pass
+        if dets is not None:
+            flux, fluxerr = measure_flux(self.image.value, coords=list(zip(dets['x'], dets['y'])), 
+                                         apertures=list(zip(4*dets['a'], 4*dets['b'], dets['theta'])), **kwargs) 
+        elif (apertures is not None) and (coords is not None):
+            flux, fluxerr = measure_flux(self.image.value, coords=coords, apertures=apertures, **kwargs) 
+        return flux*self.unit, fluxerr*self.unit
 
     def fit_2Dgaussian(self, **kwargs):
         return gaussian_2Dfitting(self.image, **kwargs)
@@ -425,8 +441,8 @@ class Image(object):
 
 
 def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
-                       xbounds=None, ybounds=None, center_bounds_scale=0.125):
-    """Apply two dimentional Gaussian fitting
+                       xbounds=None, ybounds=None, center_bounds_scale=0.125, plot=False, ax=None):
+    """Apply simple two dimentional Gaussian fitting
     
     Args:
         center_bounds = ((xlow, xup), (ylow, yup))
@@ -463,23 +479,30 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
         print("Initial guess:", p_init)
         print("Fitting:", p)
         print("Flux:", flux_fitted)
-        fig, ax = plt.subplots(1, 3, figsize=(8, 3.5))
-        im0 = ax[0].imshow(image_norm, origin='lower', interpolation='none', 
-                           extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
-        plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
-        gaussian_init = patches.Ellipse((p_init.x_mean, p_init.y_mean), height=p_init.y_stddev.value, 
-                width=p_init.x_stddev.value, angle=p_init.theta.value/np.pi*180,
-                linewidth=1, facecolor=None, fill=None, edgecolor='orange', alpha=0.8)
-        ax[0].add_patch(gaussian_init)
-        ax[0].set_title("Data")
-        im1 = ax[1].imshow(p(xrad, yrad), origin='lower', interpolation='none',
-                           extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
-        plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
-        ax[1].set_title("Model")
-        im2 = ax[2].imshow(image_norm - p(xrad, yrad), origin='lower', interpolation='none',
-                           extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
-        plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
-        ax[2].set_title("Residual")
+    if plot:
+        if ax is None:
+            fig, ax = plt.subplots(1, 3, figsize=(8, 3.5))
+            im0 = ax[0].imshow(image_norm, origin='lower', interpolation='none', 
+                               extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
+            plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+            gaussian_init = patches.Ellipse((p_init.x_mean, p_init.y_mean), height=p_init.y_stddev.value, 
+                    width=p_init.x_stddev.value, angle=p_init.theta.value/np.pi*180,
+                    linewidth=1, facecolor=None, fill=None, edgecolor='orange', alpha=0.8)
+            ax[0].add_patch(gaussian_init)
+            ax[0].set_title("Data")
+            im1 = ax[1].imshow(p(xrad, yrad), origin='lower', interpolation='none',
+                               extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
+            plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+            ax[1].set_title("Model")
+            im2 = ax[2].imshow(image_norm - p(xrad, yrad), origin='lower', interpolation='none',
+                               extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
+            plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
+            ax[2].set_title("Residual")
+        else:
+            ax.set_title("Model")
+            im1 = ax.imshow(p(xrad, yrad), origin='lower', interpolation='none',
+                               extent=(-xsize/2., xsize/2., -ysize/2., ysize/2.))
+            plt.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
     return dict_return
 
 def source_finder(image=None, std=None, mask=None, 
@@ -495,6 +518,10 @@ def source_finder(image=None, std=None, mask=None,
     Params:
         aperture_scale : aperture size in units of FWHM, it should be used along with the beam factor
         detection_threshold: the minimal SNR when searching for detections.
+
+    Notes: 'sep' also return the size of the source [a, b, theta]. `a` and `b` is the pixel size 
+        of the major and minor axis. The `theta` is the position-angle of the a axis relative 
+        to the first image axis. It is counted positive in the direction of the second axis.
 
     """
     if method == 'sep':
@@ -570,7 +597,7 @@ def source_finder(image=None, std=None, mask=None,
         n_found = len(table_objs)
         for i in range(n_found):
             obj = table_objs[i]
-            ax.text(obj['x'], obj['y'], '+', alpha=0.5,
+            ax.text(obj['x'], obj['y'], '{}'.format(i+1), alpha=0.5, color='red',
                     horizontalalignment='center', verticalalignment='center')
             if show_flux:
                 if 'peak_value' in obj.colnames:
@@ -582,12 +609,13 @@ def source_finder(image=None, std=None, mask=None,
     else:
         return table_objs
 
-def create_apertures(coords, shape=None, apermaj=None, apermin=None, theta=0):
+def create_apertures(coords, shapes=None, apermaj=None, apermin=None, theta=0):
     """create elliptical apertures
 
     Args:
         coords: the coordinates of the apertures
-        shape: the shape of apertures, [a,b,theta] or [[a1,b1,theta1],[a2,b2,theta2],]
+        shapes: the shapes of apertures, [a,b,theta] or [[a1,b1,theta1],[a2,b2,theta2],]
+            in the units of (pixel, pixel, radian)
         apermaj: the pixel size of the major axis
         apermin (optional): the pixel size of the minor axis
         theta: the orientation of the aperture, degree,
@@ -595,22 +623,24 @@ def create_apertures(coords, shape=None, apermaj=None, apermin=None, theta=0):
     """
     ndim = np.ndim(coords)
     apertures = []
-    if shape is not None:
-        ndim_shape = np.ndim(shape)
+    if shapes is not None:
+        ndim_shapes = np.ndim(shapes)
         if ndim == 1:
-            if ndim_shape == 1:
-                return EllipticalAperture(coord, *shape)
+            if ndim_shapes == 1:
+                return EllipticalAperture(coords, *shapes)
             else:
+                print('coords', coords)
+                print('shapes', shapes)
                 raise ValueError("``image_tools.create_aperture``: unmatched aperture with coordinates")
         elif ndim == 2:
             apertures = []
-            if ndim_shape == 1:
+            if ndim_shapes == 1:
                 for coord in coords:
-                    apertures.append(EllipticalAperture(coord, *shape))
-            elif ndim_shape == 2:
-                assert len(shape) == len(coords)
+                    apertures.append(EllipticalAperture(coord, *shapes))
+            elif ndim_shapes == 2:
+                assert len(shapes) == len(coords)
                 for i,coord in enumerate(coords):
-                    apertures.append(EllipticalAperture(coord, *shape[i]))
+                    apertures.append(EllipticalAperture(coord, *shapes[i]))
         return apertures
     else:
         if apermin is None:
@@ -620,7 +650,7 @@ def create_apertures(coords, shape=None, apermaj=None, apermin=None, theta=0):
             if ndim_aper != 1:
                 raise ValueError("``image_tools.create_aperture``: unmatched aperture with coordinates")
             else:
-                return EllipticalAperture(coord, apermaj, apermin, theta)
+                return EllipticalAperture(coords, apermaj, apermin, theta)
         elif ndim == 2: # multiple coordinates
             apertures = []
             if ndim_aper == 1: # uniform aperture
@@ -653,6 +683,8 @@ def mask_coordinates(image=None, coords=None, shape=None, apertures=None):
         image_mask = image_mask.value
     if apertures is None:
         apertures = create_apertures(coords, shape=shape)
+    if isinstance(apertures, EllipticalAperture):
+        apertures = [apertures,]
     for aper in apertures:
         mask = aper.to_mask().to_image(image_shape) > 0
         image_mask[mask] = True
@@ -661,7 +693,6 @@ def mask_coordinates(image=None, coords=None, shape=None, apertures=None):
 def measure_flux(image, coords=None,
                  method='single-aperture', apertures=None, 
                  mask=None, n_boostrap=100,
-                 sourcesize=0,
                  gaussian_segment_scale=4.0,
                  plot=False, ax=None, color='white', debug=False):
     """Two-dimension flux measurement
@@ -694,7 +725,12 @@ def measure_flux(image, coords=None,
     if isinstance(apertures, EllipticalAperture):
         detections_apers = apertures
     else: # make new apertures with the shape parameters
-        detections_apers = create_apertures(coords, shape=apertures)
+        detections_apers = create_apertures(coords, shapes=apertures)
+    # convert single item into list
+    if isinstance(detections_apers, EllipticalAperture):
+        detections_apers = [detections_apers,]
+    if np.ndim(coords) == 1:
+        coords = [coords,]
     detections_mask = mask_coordinates(image, apertures=detections_apers)
     n_sources = len(detections_apers)
     flux = np.zeros(n_sources)
@@ -750,15 +786,13 @@ def measure_flux(image, coords=None,
     if plot:
         if ax is None:
             fig, ax = plt.subplots(figsize=(8,6))
-        im = ax.imshow(fitsimage.image, interpolation='nearest',
-                       vmin=-0.2*fitsimage.std, vmax=10.0*fitsimage.std, origin='lower')
+        im = ax.imshow(image, interpolation='nearest', origin='lower')
         plt.colorbar(im, fraction=0.046, pad=0.04)
 
         for i in range(n_sources):
-            obj = pixel_coords[i]
+            obj = coords[i]
             im = detections_apers[i].plot(color=color, lw=1, alpha=0.8)
-            ax.text(obj[0], (1.0-2.0*detections_apers[i].a/fitsimage.imagesize[0])*obj[1], 
-                    "{:.2f}mJy".format(flux[i]*1e3), 
+            ax.text(obj[0], obj[1], "{:.2f}mJy".format(flux[i]*1e3), 
                     color=color, horizontalalignment='center', verticalalignment='top',)
         # # only for test
         # for ap in apertures_boostrap:
