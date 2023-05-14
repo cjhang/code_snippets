@@ -417,9 +417,10 @@ def gen_sim_images(mode='image', vis=None, fitsimage=None, outdir='./', basename
 
 def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=None, repeat=10, 
         basename=None, savefile=None, fov_scale=1.5, second_check=False,
-        detection_threshold=2.5, aperture_size=None, aperture_scale=6.0,
+        detection_threshold=2.5, aperture_scale=6.0,
         plot=False, snr_mode='peak', debug=False, overwrite=True,
-        method='sep',
+        method='sep', aperture_correction=1.0, 
+        sourcesize=0.2, filter_kernel=None,
         snr=[1,20], seplimit_scale=0.5, seplimit_arcsec=None, mask=None, **kwargs):
     """simulation the completeness of source finding algorithm
 
@@ -451,9 +452,9 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
     for run in np.arange(repeat):
         if debug:
             print("calculating run: {}".format(run))
-        # try:
-        if True:
-            simimage_imagefile = "{basename}.run{run}.image.fits".format(basename=basename, run=run)
+        try:
+        # if True:
+            simimage_imagefile = "{basename}.run{run}.fits".format(basename=basename, run=run)
             simimage_sourcefile = "{basename}.run{run}.txt".format(basename=basename, run=run)
             simimage_fullpath = os.path.join(simfolder, simimage_imagefile)
             simimage_sourcefile_fullpath = os.path.join(simfolder, simimage_sourcefile)
@@ -461,19 +462,19 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
             # print("simulated sources:", simimage_sourcefile_fullpath)
             
             ##### for new simulations
-            # sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
-            # sources_input_coords = SkyCoord(ra=sources_input['ra[deg]']*u.deg, 
-                                            # dec=sources_input['dec[deg]']*u.deg)
-            # sources_input_flux = sources_input['flux[Jy]'] #convert to Jy
-            ##### for old simulations
             sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
-            sources_input_coords = SkyCoord(ra=sources_input['ra[arcsec]']*u.arcsec, 
-                                            dec=sources_input['dec[arcsec]']*u.arcsec)
-            sources_input_flux = sources_input['flux[mJy]']/1000 #convert to Jy
+            sources_input_coords = SkyCoord(ra=sources_input['ra[deg]']*u.deg, 
+                                            dec=sources_input['dec[deg]']*u.deg)
+            sources_input_flux = sources_input['flux[Jy]'] #convert to Jy
+            ##### for old simulations
+            # sources_input = Table.read(simimage_sourcefile_fullpath, format='ascii')
+            # sources_input_coords = SkyCoord(ra=sources_input['ra[arcsec]']*u.arcsec, 
+                                            # dec=sources_input['dec[arcsec]']*u.arcsec)
+            # sources_input_flux = sources_input['flux[mJy]']/1000 #convert to Jy
 
             simimage = FitsImage(simimage_fullpath)
             sources_found = source_finder(simimage, detection_threshold=detection_threshold, 
-                                          method=method, mask=mask)
+                                          method=method, mask=mask, filter_kernel=filter_kernel)
             sources_found_coords = SkyCoord(ra=sources_found['ra']*u.deg, 
                                             dec=sources_found['dec']*u.deg)
             if seplimit_scale is not None:
@@ -494,17 +495,19 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
                     snr_found_boosting = sources_found['peak_flux'][idx_found] / baseimage.std
                     flux_aperture, flux_aperture_err = measure_flux(simimage, 
                             detections=sources_found[idx_found], 
-                            aperture_size=aperture_size,
                             aperture_scale=aperture_scale,
-                            minimal_aperture_size=simimage.bmaj*2*3600,
+                            aperture_size=[simimage.bmaj*3600, simimage.bmin*3600],
+                            sourcesize= sourcesize,# arcsec
                             method='single-aperture')
                     flux_gaussian, flux_gaussian_err = measure_flux(simimage, 
                                                                     detections=sources_found[idx_found], 
                                                                     method='gaussian')
                     flux_input = sources_input_flux[idx_input]
                     snr_input_boosting = sources_input_flux[idx_input] / baseimage.std
-                    boosting_single = Table([snr_found_boosting, snr_input_boosting, snr_found_boosting, flux_input, flux_aperture, flux_gaussian],
-                                        names=['snr_peak','snr_peak_input','snr_peak_found','flux_input','flux_aperture','flux_gaussian'])
+                    boosting_single = Table([snr_found_boosting, snr_input_boosting, snr_found_boosting, 
+                        flux_input, flux_aperture, flux_gaussian],
+                        names=['snr_peak','snr_peak_input','snr_peak_found','flux_input',
+                               'flux_aperture','flux_gaussian'])
                     boosting_table = vstack([boosting_table, boosting_single])
                     
                     # calculate the completeness
@@ -512,7 +515,8 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
                     is_recovered = np.zeros_like(snr_input_completeness).astype(int)
                     is_recovered[idx_input] = 1
                     is_recovered[idx_input_comp] = 0
-                    comp_single = Table([snr_input_completeness, is_recovered], names=['snr_peak', 'is_recovered'])
+                    comp_single = Table([snr_input_completeness, is_recovered], 
+                                        names=['snr_peak', 'is_recovered'])
                     comp_table = vstack([comp_table, comp_single])
 
 
@@ -523,9 +527,9 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
                     is_fake[idx_found_comp] = 1
                     fake_single = Table([snr_found_fakeness, is_fake], names=['snr_peak', 'is_fake'])
                     fake_table = vstack([fake_table, fake_single])
-        # except:
-            # print('Failed in run {}'.format(run))
-            # continue
+        except:
+            print('Failed in run {}'.format(run))
+            continue
     if savefile:
         boosting_table.write(savefile+'_boosting.dat', format='ascii', overwrite=overwrite)
         comp_table.write(savefile+'_completeness.dat', format='ascii', overwrite=overwrite)
@@ -533,3 +537,5 @@ def calculate_sim_images(simfolder, vis=None, baseimage=None, baseimage_file=Non
                 
     return boosting_table
 
+
+# the end
