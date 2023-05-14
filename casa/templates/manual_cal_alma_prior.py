@@ -58,25 +58,27 @@ target_field = 'NGC_253'
 fields_unique = [bandpass_field, gaincal_field, target_field] #,polcal_field,] 
 fields_tied_wvr = [target_field, gaincal_field] # the first one has wvr info, check CALIBRATE_ATMOSPHERE
 
-refant = 'DV23'
+myrefant = 'DV23'
 science_spw = '17,19,21,23'
 tsys_spw = '9,11,13,15'
 mysolint = 'int'    # integration time
 #> mapping tsys spw to science spw, check CALIBRATE_ATMOSPHERE
-tsysmap = list(range(0,24)) 
-tsysmap[17:25] = list(range(9,17))
+# example:
+# >> tsysmap = list(range(0,24)) # 24 is total number of spw
+# >> tsysmap[17:25] = list(range(9,17)) # map science spw to tsys spw
+
+# deal with old ALMA data
 is_fixsyscaltimes = False # Fix the ASDM SYSCal table issue, data before 2015
 toffset = 0  # wvr time offset, -1 for cycle 0
 
 data_dir = './data'
-cal_dir = './prior'  # the directory to store the calibration tables
-caldata_dir = './data_cal'
+cal_dir = './prior_cal'  # the directory to store the calibration tables
+caldata_dir = './calibrated'
 
 try:
     import plot_utils
-    have_ploter = True
 except:
-    have_ploter = False
+    print("Warning: no plotter is found! Will not generate summary plots for calibration.")
 
 
 #> Flagging the useless data
@@ -85,19 +87,27 @@ for obs in obs_list:
     # flagdata(vis=msfile, mode='unflag', flagbackup=False)
     # flagmanager(vis=msfile, mode='list')
     flagdata(vis=obs, mode='manual', autocorr=True, flagbackup=False)
-    flagdata(vis=obs, mode='manual', intent='*POINTING*,*SIDEBAND_RATIO*,*ATMOSPHERE*', flagbackup=False)
+    flagdata(vis=obs, mode='manual', intent='*POINTING*', flagbackup=False)
     flagdata(vis=obs, mode='shadow', flagbackup=False)
     #>> Flag edge channel
-    #flagdata(vis = msfile, spw='17:0~3,19:0~3,21:0~3,23:0~3')
-    flagmanager(vis=obs, mode='save', versionname='priori_flag')
+    #> remove the first 5s and the end 5s data (optional, see the amp_vs_time)
+    # flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='beg', flagbackup=False)
+    # flagdata(vis=msfile, mode='quack', quackinterval=3.0, quackmode='endb', flagbackup=False)
+    # flagdata(vis = msfile, spw='17:0~3,19:0~3,21:0~3,23:0~3')
+    flagmanager(vis=obs, mode='save', versionname='Prior_flag')
 
-    if False:
+    if is_fixsyscaltimes:
         #>> Fix the ASDM SYSCal table issue, data before 2015
         from recipes.almahelpers import fixsyscaltimes
         fixsyscaltimes(vis=msfile)
     
     try:
-        plot_utils.check_info(obs, refant=refant, plotdir='plots/before_prior')
+        # to get general info about the quality of the data (only calibrators)
+        plot_utils.check_info(vis=msfile, spw=tsys_spw, refant=myrefant,
+                              show_fields=True, fields=calibrators, plotdir='plots/rawdata_info')
+        # check the staibility of baselines with freq and time, useful to setup the spw4bpphase and solint 
+        plot_utils.check_cal(vis=msfile, refant=myrefant, ydatacolumn='data', 
+                             field=calibrators, spw=myspw, plotdir='plots/rawdata_refant')
     except:
         print("Load plot_utils to generate the plots!")
 
@@ -110,16 +120,25 @@ print("\n==============> Start Prior Calibration <=============\n")
 #>> It gives the first-order correction for atmospheric opacity as a funcction of time and freq
 for obs in obs_list:
     basename = os.path.basename(obs)
-    os.system("rm -rf {}.tsys".format(obs))
-    gencal(vis=obs, caltable=basename+'.tsys', caltype='tsys')
-    
+    tsys_cal = f'{os.path.join(cal_dir,basename)}.tsys'
+    os.system(f'rm -rf {tsys_cal}')
+    gencal(vis=obs, caltable=tsys_cal, caltype='tsys')
+    # check tsys   
+    try:
+        plot_utils.check_tsys(tsystable=tsys_cal)
+    except:
+        print("Load plot_utils to generate the plots for inspection!")
+
+
     #> save the output of WVR
     mylogfile = casalog.logfile()
-    rmtables(basename+'.wvr')
-    os.system("rm -rf {}.wvrgcal".format(basename))
-    casalog.setlogfile(basename+'.wvrgcal')
+    wvrcal_log = f'{os.path.join(cal_dir,basename)}.wvrgcal.log'
+    os.system(f'rm -rf {wvrcal_log}')
+    casalog.setlogfile(f'{wvrcal_log}')
+    wvr_cal = f'{os.path.join(cal_dir,basename)}.wvr'
+    rmtables(wvr_cal)
     wvrgcal(vis = obs, 
-            caltable = basename+'.wvr',
+            caltable = wvr_cal,
             toffset = toffset, # ALMA cycle 0, up to 2013, was -1
             #> tie phasecal and science target, share CALIBRATE_ATMOSPHERE 
             tie = [','.join(fields_tied_wvr),], 
@@ -128,20 +147,11 @@ for obs in obs_list:
             )
     casalog.setlogfile(mylogfile)
 
-#> flag tsys table according to plots
-for obs in obs_list:
-    basename = os.path.basename(obs)
-    try:
-        plot_utils.check_tsys(tsystable=basename+'.tsys')
-    except:
-        print("Load plot_utils to generate the plots for inspection!")
-    tsystable = obs + '.tsys'
-    ## general flagging
-    # flagdata(vis=tsystable, spw='13:0~3,15:0~3,17:0~3,19:0~3', flagbackup=False)
-#>> specific flagging
-# flagdata(vis='uid___A002_Xdb7ab7_X11a58.ms.tsys', scan='15', antenna='DV02', flagbackup=False)
-for obs in obs_list:
-    flagmanager(vis=obs, mode='save', versionname='Tsys_flag')
+if True:
+    #>> specific flagging
+    # flagdata(vis='uid___A002_Xdb7ab7_X11a58.ms.tsys', scan='15', antenna='DV02', flagbackup=False)
+    for obs in obs_list:
+        flagmanager(vis=obs, mode='save', versionname='Manual_flag')
 
 #> Apply the Tsys and WVR calibration
 #>> we could use the helper function to get the mapping of system table, but be careful 
@@ -152,11 +162,13 @@ for obs in obs_list:
 for obs in obs_list:
     #> General calibrators that have their own Tsys
     basename = os.path.basename(obs)
+    tsys_cal = f'{os.path.join(cal_dir,basename)}.tsys'
+    wvr_cal = f'{os.path.join(cal_dir,basename)}.wvr'
     for field_name in list(set(fields_unique) - set(fields_tied_wvr[-1])):
         applycal(vis = obs,
                  field = field_name,
                  spw = science_spw,
-                 gaintable = [basename+'.tsys', basename+'.wvr'],
+                 gaintable = [tsys_cal, wvr_cal],
                  gainfield = [field_name, field_name],
                  interp = 'linear',
                  spwmap = [tsysmap,[]],
@@ -167,16 +179,17 @@ for obs in obs_list:
     applycal(vis = obs,
              field = fields_tied_wvr[-1],
              spw = science_spw,
-             gaintable = [basename+'.tsys', basename+'.wvr'],
+             gaintable = [tsys_cal, wvr_cal],
              gainfield = fields_tied_wvr,
              interp = 'linear',
              #spwmap = [tsysmap,[]], no need for spwmap
              calwt = True,
              flagbackup = False)
 
-#> Check the calibrated data
+    #> Check the calibrated data
     try:
-        plot_utils.check_info(obs, refant=refant, datacolumn='corrected', plotdir='./plots/plots_afterprior')
+        plot_utils.check_cal(vis=obs, refant=myrefant, ydatacolumn='corrected', 
+                             field=calibrators, spw=myspw, plotdir='plots/aprior_refant')
     except:
         print("Load plot_utils to generate the plots!")
 

@@ -568,10 +568,23 @@ def check_pol_info(vis, field='', spw='', show_parangle=True, dpi=400, plotdir='
     
     pass
 
+def check_pol_gaincal():
+    """check the gaincal of the polarized calibrator. 
+    
+    Extract from the normal gaincal of the polarized calibrator
+    """
+    pass
+
+
 def check_pol_kcross(vis):
     """ check the correction for linear phase variation and select suitable scan
 
+    TODO: 
+    1. check the all the baseline with the refant
+    2. check all the antenna
+
     """
+    subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
     plotms(vis=vis, ydatacolumn='corrected',
            xaxis='freq', yaxis='phase',
            field= polcal_field, 
@@ -616,6 +629,19 @@ def check_polgain(obs_apint_pcal, polcal_field='',):
 def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=None,
                 overwrite=True, gridrows=2, gridcols=3, dpi=600, 
                **kwargs):
+    """check the solutions of the instrument polarisation (Dterm)
+
+    Args:
+        Dtermtable: the Dterm solutions
+        spw: the spectral window, set it to be one spw if different spw are different
+        basename: the name of the subfolders within the plotdir, it should be different 
+                  to seperate different plots
+
+    Examples:
+        check_Dterm('concat_S1.Df0gen', spw='1', basename='S1')
+        
+
+    """
     if basename is None:
         basename = os.path.basename(Dtermtable)
     outdir = os.path.join(plotdir, "Dterm-"+basename)
@@ -626,5 +652,61 @@ def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=N
         for page, subgroup in enumerate(subgroups):
             plotms(vis=Dtermtable, xaxis='frequency', yaxis=yaxis, antenna=subgroup,
                    spw=spw, iteraxis='antenna', coloraxis='corr', 
-                   plotfile='{}/freq_{}.page{}.png'.format(outdir, yaxis, page), 
-                   showgui=showgui, highres=True, **kwargs)
+                   plotfile='{}/freq_{}_spw{}_page{}.png'.format(outdir, yaxis, spw, page), 
+                   showgui=showgui, gridrows=gridrows, gridcols=gridcols,
+                   highres=True, **kwargs)
+
+def check_Gxyamp(Gxyamptable, gridrows=2, gridcols=2, basename=None, plotdir='./plots',
+                 showgui=False, overwrite=True):
+    """check the final normaized amp 
+
+    Example:
+        
+        check_Gxyamp(Gxyamptable, outdir='./plots/Gxy')
+
+    """
+    if basename is None:
+        basename = os.path.basename(Gxyamptable)
+    outdir = os.path.join(plotdir, "Gxyamp-"+basename)
+    os.system('mkdir -p {}'.format(outdir))
+    plotms(vis=Gxyamptable, xaxis='antenna1', yaxis='amp', coloraxis='antenna1', iteraxis='spw', 
+           gridrows=gridrows, gridcols=gridcols, 
+           showgui=showgui, highres=True, overwrite=overwrite,
+           plotfile='{}/Gxyamp.png'.format(outdir))
+    plotms(vis=Gxyamptable, xaxis='antenna1', yaxis='amp', correlation='/', coloraxis='antenna1', 
+           iteraxis='spw', gridrows=gridrows, gridcols=gridcols, 
+           showgui=showgui, highres=True, overwrite=overwrite,
+           plotfile='{}/GxyampRatio.png'.format(outdir)) 
+
+def check_polcal(polcalvis, spw='', field='', plotdir='./plots', basename=None, 
+                 showgui=False, overwrite=True):
+    """check the calibrated polarised calibrator
+        
+    This function plots the complexity of the calibrated parallel correlation and cross correlation
+
+    Args:
+        pocalvis: the calibrated visibility of the polcal
+
+    Example:
+        check_polcal(polcalvis)
+
+    """
+    if basename is None:
+        basename = os.path.basename(polcalvis)
+    outdir = os.path.join(plotdir, "polcal_corrected-"+basename)
+    os.system('mkdir -p {}'.format(outdir))
+
+    plotms(vis=polcalvis, xaxis='real', xdatacolumn='corrected', ydatacolumn='corrected',
+           yaxis='imag',  field=field, spw=spw, 
+           correlation='XX,YY', coloraxis='corr', 
+           averagedata=True, avgchannel='1e6', avgtime='1000', 
+           showgui=showgui, highres=True, overwrite=overwrite, 
+           plotfile='{}/polcal.XXYY.revsim.corrected.png'.format(outdir))
+    plotms(vis=polcalvis, xaxis='real', xdatacolumn='corrected', ydatacolumn='corrected',
+           yaxis='imag',  field=field, spw=spw, 
+           correlation='XY,YX', coloraxis='corr', 
+           averagedata=True, avgchannel='1e6', avgtime='1000', 
+           showgui=showgui, highres=True, overwrite=overwrite, 
+           plotfile='{}/polcal.XYYX.revsim.corrected.png'.format(outdir))
+
+
