@@ -1,4 +1,5 @@
-"""Utilities dealing with fits images
+#!/usr/bin/env python3
+"""A minimalist tool to deal with fits images
 
 Author: Jianhang Chen, cjhastro@gmail.com
 History:
@@ -8,9 +9,9 @@ Requirement:
     numpy
     matplotlib
     astropy >= 5.0
-    sep
+    photutils >= 1.0
+    sep (optional, used for source_finder)
 """
-
 
 import os
 import sys
@@ -28,7 +29,7 @@ from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
 from matplotlib import patches
 from astropy.modeling import models, fitting
-
+from astropy import convolution 
 
 from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
 
@@ -51,6 +52,7 @@ class Image(object):
             mask (optional): same shape as the data
         """
         self.data = data
+        self.shape = self.data.shape
         self.header = header
         self.wcs = wcs
         self.beam = beam
@@ -62,7 +64,11 @@ class Image(object):
         if self.header is None:
             if self.wcs is not None:
                 self.header = self.wcs.to_header()
-        self.imstat()
+        try:
+            self.mean, self.median, self.std = sigma_clipped_stats(self.image, sigma=5.0, mask=self.mask)
+        except:
+            print("Cannot derive the statistics of the image!")
+            pass
 
     def __getitem__(self, i):
             return self.data[i]
@@ -78,10 +84,18 @@ class Image(object):
     @property
     def imagesize(self):
         # the imagesize is in [ysize, xsize]
-        try: return self.data.shape[-2:]
+        try: return self.shape[-2:]
         except: return None
     @property
-    def image(self):
+    def nchan():
+        try: return self.shape[-3]
+        except: return None
+    @property
+    def npol():
+        try: return self.shape[-4]
+        except: return None
+    @property
+    def image(self,):
         if self.imagesize is not None:
             return self.data.reshape(self.imagesize)
         else:
@@ -120,23 +134,35 @@ class Image(object):
         """extract subimage from the orginal image
 
         Args:
-            s_ (:obj:`slice`): two dimension slice
+            s_ (:obj:`slice`): data slice, same shape as data
 
         Return:
             :obj:`Image`
         """
         data_sliced = self.data[s_].copy()
-        wcs_sliced = self.wcs[s_]
         shape_sliced = data_sliced.shape
+        wcs_sliced = self.wcs[s_].deepcopy()
+        # TODO: temperary solution, more general solution needs to consider the 
+        # shift the reference center, 
+        wcs_sliced.wcs.crpix[0] = (s_[-1].start + s_[-1].stop)//2
+        wcs_sliced.wcs.crpix[1] = (s_[-2].start + s_[-2].stop)//2
+        wcs_sliced.wcs.crval = self.wcs.wcs.crval + self.wcs.wcs.pc.dot(wcs_sliced.wcs.crpix - self.wcs.wcs.crpix) * self.wcs.wcs.cdelt
+        wcs_sliced.wcs.crpix[0] -= s_[-1].start 
+        wcs_sliced.wcs.crpix[1] -= s_[-2].start
         header_sliced = wcs_sliced.to_header()
-        header_sliced.set('NAXIS',len(shape_sliced))
-        header_sliced.set('NAXIS1',shape_sliced[3])
-        header_sliced.set('NAXIS2',shape_sliced[2])
+        naxis = len(shape_sliced)
+        header_sliced.set('NAXIS',naxis)
+        header_sliced.set('NAXIS1',shape_sliced[-1])
+        header_sliced.set('NAXIS2',shape_sliced[-2])
+        if naxis >= 3:
+            header_sliced.set('NAXIS3',shape_sliced[-3])
+        if naxis >= 4:
+            header_sliced.set('NAXIS4',shape_sliced[-4])
         return Image(data_sliced, header_sliced, self.beam)
 
     def imstat(self):
         # sigma clipping to remove any sources before calculating the RMS
-        self.mean, self.median, self.std = sigma_clipped_stats(self.image, sigma=5.0, mask=self.mask)
+        return sigma_clipped_stats(self.image, sigma=5.0, mask=self.mask)
 
     def pixel2skycoords(self, pixel_coords):
         """covert from pixel to skycoords
@@ -212,7 +238,7 @@ class Image(object):
             ax.axis('off')
         if show_fwhm:
             if self.beam is not None:
-                # fits image angle start with north, go anti-color wise if the angle is positive
+                # fits image angle start with north, go anti-clock wise if the angle is positive
                 # pyplot ellipse, angle is start with long axis and goes to the negative direction of x
                 ellipse = patches.Ellipse((0.8*np.max(x_index), 0.8*np.min(y_index)), 
                                       width=self.beam[1], height=self.beam[0], # put bmaj axis in north
@@ -391,16 +417,16 @@ class Image(object):
                 header = wcs.to_header()
             else: # create a new
                 header = fits.Header()
-        try: # shift the image reference pixel, tolerence is 4 pixels
-            if header['CRPIX1'] < (xsize//2-4) or header['CRPIX1'] > (xsize//+4):
-                header['CRVAL1'] += (1 - header['CRPIX1']) * header['CDELT1']
-                header['CRPIX1'] = xsize//2
-                print('Warning: automatically shifted the x axis reference.')
-            if header['CRPIX2'] < (ysize//-4) or header['CRPIX2'] > (ysize//+4):
-                header['CRVAL2'] += (1 - header['CRPIX2']) * header['CDELT2']
-                header['CRPIX2'] = ysize//2
-                print('Warning: automatically shifted the y axis reference.')
-        except: pass
+        # try: # shift the image reference pixel, tolerence is 4 pixels
+            # if header['CRPIX1'] < (xsize//2-4) or header['CRPIX1'] > (xsize//2+4):
+                # header['CRVAL1'] += (1 - header['CRPIX1']) * header['CDELT1']
+                # header['CRPIX1'] = xsize//2
+                # print('Warning: automatically shifted the x axis reference.')
+            # if header['CRPIX2'] < (ysize//-4) or header['CRPIX2'] > (ysize//2+4):
+                # header['CRVAL2'] += (1 - header['CRPIX2']) * header['CDELT2']
+                # header['CRPIX2'] = ysize//2
+                # print('Warning: automatically shifted the y axis reference.')
+        # except: pass
         if self.beam is not None:
             # follow the same rule as CASA, which use the units of deg
             header['BMAJ'] = self.beam[0] / 3600.
@@ -415,14 +441,14 @@ class Image(object):
         pass
 
     @staticmethod
-    def read(fitsimage, name=None, debug=False):
+    def read(fitsimage, extname='primary', name=None, debug=False):
         """read the fits file
         """
         with fits.open(fitsimage) as image_hdu:
             if debug:
                 print(image_hdu.info())
-            image_header = image_hdu[0].header
-            image_data = image_hdu[0].data * u.Unit(image_header['BUNIT'])
+            image_header = image_hdu[extname].header
+            image_data = image_hdu[extname].data * u.Unit(image_header['BUNIT'])
             try: 
                 image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
                               image_header['BPA']]
@@ -695,7 +721,7 @@ def measure_flux(image, coords=None,
                  mask=None, n_boostrap=100,
                  gaussian_segment_scale=4.0,
                  plot=False, ax=None, color='white', debug=False):
-    """Two-dimension flux measurement
+    """Two-dimension flux measurement in the pixel coordinates
     
     It supports three ways to provide the coordinates of the detection. The ``detections`` allows
     table-like input, while the pixel_coords and sky_coords allow direct coordinates.
@@ -704,22 +730,8 @@ def measure_flux(image, coords=None,
 
     Args:
         image: the data with or without units
-        detections: astropy.table, including all source position and shapes, this is intended to
-                    use the output from sep, a is first axis, theta in radian, goes to second axis
-                    the a,b than theta is should consistent with photutils EllipticalAperture
-        pixel_coords: the pixel coordinates of the detections, [[x1,y1], [x2,y2]]
-        sky_coords: the sky coordinates of the detections, a ``wcs`` should also be provided.
-        aperture_size: the fixed size of the aperture, in arcsec
-        a,b,theta: the size of the source, in arcsec and deg
-        minimal_aperture_size (deprecated): if the aperture_size is None, this can control the
-            minial aperture_size for the fain source, where the adaptive aperture 
-            could not be securely measured
-        minimal_peak_snr (deprecated): the minimal SNR to adopt the minimal_aperture_size
-        aperture_scale: the source shape determined aperture, lower priority than
-                        aperture_size
-    Note:
-        When several coordinates parameters are provided, detections has the
-        higher priority
+        coords: the pixel coordinates of the detections, [[x1,y1], [x2,y2]]
+        aperture: the fixed size of the aperture, in arcsec
     """
     imagesize = image.shape
     if isinstance(apertures, EllipticalAperture):
@@ -824,7 +836,14 @@ def make_rmap(image, scale=1.0):
     rmap = np.sqrt(x_map**2 + y_map**2)
     return rmap
 
-def make_gaussian_image(shape, fwhm=None, sigma=None, area=1., offset=(0,0), theta=0):
+def make_gaussian_kernel(shape, fwhm=None, sigma=None):
+    if fwhm is not None:
+        fwhm2sigma = 2.35482
+        sigma = (np.array(fwhm) / fwhm2sigma).tolist()
+    kernel = convolution.Gaussian2DKernel(*sigma)
+    return kernel
+
+def make_gaussian_image(shape, fwhm=None, sigma=None, area=1., offset=(0,0), theta=0, normalize=False):
     """make a gaussian image
 
     theta: in rad, rotating the gaussian counterclock wise
@@ -846,7 +865,8 @@ def make_gaussian_image(shape, fwhm=None, sigma=None, area=1., offset=(0,0), the
     elif isinstance(offset, (int, float)):
         y_offset = x_offset = offset
     flux = area * np.exp(-(x-x_offset)**2/2./xsigma**2 - (y-y_offset)**2/2./ysigma**2) / (2*np.pi*xsigma*ysigma)
-
+    if normalize:
+        flux = flux / np.sum(flux)
     return flux
 
 def gaussian_aperture_correction(imsize, fwhm, aperture, sourcesize=0,  debug=False):
