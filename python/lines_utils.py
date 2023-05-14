@@ -38,9 +38,36 @@ def print_lines(format='freq', z=0.0, mode='simple'):
                               ('12C18O_3-2', 329.330552*u.GHz), ('12C18O_6-5', 658.553278*u.GHz)])
     C_ion = OrderedDict([('CI_1-0', 492.16065100*u.GHz), ('CI_2-1', 809.34197*u.GHz), 
                          ('CII', 1900.5369*u.GHz)])
-    H2O = OrderedDict([('H2O_110-101', 556.93598770*u.GHz), ('H2O_211-202', 752.03314300*u.GHz),
-                       ('H2O_422-331', 916.17158000*u.GHz), ('H2O_423-330', 448.00107750*u.GHz),
-                       ('H2O_414-321', 380.19735980*u.GHz), ('H2O_532-441', 620.70095490*u.GHz)])
+    H2O = OrderedDict([
+                       ('H2O_414-321', 380.19735980*u.GHz), 
+                       ('H2O_423-330', 448.00107750*u.GHz),
+                       ('H2O_110-101', 556.93598770*u.GHz), 
+                       ('H2O_532-441', 620.70095490*u.GHz),
+                       ('H2O_211-202', 752.03314300*u.GHz),
+                       ('H2O_422-331', 916.17158000*u.GHz), 
+                       ('H2O_202-111', 987.92675900*u.GHz),
+                       ('H2O_312-303', 1097.36479000*u.GHz),
+                       ('H2O_111-000', 1113.34300700*u.GHz),
+                       ('H2O_321-312', 1162.91160200*u.GHz),
+                       ('H2O_422-413', 1207.63873000*u.GHz),
+                       ('H2O_220-211', 1228.78871900*u.GHz),
+                       ('H2O_523-514', 1410.61806900*u.GHz),
+                       ('H2O_413-404', 1602.21936900*u.GHz),
+                       ('H2O_221-212', 1661.00763700*u.GHz), 
+                       ('*H2O_212-101', 1669.90477500*u.GHz),
+                       ('*H2O_303-212', 1716.76963300*u.GHz),
+                       ('H2O_532-523', 1867.74859400*u.GHz),
+                       ('H2O_322-313', 1919.35953100*u.GHz),
+                       ('H2O_431-422', 2040.47681000*u.GHz),
+                       ('H2O_413_322', 2074.43230500*u.GHz),
+                       ('*H2O_313_202', 2164.13198000*u.GHz),
+                       ('H2O_330-321', 2196.34575600*u.GHz),
+                       ('H2O_514-505', 2221.75050000*u.GHz),
+                       ('*H2O_423-414', 2264.14965000*u.GHz),
+                       ('H2O_725-716', 2344.25033500*u.GHz),
+                       ('H2O_331-322', 2365.89965900*u.GHz),
+                       ('*H2O_404-313', 2391.57262800*u.GHz),
+                       ])
     HCN = OrderedDict([('HCN_1-0', 88.63160230*u.GHz), ('HCN_2-1', 177.26111150*u.GHz), 
                        ('HCN_3-2', 265.8864343*u.GHz), ('HCN_4-3', 354.50547790*u.GHz),
                        ('HCN_5-4', 443.1161493*u.GHz)])
@@ -49,10 +76,15 @@ def print_lines(format='freq', z=0.0, mode='simple'):
                          ('CS_5-4', 244.9355565*u.GHz), ('CS_6-5', 293.9120865*u.GHz),
                          ('CS_7-6', 342.8828503*u.GHz), ('CS_8-7', 391.8468898*u.GHz),
                          ('CS_9-8', 440.8032320*u.GHz), ('CS_10-9', 489.7509210*u.GHz)])
+    Special = OrderedDict([('CH+', 835.08*u.GHz),])
     if mode == 'simple':
         family_select = [CO_family, C_ion]
+    elif mode == 'water':
+        family_select = [H2O]
+    elif mode == 'all' or mode=='full':
+        family_select = [CO_family, CO_family2, CO_family3, C_ion, H2O, HCN, Special, Other]
     else:
-        family_select = [CO_family, CO_family2, CO_family3, C_ion, H2O, HCN, Other]
+        family_select = []
     for family in family_select:
         for line, freq in family.items():
             if 'freq' in format:
