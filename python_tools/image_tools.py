@@ -1164,7 +1164,7 @@ def beam2psf(beam, savefile=None, normalize=False, overwrite=False):
         hdr['COMMENT'] = "PSF generated from the image beam."
         # hdr['CRVAL1'] = self.pixel_sizes[0].to('arcsec').value
         # hdr['CRVAL2'] = self.pixel_sizes[1].to('arcsec').value
-        primary_hdu = fits.PrimaryHDU(header=hdr, data=psf_img)
+        primary_hdu = fits.PrimaryHDU(header=hdr, data=psf_image)
         primary_hdu.writeto(savefile, overwrite=overwrite)
     else:
         return psf_image
@@ -1174,9 +1174,9 @@ def image2noise(image, header=None, wcs=None, savefile=None,
     """
     """
     mean, median, std = sigma_clipped_stats(image, sigma=5.0, maxiters=3)
-    image_masked = np.ma.masked_array(image, mask=image>3*std)
+    image_masked = np.ma.masked_array(image, mask=image>sigma*std)
     image_1d = image_masked.filled(median).flatten()
-    noise_image = np.random.choice(image_1d, image.shape)
+    noise_image = np.abs(np.random.choice(image_1d, image.shape))
     if savefile is not None:
         hdr = fits.Header()
         hdr['COMMENT'] = "Noise image randomly sampled from the original."
