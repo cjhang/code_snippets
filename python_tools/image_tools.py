@@ -138,18 +138,6 @@ class Image(object):
         aperture = beam2aperture(beam)
         return aperture_stats(self.image, aperture=aperture, 
                               mask=mask, nsample=nsample)
-    def psf(self, savefile=None, normalize=False, overwrite=False):
-        # generate the psf from the beam
-        psf_img = make_gaussian_image(fwhm=self.pixel_beam, normalize=normalize)
-        if savefile is not None:
-            hdr = fits.Header()
-            hdr['COMMENT'] = "PSF generated from the image beam."
-            hdr['CRVAL1'] = self.pixel_sizes[0].to('arcsec').value
-            hdr['CRVAL2'] = self.pixel_sizes[1].to('arcsec').value
-            primary_hdu = fits.PrimaryHDU(header=hdr, data=psf_img)
-            primary_hdu.writeto(savefile, overwrite=overwrite)
-        return psf_img
-
     def update_wcs(self, wcs=None, header=None):
         if wcs is not None:
             self.wcs = wcs
@@ -1165,6 +1153,42 @@ def solve_impb(datafile=None, data=None, pbfile=None, pbdata=None,
         pbcor_values.append(pbdata[coord_int[1], coord_int[0]])
     # return Image(image=pbdata, header=header, name='pb')
     return pbcor_values
+
+def beam2psf(beam, savefile=None, normalize=False, overwrite=False):
+    """generate the psf from the beam
+
+    """
+    psf_image = make_gaussian_image(fwhm=beam, normalize=normalize)
+    if savefile is not None:
+        hdr = fits.Header()
+        hdr['COMMENT'] = "PSF generated from the image beam."
+        # hdr['CRVAL1'] = self.pixel_sizes[0].to('arcsec').value
+        # hdr['CRVAL2'] = self.pixel_sizes[1].to('arcsec').value
+        primary_hdu = fits.PrimaryHDU(header=hdr, data=psf_img)
+        primary_hdu.writeto(savefile, overwrite=overwrite)
+    else:
+        return psf_image
+
+def image2noise(image, header=None, wcs=None, savefile=None, 
+                overwrite=False):
+    """
+    """
+    mean, median, std = sigma_clipped_stats(image, sigma=5.0, maxiters=3)
+    image_masked = np.ma.masked_array(image, mask=image>3*std)
+    image_1d = image_masked.filled(median).flatten()
+    noise_image = np.random.choice(image_1d, image.shape)
+    if savefile is not None:
+        hdr = fits.Header()
+        hdr['COMMENT'] = "Noise image randomly sampled from the original."
+        # hdr['CRVAL1'] = self.pixel_sizes[0].to('arcsec').value
+        # hdr['CRVAL2'] = self.pixel_sizes[1].to('arcsec').value
+        primary_hdu = fits.PrimaryHDU(header=hdr, data=noise_image)
+        primary_hdu.writeto(savefile, overwrite=overwrite)
+    else:
+        return noise_image
+
+
+
 
 ########################################
 ########### plot functions #############
