@@ -120,16 +120,19 @@ def generate_spw(chan_list):
                 end_chan = item_int
     return '*:' + str(start_chan) + '~' + str(end_chan)
 
-def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
-                  mode='stat', flagfile=None,
-                  show_timerange=True, show_spw=False, debug=False,):
+def locating_flag(logfile, n=5, vis='', intt=1.0, 
+                  avgtime=None, avgchannel=None,
+                  mode='stat', flagfile=None, 
+                  flagopts='antenna,field,spw,scan,correlation,timerange',
+                  # show_timerange=True, show_spw=False, 
+                  debug=False, flagbackup=False, ):
     """Searching flag information in logfile
     
     Example
     -------
     As a package:
         from locating_flag import locating_flag
-        locating_flag(logfile, n=5)
+        locating_flag(casalog.logfile, n=5)
     In casa:
         execfile locating_flag.py
 
@@ -153,16 +156,23 @@ def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
         'stat' or 'statistics': print out the antenna and baseline statistics
         'single': generate flagdata command for each point in plotms
         default: 'stat'
-    show_timerange : bool
+    flagopts : str
+        contain the list of wanted flag options
+        including: antenna/baseline, scan, correlation, field, timerange
+    show_timerange : bool (deprecated)
         generate the timerange in the flagdata command
         default: True
-    show_spw : bool
+    show_spw : bool (deprecated)
         generate spw in the flagdata command
         default: False
     debug : bool
         printing the matching information in the match_info function
         default: False
     """
+    print('flagopts: {}'.format(flagopts))
+    print('integration time interval: {}s'.format(intt))
+    print(">>")
+
     n_select_start = 0
     n_select_end = 0
     p_select = re.compile('Found (?P<n_select>\d+) points \((?P<n_unflagged>\d+) unflagged\)')
@@ -197,6 +207,9 @@ def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
             print("{}:\n{}\n".format(item, pretty_output(Counter(match_stat[item]).most_common(n))))
 
         # generate flagdata command
+        flag_antenna = ''
+        for ant in Counter(match_stat['ant1&ant2']).most_common(n):
+            flag_antenna += "{},".format(ant[0])
         flag_baseline = ''
         for baseline in Counter(match_stat['baselines']).most_common(n):
             flag_baseline += "{};".format(baseline[0])
@@ -206,15 +219,28 @@ def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
         flag_corr = ''
         for corr in Counter(match_stat['corrs']).most_common(n):
             flag_corr += "{},".format(corr[0])
-        
-        flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1])
-        if show_timerange:
-            flag_timerange = generate_timerange(match_stat['time'], intt=intt, avgtime=avgtime)
-            flag_cmd += "timerange='{}', ".format(flag_timerange)
-        if show_spw:
+        flag_field = ''
+        for field in Counter(match_stat['fields']).most_common(n):
+            flag_field += "{},".format(field[0])
+        # flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,flag_baseline[:-1], flag_scan[:-1], flag_corr[:-1])
+        flag_cmd = "vis={}, mode='manual', ".format(vis)
+        if 'ant' in flagopts:
+            flag_cmd += "antenna='{}', ".format(flag_antenna[:-1]) 
+        if 'baseline' in flagopts:
+            flag_cmd += "antenna='{}', ".format(flag_baseline[:-1]) 
+        if 'scan' in flagopts:
+            flag_cmd += "scan='{}', ".format(flag_scan[:-1])
+        if 'corr' in flagopts:
+            flag_cmd += "correlation='{}', ".format(flag_corr[:-1])
+        if 'field' in flagopts:
+            flag_cmd += "field='{}', ".format(flag_field[:-1])
+        if 'spw' in flagopts:
             flag_spw = generate_spw(match_stat['chans'])
             flag_cmd += "spw='{}', ".format(flag_spw)
-        print("flagdata({}flagbackup=False)".format(flag_cmd))
+        if 'timerange' in flagopts:
+            flag_timerange = generate_timerange(match_stat['time'], intt=intt, avgtime=avgtime)
+            flag_cmd += "timerange='{}', ".format(flag_timerange)
+        print("flagdata({}flagbackup={})".format(flag_cmd, flagbackup))
 
     elif mode == 'single':
         for line in all_lines[n_select_start:n_select_end]:
@@ -223,14 +249,30 @@ def locating_flag(logfile, n=5, vis='', intt=1.0, avgtime=None,
                 print("\nOriginal flagInfo:", line)
                 print("Matched info:", info_matched)
 
-            flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,info_matched['baseline'], 
-                    info_matched['scan'], info_matched['corr'])
-            if show_timerange:
-                flag_timerange = generate_timerange(info_matched['time'], intt=intt, avgtime=avgtime)
-                flag_cmd += "timerange='{}', ".format(flag_timerange)
-            if show_spw:
-                flag_spw = generate_spw(info_matched['chan'])
+            # flag_cmd = "vis={}, mode='manual', antenna='{}', scan='{}', correlation='{}', ".format(vis ,info_matched['baseline'], 
+                    # info_matched['scan'], info_matched['corr'])
+            # if show_timerange:
+                # flag_timerange = generate_timerange(info_matched['time'], intt=intt, avgtime=avgtime)
+                # flag_cmd += "timerange='{}', ".format(flag_timerange)
+            # if show_spw:
+                # flag_spw = generate_spw(info_matched['chan'])
+                # flag_cmd += "spw='{}', ".format(flag_spw)
+
+            flag_cmd = "vis={}, mode='manual', ".format(vis)
+            if 'ant' in flagopts:
+                flag_cmd += "antenna='{}', ".format(info_matched['baseline']) 
+            if 'scan' in flagopts:
+                flag_cmd += "scan='{}', ".format(info_matched['scan'])
+            if 'corr' in flagopts:
+                flag_cmd += "correlation='{}', ".format(info_matched['corr'])
+            if 'spw' in flagopts:
+                flag_spw = generate_spw(info_matched['chans'])
                 flag_cmd += "spw='{}', ".format(flag_spw)
+            if 'timerange' in flagopts:
+                flag_timerange = generate_timerange(info_match['time'], intt=intt, avgtime=avgtime)
+                flag_cmd += "timerange='{}', ".format(flag_timerange)
+
+
             if flagfile:
                 with open(flagfile, "a") as ff:
                     ff.write("flagdata({}flagbackup=False)".format(flag_cmd))
