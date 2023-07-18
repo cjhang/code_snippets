@@ -19,6 +19,8 @@ Requirement:
     sep (optional, used for source_finder)
 """
 
+__version__ = '1.0.8'
+
 import os
 import sys
 import numpy as np
@@ -130,9 +132,8 @@ class Image(object):
     def imstats(self):
         return sigma_clipped_stats(self.image, sigma=5.0, maxiters=2)
     def beam_stats(self, beam=None, mask=None, nsample=100):
-        # sigma clipping to remove any sources before calculating the RMS
         if beam is None:
-            beam = self.beam
+            beam = self.pixel_beam
         if mask is None:
             mask = self.mask
         aperture = beam2aperture(beam)
@@ -151,7 +152,7 @@ class Image(object):
         """
         if self.beam is not None:
             if 'beam' in self.unit.to_string():
-                self.image = self.image/self.beamsize*u.beam
+                self.data = self.data/self.beamsize*u.beam
 
     def subimage(self, s_):
         """extract subimage from the orginal image
@@ -207,9 +208,9 @@ class Image(object):
     def plot(self, image=None, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
              show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
              show_rms=False, show_flux=True, show_sky_sources=[], show_pixel_sources=[],
-             show_detections=False, detections=None, aperture_scale=6.0, aperture_size=None, 
+             show_detections=False, detections=None, aperture_scale=1.0, aperture_size=None, 
              show_detections_yoffset='-1x', show_detections_color='white', fontsize=12, 
-             figname=None, show_colorbar=True, **kwargs):
+             figname=None, show_colorbar=True, extent=None, **kwargs):
         """general plot function build on FitsImage
 
         Args:
@@ -226,7 +227,8 @@ class Image(object):
             if isinstance(self.image, u.Quantity):
                 image = self.image.value
             else: image = self.image
-        ax.set_title(name)
+        if name is not None:
+            ax.set_title(name)
         ny, nx = self.shape
         x_index = (np.arange(0, nx) - nx/2.0) * self.pixel_sizes[0].value # to arcsec
         # x_index = (np.arange(nx-1, -1, -1) - nx/2.0) * self.pixel2deg_ra * 3600 # to arcsec
@@ -291,7 +293,7 @@ class Image(object):
                         aper_height = aperture_size
                 ellipse_det = patches.Ellipse((xdet, ydet), 
                         width=aper_width, height=aper_height, 
-                        angle=det['theta']*180/np.pi, 
+                        angle=180-det['theta']*180/np.pi, # positive x is the left 
                         facecolor=None, edgecolor=show_detections_color, alpha=0.8, fill=False)
                 ax.add_patch(ellipse_det)
                 # ellipse_det = EllipticalAperture([xdet, ydet], det['a']*aperture_scale, 
@@ -1026,7 +1028,7 @@ def make_gaussian_image(imsize=None, fwhm=None, sigma=None, area=1., offset=(0,0
     ysigma, xsigma = sigma
     if imsize is None:
         #auto_size = np.max([np.round(np.max(sigma) * 10).astype(int), 21])
-        auto_size = np.round(np.max(sigma) * 10).astype(int)
+        auto_size = (np.round(np.max(sigma) * 10).astype(int))//2*2-1
         imsize = [auto_size, auto_size]
     elif isinstance(imsize, (int, float)):
         imsize = [imsize, imsize]
@@ -1169,25 +1171,30 @@ def beam2psf(beam, savefile=None, normalize=False, overwrite=False):
     else:
         return psf_image
 
-def image2noise(image, header=None, wcs=None, savefile=None, 
-                overwrite=False):
+def image2noise(image, shape=None, header=None, wcs=None, savefile=None, sigma=5.0, 
+                mode='std', overwrite=False,):
     """
     """
-    mean, median, std = sigma_clipped_stats(image, sigma=5.0, maxiters=3)
-    image_masked = np.ma.masked_array(image, mask=image>sigma*std)
-    image_1d = image_masked.filled(median).flatten()
-    noise_image = np.abs(np.random.choice(image_1d, image.shape))
+    mean, median, std = sigma_clipped_stats(image, sigma=sigma, maxiters=3)
+    if shape is None:
+        shape = image.shape
+    if mode == 'median':
+        noise_image = np.full(shape, fill_value=np.abs(median))
+    if mode == 'std':
+        noise_image = np.full(shape, fill_value=np.abs(std))
+    elif mode == 'random_choice':
+        image_masked = np.ma.masked_array(image, mask=image>sigma*std)
+        image_1d = image_masked.filled(median+std).flatten()
+        noise_image = np.abs(np.random.choice(image_1d, image.shape))
     if savefile is not None:
         hdr = fits.Header()
-        hdr['COMMENT'] = "Noise image randomly sampled from the original."
+        hdr['COMMENT'] = "Noise image from the original ({}).".format(mode)
         # hdr['CRVAL1'] = self.pixel_sizes[0].to('arcsec').value
         # hdr['CRVAL2'] = self.pixel_sizes[1].to('arcsec').value
         primary_hdu = fits.PrimaryHDU(header=hdr, data=noise_image)
         primary_hdu.writeto(savefile, overwrite=overwrite)
     else:
         return noise_image
-
-
 
 
 ########################################
