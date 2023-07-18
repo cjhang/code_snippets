@@ -138,7 +138,7 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
     if show_ants and not os.path.exists('{}/antpos.png'.format(outdir)):
         # Checking antenna position, choosing the reference antenna
         print('Plotting antenna positions...')
-        plotants(vis=vis, figfile='{}/antpos.png'.format(outdir), showgui=False)
+        plotants(vis=vis, figfile='{}/refant{}_antpos.png'.format(outdir, refant), showgui=False)
 
     if show_mosaic:
         # TODO, adapt the function from analysisUtils
@@ -156,33 +156,33 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
         # Checking the evevation, determine the need of elivation calibration
         plotms(vis=vis, xaxis='time', yaxis='elevation', spw=spw,
                avgchannel=avgchannel, coloraxis='field', highres=True,
-               plotfile='{}/elevation.png'.format(outdir), 
+               plotfile='{}/refant{}_elevation.png'.format(outdir, refant), 
                showgui=showgui, overwrite=overwrite)
 
     if show_allobs and not os.path.exists('{}/all_observations.png'.format(outdir)):
         print("Plotting amplitude with time for all obs...")
         plotms(vis=vis, xaxis='time', yaxis='amp', spw=spw,  highres=True,
                avgchannel=avgchannel, avgtime='60', coloraxis='field',
-               plotfile='{}/all_observations.png'.format(outdir),
+               plotfile='{}/refant{}_all_observations.png'.format(outdir, refant),
                showgui=showgui, overwrite=overwrite, **kwargs)
     if True:
         print("Plotting amplitude vs channel for bandpass calibrator")
         # this is useful to select the channel to derive short time phase calibration of bandpass
         plotms(vis=vis, xaxis='channel', yaxis='amp', spw=spw,  highres=True,
                avgchannel='', avgtime='60', coloraxis='ant1',
-               plotfile='{}/bandpass_amp_vs_chan.png'.format(outdir),
+               plotfile='{}/refant{}_bandpass_amp_vs_chan.png'.format(outdir, refant),
                showgui=showgui, overwrite=overwrite, **kwargs)
 
     if show_uv and not os.path.isfile('{}/uvcoverage.png'.format(outdir)):
         plotms(vis=vis, xaxis='U', yaxis='V', coloraxis='field', highres=True, 
                spw=spw, showgui=showgui, avgchannel=avgchannel, 
-               plotfile='{}/uvcoverage.png'.format(outdir),
+               plotfile='{}/refant{}_uvcoverage.png'.format(outdir, refant),
                overwrite=overwrite)
     if show_fields:
         if fields is None:
             print("Warning: plot all the fields togeather!")
             fields_list = ['',]
-        elif isinstance(fields, (list, tuple)):
+        elif isinstance(fields, (list, tuple, np.ndarray)):
             fields_list = fields
         elif isinstance(fields, str):
             fields_list = fields.split(',')
@@ -190,17 +190,17 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
             # amp change with time
             plotms(vis=vis, field=myfield, xaxis='time', yaxis='amp', antenna=refant,
                    avgchannel=avgchannel, spw=spw, coloraxis='spw',
-                   plotfile='{}/field{}_amp_time.png'.format(outdir, myfield), 
+                   plotfile='{}/refant{}_field{}_amp_time.png'.format(outdir, refant, myfield), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
             # amplitude change with freq
             plotms(vis=vis, field=myfield, xaxis='freq', yaxis='amp', antenna=refant,
                    avgtime=avgtime,spw=spw, coloraxis='scan',
-                   plotfile='{}/field{}_amp_freq.png'.format(outdir, myfield), 
+                   plotfile='{}/refant{}_field{}_amp_freq.png'.format(outdir, refant, myfield), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
             # amp change with uvdist
             plotms(vis=vis, field=myfield, xaxis='uvdist', yaxis='amp', antenna=refant,
                    avgchannel=avgchannel, spw=spw, coloraxis='spw',
-                   plotfile='{}/field{}_amp_uvdist.png'.format(outdir, myfield), 
+                   plotfile='{}/refant{}_field{}_amp_uvdist.png'.format(outdir, refant, myfield), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
     if show_intents:
         for myintent in intents:
@@ -208,17 +208,17 @@ def check_info(vis=None, showgui=False, plotdir='./plots', basename=None,
             # amp change with time
             plotms(vis=vis, intent=myintent, xaxis='time', yaxis='amp', antenna=refant,
                    avgchannel=avgchannel, spw=spw, coloraxis='spw',
-                   plotfile='{}/{}_amp_time.png'.format(outdir, myintent_name), 
+                   plotfile='{}/reftant{}_{}_amp_time.png'.format(outdir, refant, myintent_name), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
             # amplitude change with freq
             plotms(vis=vis, intent=myintent, xaxis='freq', yaxis='amp', antenna=refant,
                    avgtime=avgtime,spw=spw, coloraxis='scan',
-                   plotfile='{}/{}_amp__freq.png'.format(outdir, myintent_name), 
+                   plotfile='{}/refant{}_{}_amp__freq.png'.format(outdir, refant, myintent_name), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
             # amp change with uvdist
             plotms(vis=vis, intent=myintent, xaxis='uvdist', yaxis='amp', antenna=refant,
                    avgchannel=avgchannel, spw=spw, coloraxis='spw',
-                   plotfile='{}/{}_amp_uvdist.png'.format(outdir, myintent_name), 
+                   plotfile='{}/refant{}_{}_amp_uvdist.png'.format(outdir, refant, myintent_name), 
                    highres=True, showgui=showgui, overwrite=overwrite, **kwargs)
 
 
@@ -445,7 +445,7 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected', basename=None,
     if plot_uvdist:
         # well behaved point source should show flat amplitude with uvdist
         print("Plot uvdist related calibration for {} ...".format(field))
-        os.system('mkdir -p {}/uvdist/'.format(outdir))
+        os.system('mkdir -p {}/uvdist_{}/'.format(outdir, ydatacolumn))
         for field_single in field.split(','):
             print('>> field: {}'.format(field_single))
             for spw_single in spw.split(','):
@@ -454,12 +454,12 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected', basename=None,
                 else:
                     mycoloraxis = 'corr'
                 plotms(vis=vis, field=field_single, xaxis='uvdist', yaxis='amp', spw=spw_single,
-                       avgchannel=avgchannel, coloraxis='corr', ydatacolumn=ydatacolumn,
-                       plotfile='{}/uvdist/field{}_spw{}_amp_vs_uvdist.png'.format(outdir, field_single, spw_single),
+                       avgchannel=avgchannel, coloraxis=mycoloraxis, ydatacolumn=ydatacolumn,
+                       plotfile='{}/uvdist_{}/field{}_spw{}_amp_vs_uvdist.png'.format(outdir, ydatacolumn, field_single, spw_single),
                        dpi=dpi, overwrite=overwrite, showgui=showgui, highres=True, **kwargs)
                 plotms(vis=vis, field=field_single, xaxis='U', yaxis='V', spw=spw_single,
                        avgchannel=avgchannel, coloraxis=mycoloraxis, ydatacolumn=ydatacolumn,
-                       plotfile='{}/uvdist/field{}_spw{}_uvcoverage.png'.format(outdir, field_single, spw_single),
+                       plotfile='{}/uvdist_{}/field{}_spw{}_uvcoverage.png'.format(outdir, ydatacolumn, field_single, spw_single),
                        dpi=dpi, overwrite=overwrite, showgui=showgui, highres=True, **kwargs)
 
 def check_bandpass(bandpass='bandpass.bcal', field='', spw='', 
@@ -525,7 +525,9 @@ def check_gain(gaintable=None, plot_phase=True, plot_amp=False,
         plotdir (str): the root directory to put all the generated plots
     """
     os.system('mkdir -p {}/'.format(plotdir))
-    if os.path.exists(gaintable):
+    if not os.path.exists(gaintable):
+        print("Warning: you should give the correct gain table!")
+    else:
         subgroups = group_antenna(gaintable, subgroup_member=gridrows*gridcols)
         if plot_phase:
             print('Plotting phase gain...')
@@ -548,87 +550,100 @@ def check_gain(gaintable=None, plot_phase=True, plot_amp=False,
                                yaxis='amp', antenna=antenna, iteraxis='antenna', coloraxis='corr',
                                plotfile='{}/amp_field{}_spw{}_page{}.png'.format(plotdir, field_single, spw_single, page),
                                showgui=False, dpi=dpi, highres=True, overwrite=True)
-    else:
-        print("Warning: you should give the correct gain table!")
 
 
 ## plot functions for full-polarisation calibration
 
-def check_pol_info(vis, field='', spw='', show_parangle=True, dpi=400, plotdir='./plots/polcal'):
+def check_pol_info(vis, basename=None, field='', spw='', show_parangle=True, 
+                   ydatacolumn='data', dpi=400, showgui=False, overwrite=False,
+                   plotdir='./plots'):
     """give a first impression on the data
     """
+    if basename is None:
+        basename = os.path.basename(vis)
+    outdir = plotdir #os.path.join(plotdir, "pol_info."+basename)
+    os.system('mkdir -p {}'.format(outdir))
+
     # check amp vs parallel angle range, minimal requirement for ALMA is 60deg
     if show_parangle:
         plotms(vis=vis, field=field, spw=spw, xaxis='parang', yaxis='amp', 
-               correlation='XX,YY', ydatacolumn=thedatacol, showgui=False,
+               correlation='XX,YY', ydatacolumn=ydatacolumn, showgui=showgui,
                averagedata=True, avgchannel='1e6', avgbaseline=True, coloraxis='corr',
-               plotfile=mymsname+".amp-vs-pa.spw"+str(myspw)+".png"
-               plotfile='{}/parangle_field{}_spw{}.png'.format(plotdir, yaxis, field, spw),
+               plotfile='{}/parangle_amp_{}.png'.format(outdir, basename),
                dpi=dpi, highres=True, overwrite=True)
-    
-    pass
 
-def check_pol_gaincal():
+def check_pol_gaincal(gaincal, basename=None, plotdir='./plots',
+                      dpi=400, overwrite=True, showgui=False,):
     """check the gaincal of the polarized calibrator. 
     
     Extract from the normal gaincal of the polarized calibrator
     """
-    pass
+    if basename is None:
+        basename = os.path.basename(gaincal)
+    outdir = plotdir #os.path.join(plotdir, "pol_info."+basename)
+    os.system('mkdir -p {}'.format(outdir))
+
+    # plot the complex polarisation ratio
+    plotms(vis=gaincal, field='', xaxis='scan', yaxis='amp',
+           coloraxis='spw', correlation='/', showgui=False, 
+           plotfile='{}/pol_amp_{}.png'.format(outdir, basename),
+           dpi=dpi, highres=True, overwrite=overwrite)
 
 
-def check_pol_kcross(vis):
+def check_Kcross(Kcrosstable, refant='', showgui=False, gridrows=2, gridcols=2,
+                 plotdir='./plots', basename=None, ydatacolumn='data',
+                 overwrite=True, dpi=600, **kwargs):
     """ check the correction for linear phase variation and select suitable scan
-
-    TODO: 
-    1. check the all the baseline with the refant
-    2. check all the antenna
-
+    
+    example:
+        
+        check_Kcross(Kcrosstable, refant='1', plotdir='./plots')
+        
     """
-    subgroups = group_antenna(vis, refant=refant, subgroup_member=gridrows*gridcols)
-    plotms(vis=vis, ydatacolumn='corrected',
-           xaxis='freq', yaxis='phase',
-           field= polcal_field, 
-           avgtime='1e9',
-           correlation='XY,YX',
-           spw='', antenna='DA48',
-           iteraxis='baseline',coloraxis='corr',
-           showgui=True,
-           plotrange=[0,0,-180,180])
+    if basename is None:
+        basename = os.path.basename(Kcrosstable)
+    outdir = os.path.join(plotdir, "Kcross-"+basename)
+    os.system('mkdir -p {}'.format(outdir))
 
-def check_XYfQU(vis):
+    subgroups = group_antenna(Kcrosstable, refant=refant, subgroup_member=gridrows*gridcols)
+    for page, subgroup in enumerate(subgroups):
+        plotms(vis=Kcrosstable,
+               xaxis='freq', yaxis='phase',
+               avgtime='1e9', ydatacolumn=ydatacolumn,
+               correlation='XY,YX',
+               spw='', antenna=subgroup,
+               iteraxis='baseline',coloraxis='corr',
+               showgui=showgui, gridrows=gridrows, gridcols=gridcols,
+               plotrange=[0,0,-180,180],
+               plotfile='{}/freq_phase_{}_page{}.png'.format(outdir, ydatacolumn, page), 
+               highres=True, overwrite=overwrite, **kwargs)
+
+def check_XfparangQU(Xfparangtable, showgui=False, plotdir='./plots', basename=None,
+                overwrite=True, dpi=600, **kwargs):
     """check the correction for small non-linear absolute phase variation in different antenna
-    """
-    plotms(vis=vis,
-           ydatacolumn='corrected',
-           xdatacolumn='corrected',
-           xaxis='real', yaxis='imag',
-           field=polcal_field,
-           avgtime='1e9',
-           avgchannel='64',
-           avgbaseline=True,
-           correlation='XY,YX',
-           spw='3', 
-           coloraxis='corr',
-           showgui=True,
-           plotrange=[-0.06,0.06,-0.06,0.06])
 
-def check_polgain(obs_apint_pcal, polcal_field='',):
-    """check the solution of amp of polarisation calibrator
-
-    This function should be used to for two gain solutions, one with unpolarized source model
-    another one with polarised model. 
-    The first solution should absorb the polarised single (amp change with parallactic angle or time)
-    The second solution should have no such signal if the correct model is used
+    Example:
+        
+        check_XYfQU(polcaltable, plotdir='./plots')
+    
     """
-    if isinstance(obs_apint_pcal, (list, tuple)):
-        # ToDo: generate the comparsion bettween this two solutions
-        pass
-    plotms(vis=obs_apint_pcal, xaxis='time', yaxis='amp', field=polcal_field, 
-           correlation='/', coloraxis='antenna1', showgui=True)
+    if basename is None:
+        basename = os.path.basename(Xfparangtable)
+    outdir = os.path.join(plotdir, "XfparangQU-"+basename)
+    os.system('mkdir -p {}'.format(outdir))
+
+    plotms(vis=Xfparangtable, xaxis='freq', yaxis='phase', 
+           antenna='0', coloraxis='spw', gridrows=2, rowindex=0,
+           showgui=showgui) 
+    plotms(vis=Xfparangtable, xaxis='chan', yaxis='phase', 
+           antenna='0', coloraxis='spw', gridrows=2, rowindex=1, 
+           plotindex=1, clearplots=False, showgui=showgui,
+           plotfile='{}/Xfparang.png'.format(outdir), 
+           highres=True, overwrite=overwrite)
 
 def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=None,
                 overwrite=True, gridrows=2, gridcols=3, dpi=600, 
-               **kwargs):
+                **kwargs):
     """check the solutions of the instrument polarisation (Dterm)
 
     Args:
@@ -638,8 +653,7 @@ def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=N
                   to seperate different plots
 
     Examples:
-        check_Dterm('concat_S1.Df0gen', spw='1', basename='S1')
-        
+        check_Dterm('concat_S1.Df0gen', plotdir='./plots')
 
     """
     if basename is None:
@@ -650,15 +664,15 @@ def check_Dterm(Dtermtable, spw='', showgui=False, plotdir='./plots', basename=N
     for yaxis in ['amp', 'real', 'imag']:
         subgroups = group_antenna(Dtermtable, subgroup_member=gridrows*gridcols)
         for page, subgroup in enumerate(subgroups):
-            plotms(vis=Dtermtable, xaxis='frequency', yaxis=yaxis, antenna=subgroup,
-                   spw=spw, iteraxis='antenna', coloraxis='corr', 
+            plotms(vis=Dtermtable, xaxis='chan', yaxis=yaxis, antenna=subgroup,
+                   spw=spw, iteraxis='antenna', coloraxis='spw', 
                    plotfile='{}/freq_{}_spw{}_page{}.png'.format(outdir, yaxis, spw, page), 
                    showgui=showgui, gridrows=gridrows, gridcols=gridcols,
                    highres=True, **kwargs)
 
 def check_Gxyamp(Gxyamptable, gridrows=2, gridcols=2, basename=None, plotdir='./plots',
                  showgui=False, overwrite=True):
-    """check the final normaized amp 
+    """check the final normaized map 
 
     Example:
         
@@ -678,8 +692,8 @@ def check_Gxyamp(Gxyamptable, gridrows=2, gridcols=2, basename=None, plotdir='./
            showgui=showgui, highres=True, overwrite=overwrite,
            plotfile='{}/GxyampRatio.png'.format(outdir)) 
 
-def check_polcal(polcalvis, spw='', field='', plotdir='./plots', basename=None, 
-                 showgui=False, overwrite=True):
+def check_polcal(polvis, spw='', field='', plotdir='./plots', basename=None, 
+                 showgui=False, datacolumn='corrected', overwrite=True):
     """check the calibrated polarised calibrator
         
     This function plots the complexity of the calibrated parallel correlation and cross correlation
@@ -688,25 +702,25 @@ def check_polcal(polcalvis, spw='', field='', plotdir='./plots', basename=None,
         pocalvis: the calibrated visibility of the polcal
 
     Example:
-        check_polcal(polcalvis)
+        check_polcal(polcalvis, plotdir='./plots')
 
     """
     if basename is None:
-        basename = os.path.basename(polcalvis)
-    outdir = os.path.join(plotdir, "polcal_corrected-"+basename)
+        basename = os.path.basename(polvis)
+    outdir = os.path.join(plotdir, "polcal-{}-{}".format(datacolumn, basename))
     os.system('mkdir -p {}'.format(outdir))
 
-    plotms(vis=polcalvis, xaxis='real', xdatacolumn='corrected', ydatacolumn='corrected',
+    plotms(vis=polvis, xaxis='real', xdatacolumn=datacolumn, ydatacolumn=datacolumn,
            yaxis='imag',  field=field, spw=spw, 
            correlation='XX,YY', coloraxis='corr', 
            averagedata=True, avgchannel='1e6', avgtime='1000', 
            showgui=showgui, highres=True, overwrite=overwrite, 
-           plotfile='{}/polcal.XXYY.revsim.corrected.png'.format(outdir))
-    plotms(vis=polcalvis, xaxis='real', xdatacolumn='corrected', ydatacolumn='corrected',
+           plotfile='{}/polcal.field{}.XXYY.revsim.{}.png'.format(outdir, field, datacolumn))
+    plotms(vis=polvis, xaxis='real', xdatacolumn=datacolumn, ydatacolumn=datacolumn,
            yaxis='imag',  field=field, spw=spw, 
            correlation='XY,YX', coloraxis='corr', 
            averagedata=True, avgchannel='1e6', avgtime='1000', 
            showgui=showgui, highres=True, overwrite=overwrite, 
-           plotfile='{}/polcal.XYYX.revsim.corrected.png'.format(outdir))
+           plotfile='{}/polcal.field{}.XYYX.revsim.{}.png'.format(outdir, field, field, datacolumn))
 
 

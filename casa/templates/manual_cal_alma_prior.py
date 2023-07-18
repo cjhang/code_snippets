@@ -190,6 +190,10 @@ for obs in obs_list:
     try:
         plot_utils.check_cal(vis=obs, refant=myrefant, ydatacolumn='corrected', 
                              field=calibrators, spw=myspw, plotdir='plots/aprior_refant')
+        plot_utils.check_cal(vis=obs, spw=science_spw, field=bcal, ydatacolumn='data', 
+                             yaxis=['amplitude'], plotdir='plots/priorcal/before')
+        plot_utils.check_cal(vis=obs, spw=science_spw, field=bcal, ydatacolumn='corrected', 
+                             yaxis=['amplitude'], plotdir='plots/priorcal/after')
     except:
         print("Load plot_utils to generate the plots!")
 

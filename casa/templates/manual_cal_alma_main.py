@@ -47,7 +47,7 @@ except:
 if False:
     # bulk flagging
     # flag edge channels
-    flagdata(vis=vis, spw='*:0~2,*:60~63')
+    flagdata(vis=vis, spw='*:0~3,*:60~63')
     flagmanager(vis=vis, mode='save', versionname='Beforebandpass_flag')
     # specific flagging
     flagdata(vis='', mode='manual', antenna='', timerange='', flagbackup=False)

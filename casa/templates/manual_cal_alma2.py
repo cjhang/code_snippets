@@ -47,11 +47,11 @@ if plot_utils is None:
         plot_results = False
 
 # Flagging the useless data
-flagdata(vis=msfile, mode='unflag', flagbackup=False)
+# flagdata(vis=msfile, mode='unflag', flagbackup=False)
 flagdata(vis=msfile, mode='manual', autocorr=True, flagbackup=False)
-# flagdata(vis=msfile, mode='manual', 
-        # intent='*POINTING*,*ATMOSPHERE*', flagbackup=False)
 flagdata(vis=msfile, mode='shadow', flagbackup=False)
+flagdata(vis=msfile, mode='manual', 
+        intent='*POINTING*,*ATMOSPHERE**,SIDEBAND_RATIO*', flagbackup=False)
 flagmanager(vis=msfile, mode='list')
 
 # Flag edge channel

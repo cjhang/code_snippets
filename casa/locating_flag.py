@@ -266,10 +266,10 @@ def locating_flag(logfile, n=5, vis='', intt=1.0,
             if 'corr' in flagopts:
                 flag_cmd += "correlation='{}', ".format(info_matched['corr'])
             if 'spw' in flagopts:
-                flag_spw = generate_spw(info_matched['chans'])
+                flag_spw = generate_spw(info_matched['chan'])
                 flag_cmd += "spw='{}', ".format(flag_spw)
             if 'timerange' in flagopts:
-                flag_timerange = generate_timerange(info_match['time'], intt=intt, avgtime=avgtime)
+                flag_timerange = generate_timerange(info_matched['time'], intt=intt, avgtime=avgtime)
                 flag_cmd += "timerange='{}', ".format(flag_timerange)
 
 

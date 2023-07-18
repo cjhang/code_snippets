@@ -89,6 +89,29 @@ def import_rawdata(rawdir='../raw', outdir='./', overwrite=False, **kwargs):
             listobs(vis=obs, listfile=obs_listobs, verbose=True, overwrite=overwrite)
 
 
+###########################################
+# ms tools
+####################
+
+def search_fields(msfile):
+    try:
+        from casatools import msmetadata
+        msmd_local = msmetadata()
+    except:
+        print("Failed: cannot import msmetadata from casatools!")
+        return 0
+    fields = {}
+    msmd_local.open(msfile)
+    lookup = msmd.fieldnames()
+    fields['gcal'] = lookup[msmd.fieldsforintent('*PHASE*')[0]]
+    fields['bcal'] = lookup[msmd.fieldsforintent('*BANDPASS*')[0]]
+    fields['pcal'] = lookup[msmd.fieldsforintent('*POLARIZATION*')[0]]
+    fields['fcal'] = lookup[msmd.fieldsforintent('*FLUX*')[0]]
+    msmd_local.close()
+    return fields
+
+
+
 
 ###########################################
 # Table tools
@@ -248,12 +271,27 @@ def read_intent(vis, unique=True):
         intents_valid = np.unique(intents_valid).tolist()
     return intents_valid
 
-def read_field(msfile):
-    msmd = msmetadata(msfile)
+
+def search_fields(msfile):
+    fields = {}
+    msmd.open(msfile)
     lookup = msmd.fieldnames()
-    phasecal[mymsname+'.TDM'] = lookup[msmd.fieldsforintent('*PHASE*')[0]]
-    bandpasscal[mymsname+'.TDM'] = lookup[msmd.fieldsforintent('*BANDPASS*')[0]]
-    polcalib[mymsname+'.TDM'] = lookup[msmd.fieldsforintent('*POLARIZATION*')[0]]
+    fields['gcal'] = lookup[msmd.fieldsforintent('*PHASE*')[0]]
+    fields['bcal'] = lookup[msmd.fieldsforintent('*BANDPASS*')[0]]
+    fields['pcal'] = lookup[msmd.fieldsforintent('*POLARIZATION*')[0]]
+    fields['fcal'] = lookup[msmd.fieldsforintent('*FLUX*')[0]]
+    fields['science'] = lookup[msmd.fieldsforintent('*TARGET*')[0]]
+    msmd.close()
+    return fields
+
+def flagchannels(vis):
+    """this function used to generate the channels to be flagged
+    Useful to flag the edge channels 
+
+    """
+    #TODO
+    pass
+
 
 if has_astropy:
     def read_refdir(vis, return_coord=False):
