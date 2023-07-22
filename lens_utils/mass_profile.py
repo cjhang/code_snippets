@@ -4,6 +4,8 @@ import os
 import numpy as np
 import astropy.constants as const
 
+from .utils import Parameter
+
 c = const.c.value # speed of light, in m/s
 G = const.G.value # gravitational constant in SI units
 Msun = const.M_sun.value # solar mass, in kg
