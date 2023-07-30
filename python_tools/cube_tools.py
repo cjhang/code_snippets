@@ -111,7 +111,7 @@ class Cube(object):
             pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec)
         else:
             pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
-        return [pixel2arcsec_ra, pixel2arcsec_dec]
+        return u.Quantity([pixel2arcsec_ra, pixel2arcsec_dec])
     @property
     def shape(self):
         return self.cube.shape
@@ -686,7 +686,7 @@ def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dila
                             [[0,0,0],[0,1,0],[0,0,0]]])
     if std is None:
         mean, median, std = sigma_clipped_stats(data, sigma=sigma, maxiters=1, mask=mask)
-    sigma_struct = data > sigma *  std
+    sigma_struct = data > (sigma * std)
 
     if opening_iters > 0:
         sigma_struct = ndimage.binary_opening(sigma_struct, iterations=opening_iters, 
@@ -697,12 +697,16 @@ def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dila
     labels, nb = ndimage.label(sigma_struct, structure=s3d)
     if debug:
         print('nb=', nb)
+    # label_new = 1
     for i in range(nb):
         struct_select = ndimage.find_objects(labels==i)
         if debug:
             print("structure size: {}".format(sigma_struct[struct_select[0]].size))
         if sigma_struct[struct_select[0]].size < minsize:
             sigma_struct[struct_select[0]] = False
+        # else:
+            # sigma_struct[struct_select[0]] = label_new
+            # label_new += 1
     if plot:
         if ax is None:
             ax = plt.figure().add_subplot(projection='3d')
