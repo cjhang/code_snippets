@@ -74,6 +74,9 @@ class Image(object):
         if self.header is None:
             if self.wcs is not None:
                 self.header = self.wcs.to_header()
+        self.pixel2arcsec = None
+        self.pixel_beam = None
+        self.set_pixel_beam()
     def __getitem__(self, i):
             return self.image.value[i]
     @property
@@ -105,9 +108,11 @@ class Image(object):
             # In casa, it is in the units of deg, thus the returned value is pixel to deg
             pixel2arcsec_ra = (abs(self.header['CDELT1'])*u.Unit(self.header['CUNIT1'])).to(u.arcsec)
             pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec)
+        elif self.pixel2arcsec is not None:
+            pixel2arcsec_ra, pixel2arcsec_dec = self.pixel2arcsec, self.pixel2arcsec
         else:
             pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
-        return [pixel2arcsec_ra, pixel2arcsec_dec]
+        return u.Quantity([pixel2arcsec_ra, pixel2arcsec_dec])
     @property
     def beamsize(self):
         # calculate the beamszie in number of pixels
@@ -115,19 +120,23 @@ class Image(object):
         pixel_area = self.pixel_sizes[0].to('arcsec').value * self.pixel_sizes[1].to('arcsec').value
         return calculate_beamsize(self.beam, scale=1/pixel_area)
         # return 1/(np.log(2)*4.0) * np.pi * self.beam[0] * self.beam[1] / pixel_area 
-    @property
-    def pixel_beam(self):
+    def set_pixel_beam(self):
         # convert the beam size into pixel sizes
         if self.beam is None:
-            raise ValueError("No valid beams can be found!")
-        bmaj, bmin, bpa = self.beam
-        x_scale = 1/self.pixel_sizes[0].to(u.arcsec).value
-        y_scale = 1/self.pixel_sizes[1].to(u.arcsec).value
-        bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
-                             + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
-        bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
-                             + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
-        return [bmaj_pixel, bmin_pixel, bpa]
+            warnings.warn('No beam infomation has been found!')
+            # raise ValueError("No valid beams can be found!")
+        else:
+            try:
+                bmaj, bmin, bpa = self.beam
+                x_scale = 1/self.pixel_sizes[0].to(u.arcsec).value
+                y_scale = 1/self.pixel_sizes[1].to(u.arcsec).value
+                bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
+                                     + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
+                bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
+                                     + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
+                self.pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
+            except:
+                pass
     @property
     def imstats(self):
         return sigma_clipped_stats(self.image, sigma=5.0, maxiters=2)
@@ -147,12 +156,24 @@ class Image(object):
         else:
             self.wcs = WCS(self.header).sub(['longitude','latitude'])
 
-    def correct_beam(self):
+    def correct_beam(self, inverse=False):
         """correct the flux per beam to per pixel
         """
         if self.beam is not None:
-            if 'beam' in self.unit.to_string():
-                self.data = self.data/self.beamsize*u.beam
+            if inverse:
+                if 'beam' not in self.unit.to_string():
+                    self.data = self.data*self.beamsize/u.beam
+                    self.unit = u.Unit(self.unit.to_string()+'/beam')
+                else:
+                    pass
+            else:
+                if 'beam' in self.unit.to_string():
+                    self.data = self.data/self.beamsize*u.beam
+
+    def correct_reponse(self, corr):
+        """apply correction for the whole map
+        """
+        self.data = self.data * corr
 
     def subimage(self, s_):
         """extract subimage from the orginal image
@@ -205,15 +226,21 @@ class Image(object):
             mask = newmask | mask
         self.mask = mask
 
-    def plot(self, image=None, name=None, ax=None, figsize=(8,6), fov=0, vmax=10, vmin=-3,
-             show_center=True, show_axis=True, show_fwhm=True, show_fov=False,
-             show_rms=False, show_flux=True, show_sky_sources=[], show_pixel_sources=[],
+    def plot(self, image=None, name=None, ax=None, figsize=(8,6), 
+             contour=None, contour_levels=None, contour_kwargs={'colors':'white'},
+             sky_center=None, pixel_center=None, fov=0, 
+             vmax=None, vmin=None, vmax_scale=10, vmin_scale=-3,
+             show_center=False, show_axis=True, show_fwhm=True, show_fov=False,
+             show_rms=False, show_flux=False, show_sky_sources=[], show_pixel_sources=[],
              show_detections=False, detections=None, aperture_scale=1.0, aperture_size=None, 
              show_detections_yoffset='-1x', show_detections_color='white', fontsize=12, 
-             figname=None, show_colorbar=True, extent=None, **kwargs):
+             figname=None, show_colorbar=True, xlim=None, ylim=None, **kwargs):
         """general plot function build on FitsImage
 
-        Args:
+        Parameters
+        ----------
+            center : list
+                [xcenter, ycenter]
             aperture_scale: in the units of semi-major axis of the detection if applicable
             aperture_size: the aperture_size in units of arcsec
         """
@@ -230,25 +257,47 @@ class Image(object):
         if name is not None:
             ax.set_title(name)
         ny, nx = self.shape
-        x_index = (np.arange(0, nx) - nx/2.0) * self.pixel_sizes[0].value # to arcsec
-        # x_index = (np.arange(nx-1, -1, -1) - nx/2.0) * self.pixel2deg_ra * 3600 # to arcsec
-        y_index = (np.arange(0, ny) - ny/2.0) * self.pixel_sizes[1].value # to arcsec
-        #x_map, y_map = np.meshgrid(x_index, y_index)
-        #ax.pcolormesh(x_map, y_map, data_masked)
+        ny, nx = image.shape
+        if sky_center is not None:
+            center = self.skycoords2pixels(sky_center)
+        elif pixel_center is not None:
+            center = pixel_center
+        else:
+            center = [nx/2., ny/2.0]
+        x_index = (np.arange(0, nx) - center[0]) * self.pixel_sizes[0].value # to arcsec
+        y_index = (np.arange(0, ny) - center[1]) * self.pixel_sizes[1].value # to arcsec
+        if xlim is not None:
+            xselection = (x_index >= xlim[0]) & (x_index <= xlim[-1])
+            x_index = x_index[xselection]
+            image = image[:,xselection]
+        if ylim is not None:
+            yselection = (y_index >= ylim[0]) & (y_index <= ylim[-1])
+            y_index = y_index[yselection]
+            image = image[yselection,:]
         extent = [np.max(x_index), np.min(x_index), np.min(y_index), np.max(y_index)]
         mean, median, std = self.imstats
-        if std is not None:
-            if self.unit is not None:
-                vmax = vmax * std.value
-                vmin = vmin * std.value
-            else:
-                vmax = vmax * std
-                vmin = vmin * std
+        if vmax is None:
+            if std is not None:
+                if self.unit is not None:
+                    vmax = vmax_scale * std.value
+                else:
+                    vmax = vmax_scale * std
+        if vmin is None:
+            if std is not None:
+                if self.unit is not None:
+                    vmin = vmin_scale * std.value
+                else:
+                    vmin = vmin_scale * std
         im = ax.imshow(image, origin='lower', extent=extent, interpolation='none', 
                        vmax=vmax, vmin=vmin, **kwargs)
+        if contour is not None:
+            ax.contour(contour, levels=contour_levels, extent=extent, **contour_kwargs)
+        #ax.pcolormesh(x_map, y_map, data_masked)
         # ax.invert_xaxis()
         if show_colorbar:
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar=plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        else:
+            cbar = None
         if show_center:
             ax.text(0, 0, '+', color='r', fontsize=24, fontweight=100, horizontalalignment='center',
                     verticalalignment='center')
@@ -265,10 +314,10 @@ class Image(object):
                                       facecolor='orange', edgecolor=None, alpha=0.8)
                 ax.add_patch(ellipse)
                 # another way to show the beam size with photutils EllipticalAperture
-                aper = EllipticalAperture((0.8*np.max(x_index), 0.8*np.min(y_index)), 
-                                          0.5*self.beam[1], 0.5*self.beam[0], 
-                                          theta=-self.beam[-1]/180*np.pi)
-                aper.plot(color='white', lw=2)
+                #aper = EllipticalAperture((0.8*np.max(x_index), 0.8*np.min(y_index)), 
+                #                          0.5*self.beam[1], 0.5*self.beam[0], 
+                #                          theta=-self.beam[-1]/180*np.pi)
+                #aper.plot(color='white', lw=2)
 
         if show_fov:    
             ellipse_fov = patches.Ellipse((0, 0), width=fov, height=fov, 
@@ -280,17 +329,22 @@ class Image(object):
                     fontsize=0.8*fontsize, horizontalalignment='center', verticalalignment='top', color='white')
         if show_detections:
             for idx,det in enumerate(detections):
-                xdet = (-det['x']+nx/2.0)*self.pixel_sizes[0].value
-                ydet = (det['y']-ny/2.0)*self.pixel_sizes[1].value
-                if aperture_scale is not None:
-                    aper_width = det['a']*2.*aperture_scale #* pixel_rescale
-                    aper_height = det['b']*2.*aperture_scale #* pixel_rescale
-                if aperture_size is not None:
-                    if isinstance(aperture_size, (list, tuple, np.ndarray)):
-                        aper_width, aper_height = aperture_size
-                    else:
-                        aper_width = aperture_size
-                        aper_height = aperture_size
+                xdet = (-det['x']+center[0])*self.pixel_sizes[0].value
+                ydet = (det['y']-center[1])*self.pixel_sizes[1].value
+                try: 
+                    #TODO: improve to support non-regular x, y pixels
+                    aper_width = det['aper_maj']*2.*self.pixel_sizes[0].value
+                    aper_height = det['aper_min']*2.*self.pixel_sizes[1].value
+                except:
+                    if aperture_scale is not None:
+                        aper_width = det['a']*2.*aperture_scale #* pixel_rescale
+                        aper_height = det['b']*2.*aperture_scale #* pixel_rescale
+                    if aperture_size is not None:
+                        if isinstance(aperture_size, (list, tuple, np.ndarray)):
+                            aper_width, aper_height = aperture_size
+                        else:
+                            aper_width = aperture_size
+                            aper_height = aperture_size
                 ellipse_det = patches.Ellipse((xdet, ydet), 
                         width=aper_width, height=aper_height, 
                         angle=180-det['theta']*180/np.pi, # positive x is the left 
@@ -300,7 +354,7 @@ class Image(object):
                                                  # det['b']*aperture_scale, det['theta'])
                 # ellipse_det.plot(color='white', lw=1, alpha=0.8)
                 if 'x' in show_detections_yoffset:
-                    yoffset = float(show_detections_yoffset[:-1]) * (det['a'] + det['b'])
+                    yoffset = float(show_detections_yoffset[:-1])
                 else:
                     yoffset = show_detections_yoffset
                 if show_flux:
@@ -337,6 +391,8 @@ class Image(object):
         if figname is not None:
             fig.savefig(figname, bbox_inches='tight', dpi=200)
             plt.close(fig)
+        else:
+            return im,cbar
     
     def find_structure(self, sigma=3.0, iterations=1, opening_iters=None, 
                        dilation_iters=None, plot=False, **kwargs):
@@ -479,6 +535,21 @@ class Image(object):
         """
         pbimage = solve_impb(pbfile)
 
+    def reproject(self, wcs_out=None, header_out=None, shape_out=None, **kwargs):
+        """reproject the data into another wcs system
+        
+        """
+        try: import reproject
+        except: raise ValueError("Package `reproject` must be installed to handle the reprojection!")
+        if header_out is not None:
+            data_new, footprint = reproject.reproject_interp((self.data.value, self.wcs), header_out, 
+                                        return_footprint=True,**kwargs)
+        if wcs_out is not None:
+            if shape_out is None:
+                raise ValueError('the `shape_out` must be provide when use projection with WCS!')
+            data_new, footprint = reproject.reproject_interp((self.data.value, self.wcs), wcs_out, 
+                                        shape_out=shape_out, return_footprint=True, **kwargs)
+        return Image(data=data_new, header=header_out, wcs=wcs_out)
 
     @staticmethod
     def read_ALMA(fitsimage, extname='primary', name=None, debug=False, 
@@ -979,15 +1050,12 @@ def measure_flux(image, coords=None, wcs=None,
             # tab_item['flux'] = name
             # tab_item['fluxerr'] = name
 
-def make_rmap(image, scale=1.0):
+def make_rmap(image, pixel_scale=1.0):
     """make radial map relative to the image center
     """
     ny, nx = image.shape
-    if not isinstance(pixel_size, (list, np.ndarray)):
-        pixel_size = [pixel_size, pixel_size]
-    ra_scale, dec_dec = scale
-    x_index = (np.arange(0, nx) - nx/2.0) * ra_scale
-    y_index = (np.arange(0, ny) - ny/2.0) * dec_scale
+    x_index = (np.arange(0, nx) - nx/2.0) * pixel_scale
+    y_index = (np.arange(0, ny) - ny/2.0) * pixel_scale
     x_map, y_map = np.meshgrid(x_index, y_index)
     rmap = np.sqrt(x_map**2 + y_map**2)
     return rmap
