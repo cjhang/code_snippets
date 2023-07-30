@@ -17,207 +17,180 @@ rad2deg = 180./np.pi
 
 
 class SIELens(object):
-      """
-      Adopted from visilens, copyright Justin Spilker
+    """
+    Adopted from visilens, copyright Justin Spilker
 
-      Class to hold parameters for an SIE lens, with each parameter (besides
-      redshift) a dictionary.
+    Class to hold parameters for an SIE lens, with each parameter (besides
+    redshift) a dictionary.
+    
+    Example format of each parameter:
+    x = {'value':x0, 'fixed':False, 'prior':[xmin,xmax]}, where x0 is the
+    initial/current value of x, x should not be a fixed parameter during fitting,
+    and the value of x must be between xmin and xmax.
+    
+    Parameters
+    ----------
+    z : float
+        Redshift
+    x : float
+        Coordinates in x axis, the real units depends on the grid
+    y : float
+        Coordinates in y axis
+    mass : float
+        Lens mass, in Msun. With the lens and source redshifts, sets the 
+        overall "strength" of the lens. Can be converted to an Einstein radius
+        using theta_Ein = (4*G*M * D_LS / (c**2 * D_L * D_S))**0.5, in radians, 
+        with G and c the gravitational constant and speed of light, and D_L, D_S
+        and D_LS the distances to the lens, source, and between the lens and source,
+        respectively.
+    ell : float
+        Ellipicity, ell = 1-a/b
+    theta : float
+        Position angle, in radian, CCW from the lens major axis
+    """      
+    def __init__(self, z=None, x=None, y=None, mass=None, ell=None, theta=None):
+        if not isinstance(z, Parameter):
+            z = Parameter(z)
+        if not isinstance(x, Parameter):
+            x = Parameter(x)
+        if not isinstance(y, Parameter):
+            y = Parameter(y)
+        if not isinstance(mass, Parameter):
+            mass = Parameter(mass)
+        if not isinstance(ell, Parameter):
+            ell = Parameter(ell)
+        if not isinstance(theta, Parameter):
+            theta = Parameter(theta)
+
+        self.z = z
+        self.x = x
+        self.y = y
+        self.mass = mass
+        self.ell = ell
+        self.theta = theta
+        
+        self._altered = True
       
-      Example format of each parameter:
-      x = {'value':x0, 'fixed':False, 'prior':[xmin,xmax]}, where x0 is the
-      initial/current value of x, x should not be a fixed parameter during fitting,
-      and the value of x must be between xmin and xmax.
-      
-      Note: in my infinite future free time, will probably replace e and PA with
-      the x and y components of the ellipticity, which are better behaved as e->0.
-
-      Parameters:
-      z
-            Lens redshift. If unknown, any value can be chosen as long as it is
-            less than the source redshift you know/assume.
-      x, y
-            Position of the lens, in arcseconds relative to the phase center of
-            the data (or any other reference point of your choosing). +x is west 
-            (sorry not sorry), +y is north.
-      M
-            Lens mass, in Msun. With the lens and source redshifts, sets the 
-            overall "strength" of the lens. Can be converted to an Einstein radius
-            using theta_Ein = (4*G*M * D_LS / (c**2 * D_L * D_S))**0.5, in radians, 
-            with G and c the gravitational constant and speed of light, and D_L, D_S
-            and D_LS the distances to the lens, source, and between the lens and source,
-            respectively.
-      e
-            Lens ellipticity, ranging from 0 (a circularly symmetric lens) to 1 (a very
-            elongated lens).
-      PA
-            Lens major axis position angle, in degrees east of north.
-      """      
-      def __init__(self,z,x,y,M,e,PA):
-            # Do some input handling.
-            if not isinstance(x,dict):
-                  x = {'value':x,'fixed':False,'prior':[-30.,30.]}
-            if not isinstance(y,dict):
-                  y = {'value':y,'fixed':False,'prior':[-30.,30.]}
-            if not isinstance(M,dict):
-                  M = {'value':M,'fixed':False,'prior':[1e7,1e15]}
-            if not isinstance(e,dict):
-                  e = {'value':e,'fixed':False,'prior':[0.,1.]}
-            if not isinstance(PA,dict):
-                  PA = {'value':PA,'fixed':False,'prior':[0.,180.]}
-
-            if not all(['value' in d for d in [x,y,M,e,PA]]): 
-                  raise KeyError("All parameter dicts must contain the key 'value'.")
-
-            if not 'fixed' in x: x['fixed'] = False
-            if not 'fixed' in y: y['fixed'] = False
-            if not 'fixed' in M: M['fixed'] = False  
-            if not 'fixed' in e: e['fixed'] = False
-            if not 'fixed' in PA: PA['fixed'] = False
-            
-            if not 'prior' in x: x['prior'] = [-30.,30.]
-            if not 'prior' in y: y['prior'] = [-30.,30.]
-            if not 'prior' in M: M['prior'] = [1e7,1e15]
-            if not 'prior' in e: e['prior'] = [0.,1.]
-            if not 'prior' in PA: PA['prior'] = [0.,180.]
-
-            self.z = z
-            self.x = x
-            self.y = y
-            self.M = M
-            self.e = e
-            self.PA = PA
-            
-            # Here we keep a Boolean flag which tells us whether one of the lens
-            # properties has changed since the last time we did the lensing
-            # deflections. If everything is the same, we don't need to lens twice.
-            self._altered = True
-      
-      def deflect(self,xim,yim,Dd,Ds,Dds):
-            """
-            Follow Kormann+1994 for the lensing deflections.
-            
-            Parameters:
-            xim, yim
-                  2D Arrays of image coordinates we're going to lens,
-                  probably generated by np.meshgrid.
-            Dd, Ds, Dds
-                  Distances to the lens, source and between the source
-                  and lens (units don't matter as long as they're the 
-                  same). Can't be calculated only from lens due to source
-                  distances.
-            """
-            if self._altered: # Only redo if something is new.
-                  ximage, yimage = xim.copy(), yim.copy() # for safety.
-            
-                  f = 1. - self.e['value']
-                  fprime = np.sqrt(1. - f**2.)
-            
-                  # K+94 parameterizes in terms of LOS velocity dispersion and then
-                  # basically the Einstein radius.
-                  sigma = ((self.M['value']*Ds*G*Msun*c**2.)/(4*np.pi**2. * Dd*Dds*Mpc))**(1/4.)
-                  Xi0 = 4*np.pi * (sigma/c)**2. * (Dd*Dds/Ds)
-            
-                  # Flip units, the recenter and rotate grid to lens center and major axis
-                  ximage *= arcsec2rad; yimage *= arcsec2rad
-                  ximage -= (self.x['value']*arcsec2rad)
-                  yimage -= (self.y['value']*arcsec2rad)
-                  if not np.isclose(self.PA['value'], 0.):
-                        r,theta = cart2pol(ximage,yimage)
-                        ximage,yimage = pol2cart(r,theta-(self.PA['value']*deg2rad))
-                  phi = np.arctan2(yimage,ximage)
-            
-                  # Calculate the deflections, account for e=0 (the SIS), which has
-                  # cancelling infinities. K+94 eq 27a.
-                  if np.isclose(f, 1.):
-                        dxs = -(Xi0/Dd)*np.cos(phi)
-                        dys = -(Xi0/Dd)*np.sin(phi)
-                  else:
-                        dxs = -(Xi0/Dd)*(np.sqrt(f)/fprime)*np.arcsinh(np.cos(phi)*fprime/f)
-                        dys = -(Xi0/Dd)*(np.sqrt(f)/fprime)*np.arcsin(np.sin(phi)*fprime)
-            
-                  # Rotate and shift back to sky frame
-                  if not np.isclose(self.PA['value'], 0.):
-                        r,theta = cart2pol(dxs,dys)
-                        dxs,dys = pol2cart(r,theta+(self.PA['value']*deg2rad))
-                  dxs *= rad2arcsec; dys *= rad2arcsec
-            
-                  # self.deflected_x = dxs
-                  # self.deflected_y = dys
-                  # self._altered = False
-                  # return deflected_x, deflected_y
-                  return dxs, dys
+    def deflect(self, xgrid, ygrid, Dd, Ds, Dds):
+        """
+        Follow Kormann+1994 for the lensing deflections.
+        
+        Parameters
+        ----------
+        xgrid, ygrid
+              2D Arrays of image coordinates we're going to lens,
+              probably generated by np.meshgrid.
+        Dd, Ds, Dds
+              Distances to the lens, source and between the source
+              and lens (units don't matter as long as they're the 
+              same). Can't be calculated only from lens due to source
+              distances.
+        """
+        if self._altered: # Only redo if something is new.
+            ximage, yimage = xgrid.copy(), ygrid.copy() # for safety.
+        
+            f = 1. - self.ell.value # ratio
+            fprime = np.sqrt(1. - f**2.)
+        
+            # K+94 parameterizes in terms of LOS velocity dispersion and then
+            # basically the Einstein radius.
+            sigma = ((self.mass.value*Ds*G*Msun*c**2.)/(4*np.pi**2. * Dd*Dds*Mpc))**(1/4.)
+            Xi0 = 4*np.pi * (sigma/c)**2. * (Dd*Dds/Ds)
+        
+            # Flip units, the recenter and rotate grid to lens center and major axis
+            ximage *= arcsec2rad; yimage *= arcsec2rad
+            ximage -= (self.x.value*arcsec2rad)
+            yimage -= (self.y.value*arcsec2rad)
+            if not np.isclose(self.theta.value, 0.):
+                r, theta = cart2pol(ximage, yimage)
+                ximage, yimage = pol2cart(r, theta-(self.theta.value))
+            phi = np.arctan2(yimage, ximage)
+        
+            # Calculate the deflections, account for e=0 (the SIS), which has
+            # cancelling infinities. K+94 eq 27a.
+            if np.isclose(f, 1.):
+                dxs = -(Xi0/Dd)*np.cos(phi)
+                dys = -(Xi0/Dd)*np.sin(phi)
+            else:
+                dxs = -(Xi0/Dd)*(np.sqrt(f)/fprime)*np.arcsinh(np.cos(phi)*fprime/f)
+                dys = -(Xi0/Dd)*(np.sqrt(f)/fprime)*np.arcsin(np.sin(phi)*fprime)
+        
+            # Rotate and shift back to sky frame
+            if not np.isclose(self.theta.value, 0.):
+                r, theta = cart2pol(dxs, dys)
+                dxs, dys = pol2cart(r,theta+(self.theta.value))
+            dxs *= rad2arcsec; dys *= rad2arcsec
+        
+            # self.deflected_x = dxs
+            # self.deflected_y = dys
+            # self._altered = False
+            # return deflected_x, deflected_y
+            return dxs, dys
 
 class ExternalShear(object):
-      """
-      Adopted from visilens
+    """
+    Adopted from visilens
 
-      Class to hold the two parameters relating to an external tidal shear,
-      where each parameter is a dictionary.
-      
-      Example format of each parameter:
-      x = {'value':x0,'fixed':False,'prior':[xmin,xmax]}, where x0 is the
-      initial/current value of x, x should not be a fixed parameter during fitting,
-      and the value of x must be between xmin and xmax.
+    Class to hold the two parameters relating to an external tidal shear,
+    where each parameter is a dictionary.
+    
+    Example format of each parameter:
+    x = {'value':x0,'fixed':False,'prior':[xmin,xmax]}, where x0 is the
+    initial/current value of x, x should not be a fixed parameter during fitting,
+    and the value of x must be between xmin and xmax.
 
-      Parameters:
-      shear:
-            The strength of the external shear. Should be 0 to 1 (although treating
-            other objects in the lensing environment like this is really only valid
-            for shear <~ 0.3).
-      shearangle
-            The position angle of the tidal shear, in degrees east of north.
-      """
-      def __init__(self,shear,shearangle):
-            # Do some input handling.
-            if not isinstance(shear,dict):
-                  shear = {'value':shear,'fixed':False,'prior':[0.,1.]}
-            if not isinstance(shearangle,dict):
-                  shearangle = {'value':shearangle,'fixed':False,'prior':[0.,180.]}
+    Parameters
+    ----------
+    shear : float
+          The strength of the external shear. Should be 0 to 1 (although treating
+          other objects in the lensing environment like this is really only valid
+          for shear <~ 0.3).
+    shearangle : float
+          The position angle of the tidal shear, in radian east of north.
+    """
+    def __init__(self, shear, shearangle):
+        # Do some input handling.
+        if not isinstance(shear, Parameter):
+            shear = Parameter(shear)
+        if not isinstance(shearangle, Parameter):
+            shearangle = Parameter(shearangle)
 
-            if not all(['value' in d for d in [shear,shearangle]]): 
-                  raise KeyError("All parameter dicts must contain the key 'value'.")
-
-            if not 'fixed' in shear: shear['fixed'] = False
-            if not 'fixed' in shearangle: shearangle['fixed'] = False
-
-            if not 'prior' in shear: shear['prior'] = [0.,1.]
-            if not 'prior' in shearangle: shearangle['prior'] = [0.,180.]
-
-            self.shear = shear
-            self.shearangle = shearangle
-            
-      def deflect(self,xim,yim,lens):
-            """
-            Calculate deflection following Keeton,Mao,Witt 2000.
-            
-            Parameters:
-            xim, yim
-                  2D Arrays of image coordinates we're going to lens,
-                  probably generated by np.meshgrid.
-            lens
-                  A lens object; we use this to shift the coordinate system
-                  to be centered on the lens.
-            """
-            
-            ximage,yimage = xim.copy(), yim.copy()
-            
-            ximage -= lens.x['value']; yimage -= lens.y['value']
-            
-            if not np.isclose(lens.PA['value'], 0.):
-                  r,theta = cart2pol(ximage,yimage)
-                  ximage,yimage = pol2cart(r,theta-(lens.PA['value']*deg2rad))
-                  
-            # KMW2000, altered for our coordinate convention.
-            g,thg = self.shear['value'], (self.shearangle['value']-lens.PA['value'])*deg2rad
-            dxs = -g*np.cos(2*thg)*ximage - g*np.sin(2*thg)*yimage
-            dys = -g*np.sin(2*thg)*ximage + g*np.cos(2*thg)*yimage
-            
-            if not np.isclose(lens.PA['value'], 0.):
-                  r,theta = cart2pol(dxs,dys)
-                  dxs,dys = pol2cart(r,theta+(lens.PA['value']*deg2rad))
-                  
-            # self.deflected_x = dxs; self.deflected_y = dys
-            return dxs, dys
+        self.shear = shear
+        self.shearangle = shearangle
+          
+    def deflect(self, xgrid, ygrid, lens):
+        """
+        Calculate deflection following Keeton,Mao,Witt 2000.
+        
+        Parameters
+        ----------
+        xim, yim
+              2D Arrays of image coordinates we're going to lens,
+              probably generated by np.meshgrid.
+        lens
+              A lens object; we use this to shift the coordinate system
+              to be centered on the lens.
+        """
+        
+        ximage, yimage = xgrid.copy(), ygrid.copy()
+        
+        ximage -= lens.x.value; yimage -= lens.y.value
+        
+        if not np.isclose(lens.theta.value, 0.):
+            r, theta = cart2pol(ximage, yimage)
+            ximage,yimage = pol2cart(r,theta-(lens.theta.value))
+              
+        # KMW2000, altered for our coordinate convention.
+        g,thg = self.shear.value, (self.shearangle.value-lens.theta.value)
+        dxs = -g*np.cos(2*thg)*ximage - g*np.sin(2*thg)*yimage
+        dys = -g*np.sin(2*thg)*ximage + g*np.cos(2*thg)*yimage
+        
+        if not np.isclose(lens.theta.value, 0.):
+            r, theta = cart2pol(dxs, dys)
+            dxs, dys = pol2cart(r, theta+(lens.theta.value))
+              
+        # self.deflected_x = dxs; self.deflected_y = dys
+        return dxs, dys
 
 
 class MassPotential(object):
@@ -225,10 +198,10 @@ class MassPotential(object):
         self.mprofile = mprofile
         self.shear = shear
 
-    def deflect(self, xim, yim, Dd, Ds, Dds):
-        deflected_x, deflected_y = self.mprofile.deflect(xim, yim, Dd, Ds, Dds)
+    def deflect(self, xgrid, ygrid, Dd, Ds, Dds):
+        deflected_x, deflected_y = self.mprofile.deflect(xgrid, ygrid, Dd, Ds, Dds)
         if self.shear is not None:
-            shear_x, shear_y = self.shear.deflect(xim, yim, self.mprofile)
+            shear_x, shear_y = self.shear.deflect(xgrid, ygrid, self.mprofile)
             deflected_x += shear_x
             deflected_y += shear_y
         return deflected_x, deflected_y
