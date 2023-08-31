@@ -288,7 +288,7 @@ class Image(object):
                     vmin = vmin_scale * std.value
                 else:
                     vmin = vmin_scale * std
-        im = ax.imshow(image, origin='lower', extent=extent, interpolation='none', 
+        im = ax.imshow(image, origin='lower', extent=extent, 
                        vmax=vmax, vmin=vmin, **kwargs)
         if contour is not None:
             ax.contour(contour, levels=contour_levels, extent=extent, **contour_kwargs)
@@ -550,6 +550,47 @@ class Image(object):
             data_new, footprint = reproject.reproject_interp((self.data.value, self.wcs), wcs_out, 
                                         shape_out=shape_out, return_footprint=True, **kwargs)
         return Image(data=data_new, header=header_out, wcs=wcs_out)
+    
+    @staticmethod
+    def read(fitsimage, extname='primary', name=None, debug=False, correct_beam=False):
+        """read the fits file
+
+        Parameters
+        ----------
+        fitsimage : string
+            the filename of the fits file.
+        name (optinal): 
+            the name of the image.
+        debug : 
+            set to true to print the details of the fits file
+        correct_beam: 
+            set to True to correct the beams if the beam 
+            information is available
+        """
+        with fits.open(fitsimage) as image_hdu:
+            if debug:
+                print(image_hdu.info())
+            image_header = image_hdu[extname].header
+            image_data = image_hdu[extname].data * u.Unit(image_header['BUNIT'])
+            if 'BMAJ' in image_header.keys():
+                image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
+                              image_header['BPA']]
+            else:
+                try: full_beam = image_hdu['BEAMS'].data
+                except: image_beam = None
+                image_beam = list(full_beam[stokes_idx][:3])
+        if correct_beam:
+            # convert Jy/beam to Jy
+            if image_beam is not None:
+                if '/beam' in image_header['BUNIT']:
+                    pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
+                    pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
+                    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
+                    beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
+                    image_data = image_data / beamsize * u.beam
+        if name is None:
+            name = os.path.basename(fitsimage)
+        return Image(data=image_data, header=image_header, beam=image_beam, name=name)
 
     @staticmethod
     def read_ALMA(fitsimage, extname='primary', name=None, debug=False, 
