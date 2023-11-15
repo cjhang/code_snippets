@@ -91,7 +91,7 @@ def make_poli(data, norm=1, mask=None):
     return np.sqrt(data[1]**2+data[1]**2)/norm
 
 def show_vectors(image, pola, poli=None, step=1, scale=1, rotate=0, mask=None, ax=None, 
-                 edgecolors='white', facecolors='cyan', lw=1, **kwargs):
+                 edgecolors='white', facecolors='cyan', lw=1, fontsize=12, **kwargs):
     """simple visualization tools for vectors, designed to show the geometry of magnetic fields
 
     Args:
@@ -128,7 +128,10 @@ def show_vectors(image, pola, poli=None, step=1, scale=1, rotate=0, mask=None, a
     if ax is None:
         fig, ax = plt.subplots()
     if image is not None:
-        ax.imshow(image, origin='lower', cmap='magma', **kwargs)
+        im = ax.imshow(image, origin='lower', cmap='magma', **kwargs)
+        if show_cbar:
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.ax.set_ylabel('[mJy/beam]', fontsize=fontsize)
     ax.add_collection(lc)
     return ax
 
