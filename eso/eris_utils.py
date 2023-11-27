@@ -2,11 +2,12 @@
 
 """
 Authors: Jianhang Chen
-Version: 0.1
+Version: 0.2
 History:
     - 2023-11-22: first release, v0.1
+    - 2023-11-28: bug fix for testing project 110.258S, v0.2
 """
-
+__version__ = '0.2'
 import os 
 import shutil
 import re
@@ -85,7 +86,8 @@ def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None):
             os.system(f'mv {metafile} {metafile}.bak')
         eris_query_tab.write(metafile, format='csv')
 
-def eris_auto_quary(start_date, end_date=None, column_filters={}, max_days=30):
+def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_days=30, 
+                    column_filters={}, **kwargs):
     """query ESO/ERIS raw data from the database
 
     Args:
@@ -94,25 +96,35 @@ def eris_auto_quary(start_date, end_date=None, column_filters={}, max_days=30):
         column_filters: the parameters of the query form
                         such as: 
                         column_filters = {
-                                'stime': '2023-04-08',
-                                'etime': '2023-04-09',
                                 'dp_cat': 'CALIB',
                                 'dp_type': 'FLAT%',
                                 'seq_arm': 'SPIFFIER',
                                 'ins3_spgw_name': 'K_low',
                                 'ins3_spxw_name': '100mas',}
         max_days: the maximum days to search for the availble calibration files
+        **kwargs: the keyword arguments of the possible column filters
+                  such as: dp_tech='IFU', see more options in: 
+                  https://archive.eso.org/wdb/wdb/cas/eris/form
     """
+    if column_filters is None:
+        column_filters={}
+    for key, value in kwargs.items():
+        column_filters[key] = value
     eso = Eso()
-    sdate = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-    if end_date is None:
-        edate = sdate + datetime.timedelta(days=1)
+    sdatetime = datetime.datetime.strptime(f'{start_date} {start_time:0>2d}', '%Y-%m-%d %H')
+    if end_date is not None:
+        edatetime = datetime.datetime.strptime(f'{end_date} {end_time:0>2d}', '%Y-%m-%d %H')
+        sdatetime = (edatetime - sdatetime)/2 + sdatetime
     delta_time = datetime.timedelta(days=1)
     matched = 0
     for i in range(0, max_days):
         if matched == 0:
-            column_filters['stime'] = (sdate - datetime.timedelta(days=i)).strftime('%Y-%m-%d')
-            column_filters['etime'] = (edate + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            t_start = (sdatetime - 0.5*datetime.timedelta(days=i))
+            t_end = (sdatetime + 0.5*datetime.timedelta(days=i))
+            column_filters['stime'] = t_start.strftime('%Y-%m-%d')
+            column_filters['etime'] = t_end.strftime('%Y-%m-%d')
+            column_filters['starttime'] = t_start.strftime('%H')
+            column_filters['endtime'] = t_end.strftime('%H')
             tab_eris = eso.query_instrument('eris', column_filters=column_filters)
             if tab_eris is not None:
                 matched = 1
@@ -121,18 +133,19 @@ def eris_auto_quary(start_date, end_date=None, column_filters={}, max_days=30):
     else:
         return tab_eris
 
-def request_eris_calib(project, start_date, band, resolution, exptime,
-                       end_date=None, outdir=None, dpcat='CALIB', arm='SPIFFIER', 
+def request_eris_calib(start_date, band, resolution, exptime, outdir='raw',
+                       end_date=None, dpcat='CALIB', arm='SPIFFIER', 
+                       metafile='metadata.csv',
                        steps=['dark','detlin','distortion','flat','wavecal','stdstar'],
-                       columns_names=['Release Date','DP.ID','Object','DPR.TYPE','DPR.CATG','EXPTIME',
-                                      'INS3.SPGW.NAME','INS3.SPXW.NAME','SEQ.ARM'],
                        **kwargs):
     """a general purpose to qeury calib files of ERIS/SPIFFIER observation
     
     Args:
-        project (str): the project code
         start_date (str): ISO date format, like: 2023-04-08
         end_date (str, None): same format as start_date
+        band (str): grating configurations
+        resolution (str): the spaxel size of the plate, [250mas, 100mas, 25mas]
+        exptime (int,float): the exposure time, in seconds
         outdir (str): the output directory of the download files
         steps (list): a list of calibration steps, the connection with DRP types:
             
@@ -149,18 +162,11 @@ def request_eris_calib(project, start_date, band, resolution, exptime,
 
         dpcat (str): default to be 'CALIB'
         arm (str): the instrument arm of eris: SPIFFIER or NIX (in develop)
-        band (str): grating configurations
-        resolution (str): the spaxel size of the plate, [250mas, 100mas, 25mas]
 
     """
     dptype_dict = {'dark':'DARK', 'detlin':'LINEARITY%', 'distortion':'NS%',
                    'flat':'FLAT%', 'wavecal':'WAVE%', 'stdstar':'%STD'}
     query_tabs = []
-
-    if outdir is None:
-        if project is not None:
-            outdir = project+'_raw'
-        else: outdir = 'raw'
 
     for step in steps:
         column_filters = {'dp_cat': dpcat,
@@ -174,14 +180,16 @@ def request_eris_calib(project, start_date, band, resolution, exptime,
             column_filters['ins3_spxw_name'] = resolution
 
         step_query = eris_auto_quary(start_date, end_date=end_date, column_filters=column_filters, **kwargs)
-        query_tabs.append(step_query[columns_names])
-
+        # fix the data type issue of masked table columns
+        for col in step_query.colnames:
+            step_query[col] = step_query[col].astype(str)
+        query_tabs.append(step_query)
     all_tabs = table.vstack(query_tabs)
-    download_eris(all_tabs, metafile=project+'_metadata.csv', outdir=outdir)
+    download_eris(all_tabs, metafile=metafile, outdir=outdir)
 
-def requests_eris_science(program_id='', username=None, metafile=None,
-                          outdir='science_raw', target='', observation_id='', 
-                          start_date='', end_date=''):
+def requests_eris_science(program_id='', username=None, metafile='metadata.csv',
+                          outdir=None, target='', observation_id='', 
+                          start_date='', end_date='', **kwargs):
     """download the science data 
 
     To download the proprietory data, you need to provide your eso username
@@ -191,20 +199,26 @@ def requests_eris_science(program_id='', username=None, metafile=None,
         program_id (str): program id
         username (str): the user name of your eso account
         metafile (str): the output file to store all the meta data
-                        default: program_id
+                        default: metadata.csv
         target (str): the target name
         outdir (str): the directory to save all the raw files
         observation_id (str, int): the id of the observation
         start_date (str): starting data, in the format of '2023-04-08'
         end_date (str): end date, same format as start_date
+        **kwargs: other keyword filters
     """
     root_calib_url = 'https://dataportal.eso.org/dataportal_new/file/'
-    if metafile is None:
-        metafile = program_id+'.csv'
+    if outdir is None:
+        if program_id is not None: outdir = program_id+'_raw'
+        else: outdir = 'raw'
     if os.path.isdir(outdir):
         os.system(f'mkdir -p {outdir}')
     logging.info(f'Requesting the data from project: {program_id}')
     eso = Eso()
+    if end_date is None:
+        sdate = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+        edate = sdate + datetime.timedelta(days=1)
+        end_date = edate.strftime('%Y-%m-%d')
     eris_query_tab = eso.query_instrument(
             'eris', column_filters={'ob_id': observation_id,
                                     'prog_id':program_id,
@@ -213,14 +227,13 @@ def requests_eris_science(program_id='', username=None, metafile=None,
                                     'target': target,})
     download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
 
-def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool', 
+def generate_calib(metafile, raw_pool='./raw', static_pool='./staicPool', 
                    calib_pool='./calibPool', 
                    steps=['dark','detlin','distortion','flat','wavecal','stdstar'],
-                   drp_type_colname='Object', esorex=None, dry_run=False):
+                   drp_type_colname='DPR.TYPE', esorex=None, dry_run=False):
     """generate the science of frame of each calibration step
 
     Args:
-        project (str): the project name, used to organise the folders
         metafile (str): the metadata file where you can find the path and objects of each dataset
         raw_pool (str): the raw data pool
         static_pool (str): the static data pool
@@ -236,27 +249,21 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
     raw_pool = raw_pool.rstrip('/')
     if not os.path.isdir(calib_pool):
         os.system(f'mkdir -p {calib_pool}')
-    if project is None:
-        try:
-            project_match = re.compile('(?P<project>[\w.\-]+)_metadata.csv')
-            project = project_match.search(metafile).groupdict()['project']
-        except:
-            project = 'default001'
-    if esorex is None:
-        esorex_cmd = f'esorex --output-dir {calib_pool} --log-file {project}.log'
-    else: esorex_cmd = esorex
+    if esorex is None: esorex_cmd = f'esorex --output-dir={calib_pool}'
+    else: esorex_cmd = f'{esorex} --output-dir={calib_pool}'
     meta_tab = table.Table.read(metafile, format='csv')
 
     if 'dark' in steps:
         # generate the sof for dark calibration
-        dark_sof = os.path.join(calib_pool, project+'_dark.sof')
+        dark_sof = os.path.join(calib_pool, 'dark.sof')
         with open(dark_sof, 'w+') as openf:
             for item in meta_tab[meta_tab[drp_type_colname] == 'DARK']:
                 openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK\n")
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_dark {dark_sof}")
     if 'detlin' in steps:
-        detlin_sof = os.path.join(calib_pool, project+'_detlin.sof')
+        # generate the sof for detector's linarity
+        detlin_sof = os.path.join(calib_pool, 'detlin.sof')
         with open(detlin_sof, 'w+') as openf:
             for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,DARK,DETCHAR']:
                 openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z LINEARITY_LAMP\n")
@@ -267,7 +274,7 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
 
     if 'distortion' in steps:
         # generate the sof for distortion
-        distortion_sof = os.path.join(calib_pool, project+'_distortion.sof')
+        distortion_sof = os.path.join(calib_pool, 'distortion.sof')
         with open(distortion_sof, 'w+') as openf:
             for item in meta_tab[meta_tab[drp_type_colname] == 'NS,DARK']:
                 openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK_NS\n")
@@ -288,7 +295,7 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
             os.system(f"{esorex_cmd} eris_ifu_distortion {distortion_sof}")
     if 'flat' in steps:
         # generate the sof for flat
-        flat_sof = os.path.join(calib_pool, project+'_flat.sof')
+        flat_sof = os.path.join(calib_pool, 'flat.sof')
         with open(flat_sof, 'w+') as openf:
             for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,DARK']:
                 openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_LAMP\n")
@@ -301,7 +308,7 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
             os.system(f"{esorex_cmd} eris_ifu_flat {flat_sof}")
     if 'wavecal' in steps:
         # generate the sof for wavecal
-        wavecal_sof = os.path.join(calib_pool, project+'_wavecal.sof')
+        wavecal_sof = os.path.join(calib_pool, 'wavecal.sof')
         with open(wavecal_sof, 'w+') as openf:
             for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,DARK']:
                 openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_LAMP\n")
@@ -317,12 +324,22 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
 
     if 'stdstar' in steps:
         # generate the stdstar
-        stdstar_sof = os.path.join(calib_pool, project+'_stdstar.sof')
+        stdstar_sof = os.path.join(calib_pool, 'stdstar.sof')
         with open(stdstar_sof, 'w+') as openf:
+            # check the number of stdstars
+            stdstar_names = meta_tab[meta_tab[drp_type_colname] == 'STD']['OBS.TARG.NAME'].data.tolist()
+            if len(stdstar_names)>1:
+                logging.warning(f'Finding more than stdstar: {stdstar_names}') 
+                logging.warning(f'Choosing the first one: {stdstar_names[0]}')
+            stdstar_name = stdstar_names[0]
             for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z STD\n")
+                if item['OBS.TARG.NAME'] == stdstar_name:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z STD #{stdstar_name}\n")
+                else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z STD #{item['OBS.TARG.NAME']}\n")
             for item in meta_tab[meta_tab[drp_type_colname] == 'SKY,STD']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD\n")
+                if item['OBS.TARG.NAME'] == stdstar_name:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{stdstar_name}\n")
+                else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{item['OBS.TARG.NAME']}\n")
             openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
             openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
             openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
@@ -334,8 +351,8 @@ def generate_calib(project, metafile, raw_pool='./raw', static_pool='./staicPool
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_stdstar {stdstar_sof}")
 
-def auto_gitter(rawdir, metafile, outdir='./', calib_pool='calibPool', static_pool='staticPool', 
-                grating='', esorex=''):
+def auto_gitter(metafile=None, raw_pool=None, outdir='./', calib_pool='calibPool', 
+                static_pool='staticPool', band='', esorex=''):
     """calibrate the science target or the standard stars
     """
     static_pool = static_pool.rstrip('/')
@@ -348,9 +365,9 @@ def auto_gitter(rawdir, metafile, outdir='./', calib_pool='calibPool', static_po
         # write OBJ
         for item in meta_tab[meta_tab['DPR.CATG'] == 'SCIENCE']:
             if item['DPR.TYPE'] == 'OBJECT':
-                openf.write(f"{rawdir}/{item['DP.ID']}.fits.Z OBJ\n")
+                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z OBJ\n")
             elif item['DPR.TYPE'] == 'SKY':
-                openf.write(f"{rawdir}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
+                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
         openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
         openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
         openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
@@ -358,16 +375,79 @@ def auto_gitter(rawdir, metafile, outdir='./', calib_pool='calibPool', static_po
         openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
         openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
         openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
-        if grating in ['H_low', 'J_low', 'K_low']:
-            openf.write(f"{static_pool}/RESPONSE_WINDOWS_{grating}.fits RESPONSE\n")
+        if band in ['H_low', 'J_low', 'K_low']:
+            openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
     os.system(f'{esorex} eris_ifu_jitter --product_depth=2 --tbsub=true --sky_tweak=1 --dar-corr=true --flux-calibrate=false {science_sof}')
+
+def eris_pipeline(project, start_date, band, resolution, program_id, 
+                  username=None, end_date=None, observation_id='',
+                  target='',
+                  outdir='./', static_pool=None, esorex='esorex',
+                  **kwargs):
+    """simple pipeline for eris data reduction
+    
+    Args:
+        project (str): the project code, used to orgnise the folder
+        outdir (str): the output director. By default, a project folder
+                      will be created inside the output directory
         
+    """
+    project_dir = os.path.join(outdir, project)
+    if os.path.isdir(os.path.isdir(project_dir)):
+        logging.warning("project folder existing! Reusing all the possible data!")
+    
+    # preparing the all the necessary folders
+    project_calib_raw = project_dir+'/calib_raw'
+    project_science_raw = project_dir+'/science_raw'
+    project_calib_pool = project_dir+'/calibPool'
+    project_calibrated = project_dir+'/calibrated'
+    working_dirs = [project_calib_raw, project_science_raw, project_calib_pool, 
+                    project_calibrated]
+    for wd in working_dirs:
+        if not os.path.isdir(wd):
+            os.system(f'mkdir -p {wd}')
+    if static_pool is None:
+        # use the default staticPool
+        if '/' in esorex:
+            try:
+                binpath_match = re.compile('(?P<bindir>^[\/\w\s\_\.\-]*)/esorex')
+                binpath_match.search(esorex).groupdict()['bindir']
+            except:
+                raise ValueError('Failed to locate the install direction of esorex!')
+        else:
+            bindir = os.path.dirname(f'which {esorex}')
+        install_dir = os.path.dirname(bindir)
+        static_pool = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
+        logging.info(f'Finding staticPool: {calib_pool}')
+    
+    # download the calibration and science raw files
+    request_eris_calib(start_date, band, resolution, exptime, outdir=project_calib_raw,
+                       end_date=end_date, **kwargs)
+    requests_eris_science(program_id=program_id, username=username, 
+                          outdir=project_science_raw,
+                          start_date=start_date, end_date=end_date, 
+                          observation_id=observation_id, target=target,
+                          **kwargs)
+
+    # generate the calib files
+    generate_calib(metafile=os.path.join(raw_pool, 'metadata.csv'), 
+                   raw_pool=project_calib_raw, static_pool=static_pool, 
+                   calib_pool=project_calib_pool, drp_type_colname='DPR.TYPE',
+                   esorex=esorex)
+    
+    # run calibration
+    auto_gitter(metafile=os.path.join(raw_pool, 'metadata.csv'),
+                raw_pool=project_science_raw, calib_pool=project_calib_pool,
+                outdir=project_calibrated, static_pool=static_pool,
+                grating=grating, esorex=esorex)
+    
 def data_combine():
     """combine the multiple observation of the same target
 
     sigma_clip, apply if there are large number of frames to be combined
     background: global or chennel-per-channel and row-by-row
     """
+    pass
 
 def main():
     logging.basicConfig(filename='myapp.log', level=logging.INFO)
