@@ -136,7 +136,7 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
 def request_eris_calib(start_date, band, resolution, exptime, outdir='raw',
                        end_date=None, dpcat='CALIB', arm='SPIFFIER', 
                        metafile='metadata.csv',
-                       steps=['dark','detlin','distortion','flat','wavecal','stdstar'],
+                       steps=['dark','detlin','distortion','flat','wavecal'],
                        **kwargs):
     """a general purpose to qeury calib files of ERIS/SPIFFIER observation
     
@@ -189,7 +189,7 @@ def request_eris_calib(start_date, band, resolution, exptime, outdir='raw',
 
 def requests_eris_science(program_id='', username=None, metafile='metadata.csv',
                           outdir=None, target='', observation_id='', 
-                          start_date='', end_date='', **kwargs):
+                          start_date='', end_date='', debug=False, **kwargs):
     """download the science data 
 
     To download the proprietory data, you need to provide your eso username
@@ -225,12 +225,17 @@ def requests_eris_science(program_id='', username=None, metafile='metadata.csv',
                                     'stime': start_date,
                                     'etime': end_date,
                                     'target': target,})
-    download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
+    if debug:
+        return eris_query_tab
+    else:
+        download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
 
-def generate_calib(metafile, raw_pool='./raw', static_pool='./staicPool', 
-                   calib_pool='./calibPool', 
-                   steps=['dark','detlin','distortion','flat','wavecal','stdstar'],
-                   drp_type_colname='DPR.TYPE', esorex=None, dry_run=False):
+def generate_calib(metafile, raw_pool='./raw', work_dir=None, 
+                   calib_pool='./calibPool', static_pool=None,
+                   steps=['dark','detlin','distortion','flat','wavecal'],
+                   drp_type_colname='DPR.TYPE', 
+                   dark_sof=None, detlin_sof=None, distortion_sof=None, flat_sof=None, wavecal_sof=None,
+                   esorex=None, dry_run=False, archive=False, archive_name=None):
     """generate the science of frame of each calibration step
 
     Args:
@@ -239,97 +244,226 @@ def generate_calib(metafile, raw_pool='./raw', static_pool='./staicPool',
         static_pool (str): the static data pool
         calib_pool (str): the directory to keep all the output files from esorex
         steps (list): the steps to generate the corresponding calibration files
-                      it could include: ['dark','detlin','distortion','flat','wavecal','stdstar']
+                      it could include: ['dark','detlin','distortion','flat','wavecal']
         drp_type_colname (str): the column name of the metadata table includes the DPR types. 
         esorex (str): the callable esorex command from the terminal
         dry_run (str): set it to True to just generate the sof files
     """
-    static_pool = static_pool.rstrip('/')
+    cwd = os.getcwd()
     calib_pool = calib_pool.rstrip('/')
     raw_pool = raw_pool.rstrip('/')
-    if not os.path.isdir(calib_pool):
-        os.system(f'mkdir -p {calib_pool}')
+    if static_pool is None:
+        # use the default staticPool
+        if '/' in esorex:
+            try:
+                binpath_match = re.compile('(?P<bindir>^[\/\w\s\_\.\-]*)/esorex')
+                binpath_match.search(esorex).groupdict()['bindir']
+            except:
+                raise ValueError('Failed to locate the install direction of esorex!')
+        else:
+            bindir = os.path.dirname(f'which {esorex}')
+        install_dir = os.path.dirname(bindir)
+        static_pool = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
+        logging.info(f'Finding staticPool: {calib_pool}')
+    else: static_pool = static_pool.rstrip('/')
+    if archive:
+        if archive_name is None:
+            raise ValueError('Please provide the archive_name to store all the files!')
+        calib_pool = os.path.join(calib_pool, archive_name)
+        if not os.path.isdir(calib_pool):
+            os.system(f'mkdir -p {calib_pool}')
+        sof_name = f'{archive_name}.sof'
+        work_dir = calib_pool
+    else:    
+        sof_name = 'esorex_ifu_eris.sof'
+    # setup directories
+    if work_dir is None:
+        work_dir = '.'
+    for dire in [work_dir, calib_pool]:
+        if not os.path.isdir(dire):
+            os.system(f'mkdir -p {dire}')
+
     if esorex is None: esorex_cmd = f'esorex --output-dir={calib_pool}'
     else: esorex_cmd = f'{esorex} --output-dir={calib_pool}'
     meta_tab = table.Table.read(metafile, format='csv')
 
     if 'dark' in steps:
-        # generate the sof for dark calibration
-        dark_sof = os.path.join(calib_pool, 'dark.sof')
-        with open(dark_sof, 'w+') as openf:
-            for item in meta_tab[meta_tab[drp_type_colname] == 'DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK\n")
+        if dark_sof is None:
+            # generate the sof for dark calibration
+            dark_sof = os.path.join(work_dir, 'dark.sof')
+            # dark_sof = os.path.join(calib_pool, sof_name)
+            with open(dark_sof, 'w+') as openf:
+                for item in meta_tab[meta_tab[drp_type_colname] == 'DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK\n")
+                # read the timestamp and exptime
+                timestamp = item['Release Date']
+                exptime = item['DET.SEQ1.DIT']
+                openf.write(f'# dark: date={timestamp} exptime={exptime}\n')
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_dark {dark_sof}")
+            # if rename
+                # # rename the files with keywords
+                # dark_bpm_fits = f'{calib_pool}/eris_ifu_dark_bpm_{exptime:0.1f}s_{timestamp}.fits'
+                # dark_master_fits = f'{calib_pool}/eris_ifu_dark_master_{exptime:0.1f}s_{timestamp}.fits'
+            # else:
+                # dark_bpm_fits = f'{calib_pool}/eris_ifu_dark_bpm.fits'
+                # dark_master_fits = f'{calib_pool}/eris_ifu_dark_master'
+            # os.system(f'mv {work_dir}/eris_ifu_dark_bpm.fits {dark_bpm_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_dark_bpm.fits {dark_master_fits}')
     if 'detlin' in steps:
-        # generate the sof for detector's linarity
-        detlin_sof = os.path.join(calib_pool, 'detlin.sof')
-        with open(detlin_sof, 'w+') as openf:
-            for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,DARK,DETCHAR']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z LINEARITY_LAMP\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,LAMP,DETCHAR']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z LINEARITY_LAMP\n")
+        if detlin_sof is None:
+            # generate the sof for detector's linarity
+            detlin_sof = os.path.join(work_dir, 'detlin.sof')
+            # detlin_sof = os.path.join(calib_pool, sof_name)
+            with open(detlin_sof, 'w+') as openf:
+                for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,DARK,DETCHAR']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z LINEARITY_LAMP\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,LAMP,DETCHAR']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z LINEARITY_LAMP\n")
+                # read the timestamp
+                timestamp = item['Release Date']
+                openf.write(f'# detlin: date={timestamp}\n')
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_detlin {detlin_sof}")
+            # if rename:
+                # detlin_bpm_filt_fits = f'{calib_pool}/eris_ifu_detlin_bpm_filt_{timestamp}.fits'
+                # detlin_bpm_fits = f'{calib_pool}/eris_ifu_detlin_bpm_{timestamp}.fits'
+                # detlin_gain_info_fits = f'{calib_pool}/eris_ifu_detlin_gain_info_{timestamp}.fits'
+            # else:
+                # detlin_bpm_filt_fits = f'{calib_pool}/eris_ifu_detlin_bpm_filt.fits'
+                # detlin_bpm_fits = f'{calib_pool}/eris_ifu_detlin_bpm.fits'
+                # detlin_gain_info_fits = f'{calib_pool}/eris_ifu_detlin_gain_info.fits'
+            # os.system(f'mv {work_dir}/eris_ifu_detlin_bpm_filt.fits {detlin_bpm_filt_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_detlin_bpm.fits {detlin_bpm_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_detlin_gain_info.fits {detlin_gain_info_fits}')
 
     if 'distortion' in steps:
-        # generate the sof for distortion
-        distortion_sof = os.path.join(calib_pool, 'distortion.sof')
-        with open(distortion_sof, 'w+') as openf:
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK_NS\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,SLIT']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FIBRE_NS\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,WAVE,DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_NS\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,WAVE,LAMP']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_NS\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,FLAT,DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_NS\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'NS,FLAT,LAMP']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_NS\n")
-            openf.write(f"{static_pool}/eris_ifu_first_fit.fits FIRST_WAVE_FIT\n") 
-            openf.write(f"{static_pool}/eris_ifu_ref_lines.fits REF_LINE_ARC\n")
-            openf.write(f"{static_pool}/eris_ifu_wave_setup.fits WAVE_SETUP\n") 
+        if distortion_sof is None:
+            # generate the sof for distortion
+            distortion_sof = os.path.join(work_dir, 'distortion.sof')
+            # distortion_sof = os.path.join(calib_pool, sof_name)
+            with open(distortion_sof, 'w+') as openf:
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z DARK_NS\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,SLIT']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FIBRE_NS\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,WAVE,DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_NS\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,WAVE,LAMP']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_NS\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,FLAT,DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_NS\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'NS,FLAT,LAMP']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_NS\n")
+                openf.write(f"{static_pool}/eris_ifu_first_fit.fits FIRST_WAVE_FIT\n") 
+                openf.write(f"{static_pool}/eris_ifu_ref_lines.fits REF_LINE_ARC\n")
+                openf.write(f"{static_pool}/eris_ifu_wave_setup.fits WAVE_SETUP\n")
+                # read the timestamp, band, and resolution
+                timestamp = item['Release Date']
+                band = item['INS3.SPGW.NAME']
+                resolution = item['INS3.SPXW.NAME']
+                openf.write(f'# distortion: date={timestamp} band={band} resolution={resolution}\n')
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_distortion {distortion_sof}")
+            # if rename:
+                # distortion_bpm_fits = f'{calib_pool}/eris_ifu_distortion_bpm_{band}_{resolution}_{timestamp}.fits'
+                # distortion_distortion_fits = f'{calib_pool}/eris_ifu_distortion_distortion_{band}_{resolution}_{timestamp}.fits'
+                # distortion_slitlet_pos_fits = f'{calib_pool}/eris_ifu_distortion_slitlet_pos_{band}_{resolution}_{timestamp}.fits'
+            # else:
+                # distortion_bpm_fits = f'{calib_pool}/eris_ifu_distortion_bpm.fits'
+                # distortion_distortion_fits = f'{calib_pool}/eris_ifu_distortion_distortion.fits'
+                # distortion_slitlet_pos_fits = f'{calib_pool}/eris_ifu_distortion_slitlet_pos.fits'
+            # os.system(f'mv {work_dir}/eris_ifu_distortion_bpm.fits {distortion_bpm_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_distortion_distortion.fits {distortion_distortion_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_distortion_slitlet_pos.fits {distortion_slitlet_pos_fits}')
     if 'flat' in steps:
-        # generate the sof for flat
-        flat_sof = os.path.join(calib_pool, 'flat.sof')
-        with open(flat_sof, 'w+') as openf:
-            for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_LAMP\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,LAMP']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_LAMP\n")
-            openf.write(f"{calib_pool}/eris_ifu_dark_bpm.fits BPM_DARK\n")
-            openf.write(f"{calib_pool}/eris_ifu_detlin_bpm_filt.fits BPM_DETLIN\n")
-            openf.write(f"{calib_pool}/eris_ifu_distortion_bpm.fits BPM_DIST\n")
+        if flat_sof is None:
+            # generate the sof for flat
+            flat_sof = os.path.join(work_dir, 'flat.sof')
+            # flat_sof = os.path.join(calib_pool, sof_name)
+            with open(flat_sof, 'w+') as openf:
+                for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_LAMP\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,LAMP']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z FLAT_LAMP\n")
+                openf.write(f"{calib_pool}/eris_ifu_dark_bpm.fits BPM_DARK\n")
+                openf.write(f"{calib_pool}/eris_ifu_detlin_bpm_filt.fits BPM_DETLIN\n")
+                openf.write(f"{calib_pool}/eris_ifu_distortion_bpm.fits BPM_DIST\n")
+                # read the timestamp, band, and resolution
+                timestamp = item['Release Date']
+                band = item['INS3.SPGW.NAME']
+                resolution = item['INS3.SPXW.NAME']
+                openf.write(f'# flat: date={timestamp} band={band} resolution={resolution}\n')
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_flat {flat_sof}")
+            # if rename:
+                # flat_bpm_fits = f'{calib_pool}/eris_ifu_flat_bpm_{band}_{resolution}_{timestamp}.fits'
+                # flat_master_flat_fits = f'{calib_pool}/eris_ifu_flat_master_flat_{band}_{resolution}_{timestamp}.fits'
+            # else:
+                # flat_bpm_fits = f'{calib_pool}/eris_ifu_flat_bpm.fits'
+                # flat_master_flat_fits = f'{calib_pool}/eris_ifu_flat_master_flat.fits'
+            # os.system(f'mv {work_dir}/eris_ifu_flat_bpm.fits {flat_bpm_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_flat_bpm.fits {flat_master_flat_fits}')
     if 'wavecal' in steps:
-        # generate the sof for wavecal
-        wavecal_sof = os.path.join(calib_pool, 'wavecal.sof')
-        with open(wavecal_sof, 'w+') as openf:
-            for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,DARK']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_LAMP\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,LAMP']:
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_LAMP\n")
-            openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
-            openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
-            openf.write(f"{static_pool}/eris_ifu_first_fit.fits FIRST_WAVE_FIT\n") 
-            openf.write(f"{static_pool}/eris_ifu_ref_lines.fits REF_LINE_ARC\n")
-            openf.write(f"{static_pool}/eris_ifu_wave_setup.fits WAVE_SETUP\n") 
+        if wavecal_sof is None:
+            # generate the sof for wavecal
+            wavecal_sof = os.path.join(work_dir, 'wavecal.sof')
+            # wavecal_sof = os.path.join(calib_pool, sof_name)
+            with open(wavecal_sof, 'w+') as openf:
+                for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,DARK']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_LAMP\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,LAMP']:
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z WAVE_LAMP\n")
+                openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
+                openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
+                openf.write(f"{static_pool}/eris_ifu_first_fit.fits FIRST_WAVE_FIT\n") 
+                openf.write(f"{static_pool}/eris_ifu_ref_lines.fits REF_LINE_ARC\n")
+                openf.write(f"{static_pool}/eris_ifu_wave_setup.fits WAVE_SETUP\n") 
+                # read the timestamp, band, and resolution
+                timestamp = item['Release Date']
+                band = item['INS3.SPGW.NAME']
+                resolution = item['INS3.SPXW.NAME']
+                openf.write(f'# wavecal: date={timestamp} band={band} resolution={resolution}\n')
         if not dry_run:
             os.system(f"{esorex_cmd} eris_ifu_wavecal {wavecal_sof}")
+            # if rename:
+                # wave_map_fits = f'{calib_pool}/eris_ifu_wave_map_{band}_{resolution}_{timestamp}.fits'
+                # wave_arcImg_resampled_fits = f'{calib_pool}/eris_ifu_wave_arcImag_resampled_{band}_{resolution}_{timestamp}.fits'
+                # wave_arcImg_stacked_fits = f'{calib_pool}/eris_ifu_wave_arcImag_stacked_{band}_{resolution}_{timestamp}.fits'
+            # else:
+                # wave_map_fits = f'{calib_pool}/eris_ifu_wave_map.fits'
+                # wave_arcImg_resampled_fits = f'{calib_pool}/eris_ifu_wave_arcImag_resampled.fits'
+                # wave_arcImg_stacked_fits = f'{calib_pool}/eris_ifu_wave_arcImag_stacked.fits'
+            # os.system(f'mv {work_dir}/eris_ifu_wave_map.fits {wave_map_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_wave_arcImag_resampled.fits {wave_arcImg_resampled_fits}')
+            # os.system(f'mv {work_dir}/eris_ifu_wave_arcImag_stacked.fits {wave_arcImg_stacked_fits}')
 
-    if 'stdstar' in steps:
-        # generate the stdstar
-        stdstar_sof = os.path.join(calib_pool, 'stdstar.sof')
-        with open(stdstar_sof, 'w+') as openf:
-            # check the number of stdstars
+def auto_gitter(metafile=None, raw_pool=None, outdir='./', calib_pool='calibPool', 
+                static_pool='staticPool', band='', esorex='', mode='stdstar',
+                dry_run=False):
+    """calibrate the science target or the standard stars
+    """
+    static_pool = static_pool.rstrip('/')
+    calib_pool = calib_pool.rstrip('/')
+    meta_tab = table.Table.read(metafile, format='csv')
+    if not os.path.isdir(outdir):
+        os.system(f'mkdir -p {outdir}')
+    auto_jitter_sof = os.path.join(outdir, 'auto_jitter.sof')
+    if esorex is None: esorex_cmd = f'esorex --output-dir={calib_pool}'
+    else: esorex_cmd = f'{esorex} --output-dir={calib_pool}'
+
+    with open(auto_jitter_sof, 'w+') as openf:
+        # write OBJ
+        if mode == 'gitter':
+            for item in meta_tab[meta_tab['DPR.CATG'] == 'SCIENCE']:
+                if item['DPR.TYPE'] == 'OBJECT':
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z OBJ\n")
+                elif item['DPR.TYPE'] == 'SKY':
+                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
+        elif mode == 'stdstar':
             stdstar_names = meta_tab[meta_tab[drp_type_colname] == 'STD']['OBS.TARG.NAME'].data.tolist()
             if len(stdstar_names)>1:
-                logging.warning(f'Finding more than stdstar: {stdstar_names}') 
+                logging.warning(f'Finding more than one stdstar: {stdstar_names}') 
                 logging.warning(f'Choosing the first one: {stdstar_names[0]}')
             stdstar_name = stdstar_names[0]
             for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
@@ -340,34 +474,6 @@ def generate_calib(metafile, raw_pool='./raw', static_pool='./staicPool',
                 if item['OBS.TARG.NAME'] == stdstar_name:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{stdstar_name}\n")
                 else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{item['OBS.TARG.NAME']}\n")
-            openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
-            openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
-            openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
-            openf.write(f"{calib_pool}/eris_ifu_flat_bpm.fits BPM_FLAT\n")
-            openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
-            openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
-            openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
-            openf.write(f"{static_pool}/RESPONSE_WINDOWS_K_low.fits RESPONSE\n")
-        if not dry_run:
-            os.system(f"{esorex_cmd} eris_ifu_stdstar {stdstar_sof}")
-
-def auto_gitter(metafile=None, raw_pool=None, outdir='./', calib_pool='calibPool', 
-                static_pool='staticPool', band='', esorex=''):
-    """calibrate the science target or the standard stars
-    """
-    static_pool = static_pool.rstrip('/')
-    calib_pool = calib_pool.rstrip('/')
-    meta_tab = table.Table.read(metafile, format='csv')
-    if not os.path.isdir(outdir):
-        os.system(f'mkdir -p {outdir}')
-    science_sof = os.path.join(outdir, 'eris_ifu_jitter.sof')
-    with open(science_sof, 'w+') as openf:
-        # write OBJ
-        for item in meta_tab[meta_tab['DPR.CATG'] == 'SCIENCE']:
-            if item['DPR.TYPE'] == 'OBJECT':
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z OBJ\n")
-            elif item['DPR.TYPE'] == 'SKY':
-                openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
         openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
         openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
         openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
@@ -377,7 +483,14 @@ def auto_gitter(metafile=None, raw_pool=None, outdir='./', calib_pool='calibPool
         openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
         if band in ['H_low', 'J_low', 'K_low']:
             openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
-    os.system(f'{esorex} eris_ifu_jitter --product_depth=2 --tbsub=true --sky_tweak=1 --dar-corr=true --flux-calibrate=false {science_sof}')
+
+    if not dry_run:
+        if mode == 'stdstar':
+            os.system(f"{esorex_cmd} eris_ifu_stdstar {auto_jitter_sof}")
+        elif mode == 'gitter':
+            os.system(f'{esorex} eris_ifu_jitter --product_depth=2 --tbsub=true --sky_tweak=1 --dar-corr=true --flux-calibrate=false {auto_jitter_sof}')
+            # os.system(f'{esorex} eris_ifu_jitter --derot_corr --product_depth=2 --tbsub=true --sky_tweak=1 --dar-corr=true --flux-calibrate=false {science_sof}')
+
 
 def eris_pipeline(project, start_date, band, resolution, program_id, 
                   username=None, end_date=None, observation_id='',
@@ -406,20 +519,7 @@ def eris_pipeline(project, start_date, band, resolution, program_id,
     for wd in working_dirs:
         if not os.path.isdir(wd):
             os.system(f'mkdir -p {wd}')
-    if static_pool is None:
-        # use the default staticPool
-        if '/' in esorex:
-            try:
-                binpath_match = re.compile('(?P<bindir>^[\/\w\s\_\.\-]*)/esorex')
-                binpath_match.search(esorex).groupdict()['bindir']
-            except:
-                raise ValueError('Failed to locate the install direction of esorex!')
-        else:
-            bindir = os.path.dirname(f'which {esorex}')
-        install_dir = os.path.dirname(bindir)
-        static_pool = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
-        logging.info(f'Finding staticPool: {calib_pool}')
-    
+   
     # download the calibration and science raw files
     request_eris_calib(start_date, band, resolution, exptime, outdir=project_calib_raw,
                        end_date=end_date, **kwargs)
