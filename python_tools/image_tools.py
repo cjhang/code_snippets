@@ -25,6 +25,7 @@ import os
 import sys
 import numpy as np
 import scipy.ndimage as ndimage
+from scipy import optimize
 import warnings
 from astropy.io import fits
 from astropy.table import Table, vstack, hstack
@@ -48,8 +49,15 @@ warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 ##############################
 ######### Image ##############
 ##############################
-class Image(object):
-    """The base data strcuture to handle the 2D astronomical images
+
+class BaseImage(object):
+    """Basic image class
+    """
+    def __init__(self):
+        pass
+
+class Image(BaseImage):
+    """The data strcuture to handle the 2D astronomical images from CASA
     """
     def __init__(self, data=None, header=None, beam=None, wcs=None, mask=None,
                  name=None):
@@ -700,6 +708,73 @@ def aperture_stats(image, aperture=(1.4,1.4,0), mask=None, nsample=100):
     std = np.std(aperture_sum) 
     return mean, median, std
 
+def calculate_noise_fwhm(kernal):
+    return np.sqrt(2*np.log(2)/np.pi)*np.sum(kernal)/np.sqrt(np.sum(kernal**2))
+
+def gaussian_2d(params, x=None, y=None):
+    amp, x0, y0, xsigma, ysigma, beta = params
+    return amp*np.exp(-0.5*(x-x0)**2/xsigma**2 - beta*(x-x0)*(y-y0)/(xsigma*ysigma)- 0.5*(y-y0)**2/ysigma**2)
+
+def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=None):
+    """two dimentional Gaussian fit follows the formula provided by Condon+1997
+    http://adsabs.harvard.edu/abs/1997PASP..109..166C
+    see also: 
+    https://casadocs.readthedocs.io/en/latest/api/tt/casatasks.analysis.imfit.html
+    
+    The advantage is that it provides a formula to calculate the uncertainties
+    But it also comes with limitations:
+        1. The assumed gaussian model should close to the true profile
+        2. The final S/N should at least larger than 3, ideally should large than 5
+        4. It assume the noise is uniform across the the whole image
+
+    """
+    # generate the grid
+    sigma2FWHM = np.sqrt(8*np.log(2))
+    yshape, xshape = image.shape
+    ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
+                               (np.arange(0, xshape)+0.5)*pixel_size)
+    # automatically estimate the initial parameters
+    if x0 is None:
+        amp = np.percentile(image, 0.9)*1.1
+        x0, y0 = xshape*0.5, yshape*0.5
+        xsigma, ysigma = pixel_size, pixel_size 
+        x0 = [amp, x0, y0, xsigma, ysigma, 0]
+
+    def _cost(params, xgrid, ygrid):
+        return np.sum((image - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+    res_minimize = optimize.minimize(_cost, x0, args=(xgrid, ygrid), method='BFGS')
+
+    if plot:
+        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fig, ax = plt.subplots(1,3, figsize=(12, 3))
+        ax[0].imshow(image)
+        ax[1].imshow(fit_image)
+        ax[2].imshow(image - fit_image)
+    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+    print(xfwhm_fit, yfwhm_fit)
+    flux = 2.0*np.pi*amp_fit*xsigma_fit*ysigma_fit
+    is_uncorrelated_noise = True
+    if noise_fwhm is not None:
+        # for corrected noise map
+        if noise_fwhm > 1.:
+            is_uncorrelated_noise = False
+    if not is_uncorrelated_noise:
+        def _f_rho(a_M, a_m):
+            return (amp_fit/rms)*np.sqrt(xfwhm_fit*yfwhm_fit)/(2*noise_fwhm)*(1+(noise_fwhm/xfwhm_fit)**2)**(0.5*a_M)*(1+(noise_fwhm/yfwhm_fit)**2)**(0.5*a_m)
+        amp_fiterr = amp*np.sqrt(2)/_f_rho(3/2., 3/2.)
+        xfwhm_fiterr = xfwhm_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+        x0_fiterr = x0_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+        yfwhm_fiterr = yfwhm_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+        y0_fiterr = y0_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+        beta_fiterr = beta_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+        flux_err = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
+    else:
+        # uncorrelated noise
+        rho2 = np.pi*xsigma_fit*ysigma_fit*(amp_fit/rms)**2
+        flux_err = flux*np.sqrt(2.0/rho2)
+    return flux, flux_err 
+
 def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
                        xbounds=None, ybounds=None, center_bounds_scale=0.125, plot=False, ax=None):
     """Apply simple two dimentional Gaussian fitting
@@ -729,7 +804,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
                     "x_stddev":(0., xsize/2.), "y_stddev":(0., ysize/2.)})
     fit_p = fitting.LevMarLSQFitter()
     p = fit_p(p_init, xrad, yrad, image_norm, 
-              weights=1/(yrad**2+xrad**2+(x_stddev)**2+(0.25*y_stddev)**2))
+              weights=1/(yrad**2+xrad**2+(0.25*x_stddev)**2+(0.25*y_stddev)**2))
     flux_fitted = 2*np.max(image)*np.pi*p.x_stddev.value*p.y_stddev.value*p.amplitude.value
     dict_return = dict(zip(p.param_names, p.param_sets.flatten().tolist()))
     dict_return['amplitude'] *= image_scale
@@ -1142,8 +1217,8 @@ def make_gaussian_image(imsize=None, fwhm=None, sigma=None, area=1., offset=(0,0
     elif isinstance(imsize, (int, float)):
         imsize = [imsize, imsize]
     image = np.zeros(imsize, dtype=float)
-    yidx, xidx = np.indices(imsize)
-    yrad, xrad = yidx-(imsize[0]-1)/2., xidx-(imsize[1]-1)/2.
+    yidx, xidx = np.indices(imsize) + 0.5
+    yrad, xrad = yidx-0.5*imsize[0], xidx-0.5*imsize[1]
     y = xrad*np.cos(theta) + yrad*np.sin(theta)
     x = yrad*np.cos(theta) - xrad*np.sin(theta)
     if isinstance(offset, (list, tuple)):
@@ -1151,7 +1226,7 @@ def make_gaussian_image(imsize=None, fwhm=None, sigma=None, area=1., offset=(0,0
     flux = area * np.exp(-(x-x_offset)**2/2./xsigma**2 - (y-y_offset)**2/2./ysigma**2) / (2*np.pi*xsigma*ysigma)
     if normalize:
         flux = flux / np.sum(flux)
-    return flux
+    return flux 
 
 def aperture_correction(aperture=None, psf='Gaussian', fwhm=[1.4,1.4,0],  imsize=None, 
                         sourcesize=0, debug=False):
