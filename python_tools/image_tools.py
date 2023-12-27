@@ -645,6 +645,11 @@ class Image(BaseImage):
 ########################################
 ###### stand alone functions ###########
 ########################################
+
+def calculate_rms(data, mask):
+    data = np.ma.masked_array(data, mask=mask)
+    return np.sqrt(np.ma.sum(data**2)/(data.size-np.sum(mask)))
+
 def beam2aperture(beam, scale=1):
     """cover the beam in interferometric image to aperture in `photutils`
 
@@ -679,7 +684,7 @@ def aperture_stats(image, aperture=(1.4,1.4,0), mask=None, nsample=100):
 
     Args:
         data: (ndarray) the input data
-        beam: the shape of the beam in pixel coordinate, (bmaj, bmin, bpa) in units (pix, pix, deg)
+        beam: the shape of the beam in pixel coordinate, (bmaj, bmin, bpa) in units (pix, pix, deg), bmaj (bmin) is the semimajor (semiminor) axis in pixels.
         axis: the axis to evaluate the statistics
         sigma: the sigma for sigma clipping
         niter: the iteration of the sigma clipping
@@ -706,7 +711,8 @@ def aperture_stats(image, aperture=(1.4,1.4,0), mask=None, nsample=100):
     mean = np.mean(aperture_sum)
     median = np.median(aperture_sum) 
     std = np.std(aperture_sum) 
-    return mean, median, std
+    rms = np.sqrt(np.sum(aperture_sum**2)/len(aperture_sum))
+    return mean, median, std, rms
 
 def calculate_noise_fwhm(kernal):
     return np.sqrt(2*np.log(2)/np.pi)*np.sum(kernal)/np.sqrt(np.sum(kernal**2))
@@ -752,27 +758,40 @@ def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=N
         ax[2].imshow(image - fit_image)
     amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
     xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
-    print(xfwhm_fit, yfwhm_fit)
+    # print(xfwhm_fit, yfwhm_fit)
     flux = 2.0*np.pi*amp_fit*xsigma_fit*ysigma_fit
     is_uncorrelated_noise = True
     if noise_fwhm is not None:
         # for corrected noise map
-        if noise_fwhm > 1.:
-            is_uncorrelated_noise = False
-    if not is_uncorrelated_noise:
+        # calculate the maximal smooth limits
         def _f_rho(a_M, a_m):
             return (amp_fit/rms)*np.sqrt(xfwhm_fit*yfwhm_fit)/(2*noise_fwhm)*(1+(noise_fwhm/xfwhm_fit)**2)**(0.5*a_M)*(1+(noise_fwhm/yfwhm_fit)**2)**(0.5*a_m)
-        amp_fiterr = amp*np.sqrt(2)/_f_rho(3/2., 3/2.)
+        amp_fiterr = amp_fit*np.sqrt(2)/_f_rho(3/2., 3/2.)
         xfwhm_fiterr = xfwhm_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
         x0_fiterr = x0_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
         yfwhm_fiterr = yfwhm_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
         y0_fiterr = y0_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
         beta_fiterr = beta_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
-        flux_err = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
+        flux_err_maximal = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
+        # calculate the minimal smooth limits
+        rho = np.sqrt(xfwhm_fit*yfwhm_fit)/(2.*noise_fwhm)*amp_fit/rms
+        flux_err_mimimal = np.sqrt(2.0)*flux/rho
+        # print(flux_err_maximal, flux_err_mimimal)
+        # determine to use which one
+        if noise_fwhm**2 > 0.8*xfwhm_fit*yfwhm_fit:
+            # if the corrected noise is big compared to the source size
+            flux_err = flux_err_maximal
+        elif noise_fwhm**2 < 0.01*xfwhm_fit*yfwhm_fit:
+            # if the corrected noise is small compared to the source size
+            flux_err = flux_err_mimimal
+        else:
+            # if in the middle
+            factor = noise_fwhm/np.sqrt(xfwhm_fit*yfwhm_fit)
+            flux_err = factor*flux_err_maximal + (1-factor)*flux_err_mimimal
     else:
         # uncorrelated noise
-        rho2 = np.pi*xsigma_fit*ysigma_fit*(amp_fit/rms)**2
-        flux_err = flux*np.sqrt(2.0/rho2)
+        rho = np.sqrt(np.pi*xsigma_fit*ysigma_fit)*amp_fit/rms
+        flux_err = np.sqrt(2.0)*flux/rho
     return flux, flux_err 
 
 def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
@@ -862,7 +881,7 @@ def find_structure(image, mask=None, sigma=3.0, iterations=1, opening_iters=None
         Return:
             image: binary image with masked region with 1 and the others 0
         """
-        mean, median, std = beam_stats(image, mask=mask)
+        mean, median, std, rms = beam_stats(image, mask=mask)
         struct_above_sigma = self.image > sigma*std
         if opening_iters is None:
             opening_iters = iterations
@@ -1059,7 +1078,7 @@ def mask_coordinates(image=None, coords=None, shape=None, apertures=None):
 def measure_flux(image, coords=None, wcs=None,
                  method='single-aperture', apertures=None,
                  mask=None, n_boostrap=100,
-                 segment_size=21.0,
+                 segment_size=21.0, noise_fwhm=None, rms=None,
                  plot=False, ax=None, color='white', debug=False):
     """Two-dimension flux measurement in the pixel coordinates
     
@@ -1099,7 +1118,7 @@ def measure_flux(image, coords=None, wcs=None,
             phot_table = aperture_photometry(image, aper, mask=mask)
             # aperture_correction
             flux = phot_table['aperture_sum'].value
-            _, _, flux_err = aperture_stats(image, (aper.a, aper.b, aper.theta), 
+            _, _, flux_err, _ = aperture_stats(image, (aper.a, aper.b, aper.theta), 
                                             mask=detections_mask)
             table_flux.add_row((i, x, y, aper.a, aper.b, aper.theta, flux, flux_err))
    
@@ -1112,13 +1131,56 @@ def measure_flux(image, coords=None, wcs=None,
             image_cutout = s.cutout(image)
             gaussian_fitting = gaussian_2Dfitting(image_cutout, debug=debug, plot=plot)
             flux = gaussian_fitting['flux'] 
-            # boostrap for noise measurement
+            if rms is None:
+                rms = calculate_rms(image, mask=detections_mask)
+            # caulcate the error: 
+            
+            # method1: boostrap for noise measurement
             a_fitted_aper = 3 * gaussian_fitting['x_stddev'] # 2xFWHM of gaussian
             b_fitted_aper = 3 * gaussian_fitting['y_stddev']
             theta_fitted = gaussian_fitting['theta']/180*np.pi
-            _, _, flux_err = aperture_stats(image, (a_fitted_aper, b_fitted_aper,
-                                                                theta_fitted),
-                                                        mask=detections_mask)
+            # _, _, flux_err,_ = aperture_stats(image, (a_fitted_aper, b_fitted_aper,
+                                                                # theta_fitted),
+                                                        # mask=detections_mask)
+            # method 2: condon+1997
+            gf = gaussian_fitting
+            sigma2FWHM = np.sqrt(8*np.log(2))
+            amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = (
+                    gf['amplitude'],gf['x_mean'],gf['y_mean'],gf['x_stddev'],gf['y_stddev'],gf['theta'])
+            xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+            if noise_fwhm is not None:
+                # for corrected noise map
+                # calculate the maximal smooth limits
+                def _f_rho(a_M, a_m):
+                    return (amp_fit/rms)*np.sqrt(xfwhm_fit*yfwhm_fit)/(2*noise_fwhm)*(1+(noise_fwhm/xfwhm_fit)**2)**(0.5*a_M)*(1+(noise_fwhm/yfwhm_fit)**2)**(0.5*a_m)
+                amp_fiterr = amp_fit*np.sqrt(2)/_f_rho(3/2., 3/2.)
+                xfwhm_fiterr = xfwhm_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+                x0_fiterr = x0_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+                yfwhm_fiterr = yfwhm_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                y0_fiterr = y0_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                beta_fiterr = beta_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                flux_err_maximal = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
+                # calculate the minimal smooth limits
+                rho = np.sqrt(xfwhm_fit*yfwhm_fit)/(2.*noise_fwhm)*amp_fit/rms
+                flux_err_mimimal = np.sqrt(2.0)*flux/rho
+                # print(flux_err_maximal, flux_err_mimimal)
+                # determine to use which one
+                if noise_fwhm**2 > 0.8*xfwhm_fit*yfwhm_fit:
+                    # if the corrected noise is big compared to the source size
+                    flux_err = flux_err_maximal
+                elif noise_fwhm**2 < 0.01*xfwhm_fit*yfwhm_fit:
+                    # if the corrected noise is small compared to the source size
+                    flux_err = flux_err_mimimal
+                else:
+                    # if in the middle
+                    factor = noise_fwhm/np.sqrt(xfwhm_fit*yfwhm_fit)
+                    flux_err = factor*flux_err_maximal + (1-factor)*flux_err_mimimal
+            else:
+                # uncorrelated noise
+                rho = np.sqrt(np.pi*xsigma_fit*ysigma_fit)*amp_fit/rms
+                flux_err = np.sqrt(2.0)*flux/rho
+
+
             table_flux.add_row((i, x, y, a_fitted_aper, b_fitted_aper, theta_fitted, 
                                   flux, flux_err))
     if wcs is not None:
