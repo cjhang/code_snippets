@@ -1,4 +1,6 @@
 *.pyc
-*/*.pyc
 .DS_Store
-*/.DS_Store
+Makefile
+__*
+_*
+tmp

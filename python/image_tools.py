@@ -29,7 +29,7 @@ from scipy import optimize
 import warnings
 from astropy.io import fits
 from astropy.table import Table, vstack, hstack
-from astropy.stats import sigma_clipped_stats
+from astropy import stats
 from astropy.wcs import WCS
 from astropy import units as u
 from astropy import constants as const
@@ -40,7 +40,8 @@ from matplotlib import patches
 from astropy.modeling import models, fitting
 from astropy import convolution 
 
-from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
+from photutils.aperture import aperture_photometry, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
+from photutils.detection import find_peaks
 
 # Filtering warnings
 from astropy.wcs import FITSFixedWarning
@@ -53,7 +54,7 @@ warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 class BaseImage(object):
     """Basic image class
     """
-    def __init__(self):
+    def __init__(self, data=None, mask=None, beam=None, name=None):
         pass
 
 class Image(BaseImage):
@@ -83,8 +84,6 @@ class Image(BaseImage):
             if self.wcs is not None:
                 self.header = self.wcs.to_header()
         self.pixel2arcsec = None
-        self.pixel_beam = None
-        self.set_pixel_beam()
     def __getitem__(self, i):
             return self.image.value[i]
     @property
@@ -97,10 +96,10 @@ class Image(BaseImage):
         print(f"Pixel beam: {self.pixel_beam}")
     @property
     def image(self):
-        if np.ndim(self.data) > 2:
-            return self.data.reshape(self.data.shape[:2])
-        else:
+        # return the full image
+        if isinstance(self.data, u.Quantity):
             return self.data
+        return u.Quantity(self.data)
     @property
     def unit(self):
         if isinstance(self.image, u.Quantity):
@@ -128,26 +127,27 @@ class Image(BaseImage):
         pixel_area = self.pixel_sizes[0].to('arcsec').value * self.pixel_sizes[1].to('arcsec').value
         return calculate_beamsize(self.beam, scale=1/pixel_area)
         # return 1/(np.log(2)*4.0) * np.pi * self.beam[0] * self.beam[1] / pixel_area 
-    def set_pixel_beam(self):
+    def get_pixel_beam(self):
         # convert the beam size into pixel sizes
         if self.beam is None:
             warnings.warn('No beam infomation has been found!')
             # raise ValueError("No valid beams can be found!")
-        else:
-            try:
-                bmaj, bmin, bpa = self.beam
-                x_scale = 1/self.pixel_sizes[0].to(u.arcsec).value
-                y_scale = 1/self.pixel_sizes[1].to(u.arcsec).value
-                bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
-                                     + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
-                bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
-                                     + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
-                self.pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
-            except:
-                pass
+            return None
+        try:
+            bmaj, bmin, bpa = self.beam
+            x_scale = 1/self.pixel_sizes[0].to(u.arcsec).value
+            y_scale = 1/self.pixel_sizes[1].to(u.arcsec).value
+            bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
+            bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
+            pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
+        except:
+            pixel_beam = None
+        return pixel_beam
     @property
     def imstats(self):
-        return sigma_clipped_stats(self.image, sigma=5.0, maxiters=2)
+        return stats.sigma_clipped_stats(self.image, sigma=5.0, maxiters=2)
     def beam_stats(self, beam=None, mask=None, nsample=100):
         if beam is None:
             beam = self.pixel_beam
@@ -423,7 +423,7 @@ class Image(BaseImage):
         Return:
             image: binary image with masked region with 1 and the others 0
         """
-        mean, median, std = sigma_clipped_stats(self.image, sigma=sigma,
+        mean, median, std = stats.sigma_clipped_stats(self.image, sigma=sigma,
                 maxiters=1, mask=self.mask)
         struct_above_sigma = self.image > sigma*std
         if opening_iters is None:
@@ -560,33 +560,56 @@ class Image(BaseImage):
         return Image(data=data_new, header=header_out, wcs=wcs_out)
     
     @staticmethod
-    def read(fitsimage, extname='primary', name=None, debug=False, correct_beam=False):
+    def read(fitsimage, extname='primary', name=None, debug=False, correct_beam=False, 
+             spec_idx=0, stokes_idx=0):
         """read the fits file
 
         Parameters
         ----------
-        fitsimage : string
+        fitsimage : str
             the filename of the fits file.
-        name (optinal): 
+        name : str, optinal
             the name of the image.
-        debug : 
+        debug : bool 
             set to true to print the details of the fits file
-        correct_beam: 
+        correct_beam : bool 
             set to True to correct the beams if the beam 
             information is available
+        spec_idx : int
+            the index of the select channel along the spectral dimension, 
+            default to be the median value
+        stokes_idx : int
+            the index of the select stocks dimension, default to be the first axis
+            
         """
         with fits.open(fitsimage) as image_hdu:
             if debug:
                 print(image_hdu.info())
             image_header = image_hdu[extname].header
-            image_data = image_hdu[extname].data * u.Unit(image_header['BUNIT'])
+            ndim = image_header['NAXIS']
+            if ndim > 4 or ndim < 2:
+                raise ValueError("Unsupported data dimension! Only support 2D, 3D and 4D data!")
+            image_data = image_hdu[extname].data
+            if ndim > 3:
+                image_data = image_data[stokes_idx]
+            if ndim > 2:
+                image_data = image_data[spec_idx]
+            if 'BUNIT' in image_header.keys():
+                image_data = image_data * u.Unit(image_header['BUNIT'])
+            # try to read the beam from the headers
             if 'BMAJ' in image_header.keys():
                 image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
                               image_header['BPA']]
             else:
                 try: full_beam = image_hdu['BEAMS'].data
-                except: image_beam = None
-                image_beam = list(full_beam[stokes_idx][:3])
+                except: full_beam = None
+                if full_beam is not None:
+                    if ndim > 3:
+                        full_beam = full_beam[stokes_idx]
+                    if ndim > 2:
+                        # image_beam = np.median(full_beam, axis=0)
+                        image_beam = full_beam[spec_idx]
+                else: image_beam = None
         if correct_beam:
             # convert Jy/beam to Jy
             if image_beam is not None:
@@ -646,8 +669,12 @@ class Image(BaseImage):
 ###### stand alone functions ###########
 ########################################
 
-def calculate_rms(data, mask):
+def calculate_rms(data, mask=None, masked_invalid=True, sigma_clip=True, sigma=3.0):
+    if masked_invalid:
+        data = np.ma.masked_invalid(data)
     data = np.ma.masked_array(data, mask=mask)
+    if sigma_clip:
+        data = stats.sigma_clip(data, sigma=sigma)
     return np.sqrt(np.ma.sum(data**2)/(data.size-np.sum(mask)))
 
 def beam2aperture(beam, scale=1):
@@ -792,7 +819,7 @@ def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=N
         # uncorrelated noise
         rho = np.sqrt(np.pi*xsigma_fit*ysigma_fit)*amp_fit/rms
         flux_err = np.sqrt(2.0)*flux/rho
-    return flux, flux_err 
+    return flux, flux_err, res_minimize.x
 
 def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
                        xbounds=None, ybounds=None, center_bounds_scale=0.125, plot=False, ax=None):
@@ -824,7 +851,7 @@ def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, thet
     fit_p = fitting.LevMarLSQFitter()
     p = fit_p(p_init, xrad, yrad, image_norm, 
               weights=1/(yrad**2+xrad**2+(0.25*x_stddev)**2+(0.25*y_stddev)**2))
-    flux_fitted = 2*np.max(image)*np.pi*p.x_stddev.value*p.y_stddev.value*p.amplitude.value
+    flux_fitted = 2*image_scale*np.pi*p.x_stddev.value*p.y_stddev.value*p.amplitude.value
     dict_return = dict(zip(p.param_names, p.param_sets.flatten().tolist()))
     dict_return['amplitude'] *= image_scale
     dict_return['flux'] = flux_fitted
@@ -901,7 +928,7 @@ def source_finder(image=None, wcs=None, std=None, mask=None,
                   beam=None, aperture_scale=6.0, 
                   detection_threshold=3.0, 
                   plot=False, name=None, show_flux=False, 
-                  method='sep', filter_kernel=None, # parameters for sep
+                  method='auto', filter_kernel=None, # parameters for sep
                   find_peaks_params={}, DAOStarFinder_params={},
                   ax=None, savefile=None):
     """a source finder and flux measurement wrapper of SEP
@@ -916,6 +943,12 @@ def source_finder(image=None, wcs=None, std=None, mask=None,
         positive x to positive y.
 
     """
+    if method == 'auto':
+        try:
+            import sep
+            method = 'sep'
+        except:
+            method = 'find_peaks'
     if method == 'sep':
         try:
             import sep
@@ -961,7 +994,6 @@ def source_finder(image=None, wcs=None, std=None, mask=None,
             sources_found.rename_column('ycentroid', 'y')
             sources_found.rename_column('peak', 'peak_value')
             sources_found['peak_snr'] = sources_found['peak_value']/std
-        print(sources_found)
 
     # add extra info
     if sources_found is not None:
@@ -1129,60 +1161,68 @@ def measure_flux(image, coords=None, wcs=None,
         for i,s in enumerate(segments_mask):
             x,y = coords[i]
             image_cutout = s.cutout(image)
-            gaussian_fitting = gaussian_2Dfitting(image_cutout, debug=debug, plot=plot)
-            flux = gaussian_fitting['flux'] 
             if rms is None:
                 rms = calculate_rms(image, mask=detections_mask)
+            # gaussian_fitting = gaussian_2Dfitting(image_cutout, debug=debug, plot=plot)
+            flux, flux_err, params_fit = gaussian_fit2d(image_cutout, rms=rms, noise_fwhm=noise_fwhm)
+            a_fitted_aper = 3 * params_fit[3] 
+            b_fitted_aper = 3 * params_fit[4]
+            theta_fitted = params_fit[5]/180*np.pi
+            
+            # flux = gaussian_fitting['flux'] 
             # caulcate the error: 
             
             # method1: boostrap for noise measurement
-            a_fitted_aper = 3 * gaussian_fitting['x_stddev'] # 2xFWHM of gaussian
-            b_fitted_aper = 3 * gaussian_fitting['y_stddev']
-            theta_fitted = gaussian_fitting['theta']/180*np.pi
-            # _, _, flux_err,_ = aperture_stats(image, (a_fitted_aper, b_fitted_aper,
+            # a_fitted_aper = 3 * gaussian_fitting['x_stddev'] # 2xFWHM of gaussian
+            # b_fitted_aper = 3 * gaussian_fitting['y_stddev']
+            # theta_fitted = gaussian_fitting['theta']/180*np.pi
+            # _, _, flux_err, _ = aperture_stats(image, (a_fitted_aper, b_fitted_aper,
                                                                 # theta_fitted),
                                                         # mask=detections_mask)
-            # method 2: condon+1997
-            gf = gaussian_fitting
-            sigma2FWHM = np.sqrt(8*np.log(2))
-            amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = (
-                    gf['amplitude'],gf['x_mean'],gf['y_mean'],gf['x_stddev'],gf['y_stddev'],gf['theta'])
-            xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
-            if noise_fwhm is not None:
-                # for corrected noise map
-                # calculate the maximal smooth limits
-                def _f_rho(a_M, a_m):
-                    return (amp_fit/rms)*np.sqrt(xfwhm_fit*yfwhm_fit)/(2*noise_fwhm)*(1+(noise_fwhm/xfwhm_fit)**2)**(0.5*a_M)*(1+(noise_fwhm/yfwhm_fit)**2)**(0.5*a_m)
-                amp_fiterr = amp_fit*np.sqrt(2)/_f_rho(3/2., 3/2.)
-                xfwhm_fiterr = xfwhm_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
-                x0_fiterr = x0_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
-                yfwhm_fiterr = yfwhm_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
-                y0_fiterr = y0_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
-                beta_fiterr = beta_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
-                flux_err_maximal = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
-                # calculate the minimal smooth limits
-                rho = np.sqrt(xfwhm_fit*yfwhm_fit)/(2.*noise_fwhm)*amp_fit/rms
-                flux_err_mimimal = np.sqrt(2.0)*flux/rho
-                # print(flux_err_maximal, flux_err_mimimal)
-                # determine to use which one
-                if noise_fwhm**2 > 0.8*xfwhm_fit*yfwhm_fit:
-                    # if the corrected noise is big compared to the source size
-                    flux_err = flux_err_maximal
-                elif noise_fwhm**2 < 0.01*xfwhm_fit*yfwhm_fit:
-                    # if the corrected noise is small compared to the source size
-                    flux_err = flux_err_mimimal
-                else:
-                    # if in the middle
-                    factor = noise_fwhm/np.sqrt(xfwhm_fit*yfwhm_fit)
-                    flux_err = factor*flux_err_maximal + (1-factor)*flux_err_mimimal
-            else:
-                # uncorrelated noise
-                rho = np.sqrt(np.pi*xsigma_fit*ysigma_fit)*amp_fit/rms
-                flux_err = np.sqrt(2.0)*flux/rho
-
-
             table_flux.add_row((i, x, y, a_fitted_aper, b_fitted_aper, theta_fitted, 
                                   flux, flux_err))
+
+            # method 2: condon+1997
+            # gf = gaussian_fitting
+            # sigma2FWHM = np.sqrt(8*np.log(2))
+            # amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = (
+                    # gf['amplitude'],gf['x_mean'],gf['y_mean'],gf['x_stddev'],gf['y_stddev'],gf['theta'])
+            # xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+            # if noise_fwhm is not None:
+                # # for corrected noise map
+                # # calculate the maximal smooth limits
+                # def _f_rho(a_M, a_m):
+                    # return (amp_fit/rms)*np.sqrt(xfwhm_fit*yfwhm_fit)/(2*noise_fwhm)*(1+(noise_fwhm/xfwhm_fit)**2)**(0.5*a_M)*(1+(noise_fwhm/yfwhm_fit)**2)**(0.5*a_m)
+                # amp_fiterr = amp_fit*np.sqrt(2)/_f_rho(3/2., 3/2.)
+                # xfwhm_fiterr = xfwhm_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+                # x0_fiterr = x0_fit*np.sqrt(2)/_f_rho(2.5, 0.5)
+                # yfwhm_fiterr = yfwhm_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                # y0_fiterr = y0_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                # beta_fiterr = beta_fit*np.sqrt(2)/_f_rho(0.5, 2.5)
+                # flux_err_maximal = flux*np.sqrt((amp_fiterr/amp_fit)**2+noise_fwhm**2/(xfwhm_fit*yfwhm_fit)*((xfwhm_fiterr/xfwhm_fit)**2+(yfwhm_fiterr/yfwhm_fit)**2))
+                # # calculate the minimal smooth limits
+                # rho = np.sqrt(xfwhm_fit*yfwhm_fit)/(2.*noise_fwhm)*amp_fit/rms
+                # flux_err_mimimal = np.sqrt(2.0)*flux/rho
+                # # print(flux_err_maximal, flux_err_mimimal)
+                # # determine to use which one
+                # if noise_fwhm**2 > 0.8*xfwhm_fit*yfwhm_fit:
+                    # # if the corrected noise is big compared to the source size
+                    # flux_err = flux_err_maximal
+                # elif noise_fwhm**2 < 0.01*xfwhm_fit*yfwhm_fit:
+                    # # if the corrected noise is small compared to the source size
+                    # flux_err = flux_err_mimimal
+                # else:
+                    # # if in the middle
+                    # factor = noise_fwhm/np.sqrt(xfwhm_fit*yfwhm_fit)
+                    # flux_err = factor*flux_err_maximal + (1-factor)*flux_err_mimimal
+            # else:
+                # # uncorrelated noise
+                # rho = np.sqrt(np.pi*xsigma_fit*ysigma_fit)*amp_fit/rms
+                # flux_err = np.sqrt(2.0)*flux/rho
+
+
+            # table_flux.add_row((i, x, y, a_fitted_aper, b_fitted_aper, theta_fitted, 
+                                  # flux, flux_err))
     if wcs is not None:
         n_dets = len(table_flux)
         table_new_data = Table(np.array([0., 0.] * n_dets).reshape(n_dets, 2),
@@ -1421,7 +1461,7 @@ def image2noise(image, shape=None, header=None, wcs=None, savefile=None, sigma=5
                 mode='std', overwrite=False,):
     """
     """
-    mean, median, std = sigma_clipped_stats(image, sigma=sigma, maxiters=3)
+    mean, median, std = stats.igma_clipped_stats(image, sigma=sigma, maxiters=3)
     if shape is None:
         shape = image.shape
     if mode == 'median':

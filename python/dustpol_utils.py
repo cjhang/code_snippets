@@ -91,7 +91,8 @@ def make_poli(data, norm=1, mask=None):
     return np.sqrt(data[1]**2+data[1]**2)/norm
 
 def show_vectors(image, pola, poli=None, step=1, scale=1, rotate=0, mask=None, ax=None, 
-                 edgecolors='white', facecolors='cyan', lw=1, fontsize=12, **kwargs):
+                 edgecolors='white', facecolors='cyan', lw=1, fontsize=12, show_cbar=False, 
+                 **kwargs):
     """simple visualization tools for vectors, designed to show the geometry of magnetic fields
 
     Args:

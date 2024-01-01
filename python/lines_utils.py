@@ -8,20 +8,28 @@
 
 from collections import OrderedDict
 import numpy as np
-import scipy as sp
 import matplotlib.pyplot as plt
 import astropy.units as u
-import astropy.constants as const
+# import astropy.constants as const
 
 
-def print_lines(format='freq', z=0.0, mode='simple'):
+def print_lines(format='freq', z=0.0, family=None):
     '''
-
     Parameters
     ----------
     format : str
         output format, either in frequency (freq) or wavelength (wave)
     '''
+    if family is None:
+        print("Specify the spectral line family:")
+        print("all, CO, CO_isotop, H2O, dense_gas, optical")
+
+    Balmer_lines = OrderedDict([('Halpha', 6564*u.AA), ('Hbeta', 4862*u.AA)])
+    Optical_lines = OrderedDict([('[OII]', 3728*u.AA), ('[OIII4364]',4364*u.AA),
+                                ('[OIII4860]', 4860*u.AA), ('[OIII5008]', 5008*u.AA),
+                                ('[OI]', 6302*u.AA), ('[NII]', 6585*u.AA), 
+                                ('[SII]', 6725*u.AA)])
+    Optical_obsorption = OrderedDict([('Na_D1', 5890*u.AA), ('Na_D2', 5896*u.AA)])
     # CO family from 
     CO_family = OrderedDict([('12C16O_1-0', 115.27120256*u.GHz), ('12C16O_2-1', 230.53800100*u.GHz),
                  ('12C16O_3-2', 345.79599131*u.GHz), ('12C16O_4-3', 461.04076975*u.GHz),
@@ -74,27 +82,36 @@ def print_lines(format='freq', z=0.0, mode='simple'):
                        ])
     HCN = OrderedDict([('HCN_1-0', 88.63160230*u.GHz), ('HCN_2-1', 177.26111150*u.GHz), 
                        ('HCN_3-2', 265.8864343*u.GHz), ('HCN_4-3', 354.50547790*u.GHz),
-                       ('HCN_5-4', 443.1161493*u.GHz)])
+                       ('HCN_5-4', 443.1161493*u.GHz), ('HCN_6-5', 531.71634790*u.GHz)])
+    HNC = OrderedDict([('HNC_1-0', 90.66356800*u.GHz), ('HNC_2-1', 181.32475800*u.GHz), 
+                       ('HNC_3-2', 271.98114200*u.GHz), ('HNC_4-3', 362.63030300*u.GHz),
+                       ('HNC_5-4', 453.26992200*u.GHz), ('HNC_6-5', 543.89755400*u.GHz)])
     Other = OrderedDict([('CN_1-0_multi', 113.490982*u.GHz), ('CS_2-1', 97.9809533*u.GHz),
                          ('CS_3-2', 146.9690287*u.GHz), ('CS_4-3', 195.9542109*u.GHz),
                          ('CS_5-4', 244.9355565*u.GHz), ('CS_6-5', 293.9120865*u.GHz),
                          ('CS_7-6', 342.8828503*u.GHz), ('CS_8-7', 391.8468898*u.GHz),
                          ('CS_9-8', 440.8032320*u.GHz), ('CS_10-9', 489.7509210*u.GHz)])
     Special = OrderedDict([('CH+', 835.08*u.GHz),])
-    if mode == 'simple':
+    if family == 'simple':
         family_select = [CO_family, C_ion]
-    elif mode == 'water':
+    elif family == 'water':
         family_select = [H2O]
-    elif mode == 'all' or mode=='full':
-        family_select = [CO_family, CO_13C, CO_18O, C_ion, H2O, HCN, Special, Other]
+    elif family == 'all' or family=='full':
+        family_select = [CO_family, CO_13C, CO_18O, CO_17O, C_ion, H2O, HCN, HNC, Special, Other]
     else:
         family_select = []
-    for family in family_select:
-        for line, freq in family.items():
+
+    if family is not None:
+        if 'optical' in family:
+            family_select.append(Balmer_lines)
+            family_select.append(Optical_lines)
+            family_select.append(Optical_obsorption)
+    for fami in family_select:
+        for line, spec in fami.items():
             if 'freq' in format:
-                print("{}: {:.4f}GHz".format(line, (freq/(1+z)).to(u.GHz).value))
+                print("{}: {:.4f}GHz".format(line, (spec/(1+z)).to(u.GHz).value))
             elif 'wave' in format:
-                print("{}: {:.4f}um".format(line, (const.c/freq).to(u.um).value))
+                print("{}: {:.4f}um".format(line, ((spec*(1+z)).to(u.um)).value))
     return
 
 
@@ -104,8 +121,8 @@ def stacking(dlist, plot=True, norm=True, norm_func=np.mean):
     first_item = dlist[0]
     if isinstance(first_item, str):
         data = np.loadtxt(first_item)
-    elif isinstance(dat, (list, np.ndarray)):
-        data = dat
+    elif isinstance(dlist, (list, np.ndarray)):
+        data = dlist
     dtype = type(first_item)
     stacked_flux = np.zeros(len(data))
 

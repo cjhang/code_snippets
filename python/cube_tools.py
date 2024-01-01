@@ -52,12 +52,17 @@ from photutils import aperture_photometry, find_peaks, EllipticalAperture, Recta
 from photutils import PixelAperture, SkyAperture
 from astropy.modeling import models, fitting
 
-
-
 ##############################
 ######### Cube ###############
 ##############################
-class Cube(object):
+
+class BaseCube(object):
+    """basic cube class
+    """
+    def __init__(self):
+        pass
+
+class Cube(BaseCube):
     """The base data strcuture to handle 3D astronomy data
     """
     def __init__(self, data=None, header=None, wcs=None, chandata=None, beams=None, name=None):
@@ -169,8 +174,15 @@ class Cube(object):
 
     def update_chandata(self):
         # the fits standard start with index 1
-        # because wcs.slice with change the reference channel, the generated ndarray should start with 1 
-        self.chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * self.header['CDELT3'])*u.Unit(self.header['CUNIT3'])
+        if 'PC3_3' in header.keys():
+            cdelt3 = self.header['PC3_3']
+        else: 
+            cdelt3 = self.header['CDELT3']
+        # because wcs.slice with change the reference channel, the generated ndarray should 
+        # start with 1 
+        self.chandata = (self.header['CRVAL3'] + (np.arange(2, self.header['NAXIS3']+1)-self.header['CRPIX3']) * cdelt3)
+        if 'CUNIT3' in header.keys():
+            self.chandata = self.chandata*u.Unit(self.header['CUNIT3'])
 
     def pixelcoods2sky(self, pixel_coords):
         #covert from pixel to skycoords

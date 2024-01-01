@@ -1,4 +1,10 @@
 """this tools used to cutout fits files
+
+TODO:
+    1. support binning and undersample
+    2. support patching with nan is the new wcs is of out fields
+    3. support drop stocks
+
 """
 
 import os
