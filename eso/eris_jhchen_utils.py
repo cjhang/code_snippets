@@ -27,6 +27,7 @@ import numpy as np
 import astropy.table as table
 import astropy.units as units
 from astropy.io import fits
+from astropy.utils.exceptions import AstropyWarning
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy import stats as astro_stats
@@ -108,8 +109,8 @@ def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None):
         os.system(f'mv {metafile} {metafile}.bak')
     eris_query_tab.write(metafile, format='csv')
 
-def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_days=30, 
-                    column_filters={}, **kwargs):
+def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_days=40, 
+                    column_filters={}, dry_run=False, debug=False, **kwargs):
     """query ESO/ERIS raw data from the database
 
     Args:
@@ -133,6 +134,7 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
     for key, value in kwargs.items():
         column_filters[key] = value
     eso = Eso()
+    eso.ROW_LIMIT = -1 # remove the row limit of eso.query_instrument
     sdatetime = datetime.datetime.strptime(f'{start_date} {start_time:0>2d}', '%Y-%m-%d %H')
     if end_date is not None:
         edatetime = datetime.datetime.strptime(f'{end_date} {end_time:0>2d}', '%Y-%m-%d %H')
@@ -155,14 +157,15 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
         # print("Cannot find proper calib files, please check your input")
         logging.warning("eris_auto_quary: cannot find proper calib files!")
     else:
+        if dry_run:
+            print(column_filters)
         return tab_eris
 
-def request_eris_calib(start_date=None, band=None, resolution=None, 
-                       exptime=None, outdir='raw',
-                       end_date=None, dpcat='CALIB', arm='SPIFFIER', 
-                       metafile=None,
-                       steps=['dark','detlin','distortion','flat','wavecal'],
-                       dry_run=False, **kwargs):
+def request_calib(start_date=None, band=None, resolution=None, exptime=None, 
+                  outdir='raw', end_date=None, dpcat='CALIB', arm='SPIFFIER', 
+                  metafile=None, max_days=40,
+                  steps=['dark','detlin','distortion','flat','wavecal'],
+                  dry_run=False, debug=False, **kwargs):
     """a general purpose to qeury calib files of ERIS/SPIFFIER observation
     
     Args:
@@ -196,7 +199,14 @@ def request_eris_calib(start_date=None, band=None, resolution=None,
                    'psfstar': '%PSF-CALIBRATOR'}
     if exptime is None: exptime = ''
     query_tabs = []
-
+    
+    if debug:
+        print("Input parameters:")
+        print(f'steps: {steps}')
+        print(f'resolution: {resolution}')
+        print(f'band: {band}')
+        print(f'exptime: {exptime}')
+        print(f'max_days: {max_days}')
     for step in steps:
         logging.info(f'Requesting {step} calibration files')
         column_filters = {'dp_cat': dpcat,
@@ -209,7 +219,8 @@ def request_eris_calib(start_date=None, band=None, resolution=None,
             column_filters['ins3_spgw_name'] = band
             column_filters['ins3_spxw_name'] = resolution
 
-        step_query = eris_auto_quary(start_date, end_date=end_date, column_filters=column_filters, **kwargs)
+        step_query = eris_auto_quary(start_date, end_date=end_date, column_filters=column_filters,
+                                     dry_run=dry_run, debug=debug, **kwargs)
         # fix the data type issue of masked table columns
         if step_query is not None:
             for col in step_query.colnames:
@@ -217,7 +228,7 @@ def request_eris_calib(start_date=None, band=None, resolution=None,
             query_tabs.append(step_query)
         else:
             # raise ValueError('Failed in requesting the calib files! Consider release the `max_days`?')
-            logging.warning(f"No calib file found for {step}, consider release the `max_days`?'")
+            logging.warning(f"request_calib: no calib file found for '{step}', consider to relax the `max_days`?'")
         if len(query_tabs) > 0:
             all_tabs = table.vstack(query_tabs)
         else:
@@ -230,7 +241,7 @@ def request_eris_calib(start_date=None, band=None, resolution=None,
         else:
             logging.warning("No files for downloading!")
 
-def requests_eris_science(program_id='', username=None, metafile='metadata.csv',
+def request_science(program_id='', username=None, metafile='metadata.csv',
                           outdir=None, target='', observation_id='', 
                           start_date='', end_date='', debug=False, **kwargs):
     """download the science data 
@@ -273,58 +284,89 @@ def requests_eris_science(program_id='', username=None, metafile='metadata.csv',
     else:
         download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
 
-
-def generate_metafile(dirname, metafile='metadata.csv', extname='PRIMARY', 
-                      work_dir=None, clean_work_dir=False):
+def generate_metafile(data_dir=None, header_dir=None, metafile='metadata.csv', 
+                      extname='PRIMARY', work_dir=None, clean_work_dir=False,
+                      dry_run=False, debug=False, overwrite=False):
     """generate metafile from download files
 
     Args:
-        dirname (str): the directory include the fits file
+        data_dir (str): the directory include the fits file
     """
     # colnames
-    colnames = ['Release Date', 'Object', 'RA', 'DEC','Program ID', 'DP.ID', 'OB.ID', 
-                'OBS.TARG.NAME', 'EXPTIME', 'DPR.CATG', 'DPR.TYPE', 'DPR.TECH', 'TPL.START', 
+    colnames = ['Release Date', 'Object', 'RA', 'DEC','Program ID', 'DP.ID', 'EXPTIME', 
+                'OB.ID', 'OBS.TARG.NAME', 'DPR.CATG', 'DPR.TYPE', 'DPR.TECH', 'TPL.START', 
                 'SEQ.ARM', 'DET.SEQ1.DIT', 'INS3.SPGW.NAME', 'INS3.SPXW.NAME']
-    colnames_header = ['DATE', 'OBJECT', 'RA', 'DEC', 'HIERARCH ESO OBS PROG ID', 'ARCFILE', 
-                       'HIERARCH ESO OBS ID', 'HIERARCH ESO OBS NAME', 'EXPTIME', 
-                       'HIERARCH ESO DPR CATG', 'HIERARCH ESO DPR TYPE', 'HIERARCH ESO DPR TECH', 
-                       'HIERARCH ESO TPL START', 'HIERARCH ESO SEQ ARM', 'HIERARCH ESO DET SEQ1 DIT',
+    colnames_header = ['DATE', 'OBJECT', 'RA', 'DEC', 'HIERARCH ESO OBS PROG ID', 
+                       'ARCFILE', 'EXPTIME',
+                       'HIERARCH ESO OBS ID', 'HIERARCH ESO OBS TARG NAME',  
+                       'HIERARCH ESO DPR CATG', 'HIERARCH ESO DPR TYPE', 
+                       'HIERARCH ESO DPR TECH', 'HIERARCH ESO TPL START', 
+                       'HIERARCH ESO SEQ ARM', 'HIERARCH ESO DET SEQ1 DIT',
                        'HIERARCH ESO INS3 SPFW NAME', 'HIERARCH ESO INS3 SPXW NAME']
-    dirname = dirname.strip('/')
-    fits_Zfiles = glob.glob(dirname+'/*.fits.Z')
-    fits_files = glob.glob(dirname+'/*.fits')
-    if work_dir is None:
-        work_dir = '.tmp_generate_metafile'
-        clean_work_dir = True
-
-    dir_umcompressed = os.path.join(work_dir, 'umcompressed')
-    dir_header = os.path.join(work_dir, 'headers')
-    for d in [dir_umcompressed, dir_header]:
-        if not os.path.isdir(d):
-            os.system(f'mkdir -p {d}')
-    # compress the fits file
-    if len(fits_Zfiles) > 0:
-        for ff in fits_Zfiles:
-            os.system(f'cp {ff} {dir_umcompressed}/')
-        os.system(f'uncompress {dir_umcompressed}/*.Z')
-        fits_Zfiles = glob.glob(f'{dir_umcompressed}/*.fits')
-    
-    fits_files = fits_files + fits_Zfiles
-    # extract info from the headers and save the info
-    meta_tab = table.Table(names=colnames, dtype=['U32']*len(colnames))
-    if len(fits_files) > 0:
-        for ff in fits_files:
-            with fits.open(ff) as hdu:
-                header = hdu[extname].header
-                # [header[cn] if cn in header.keys() else '' for cn in colnames_header]
-                header_values = []
-                for cn in colnames_header:
-                    try: header_values.append(str(header[cn]).strip('.fits'))
-                    except: header_values.append('')
-                meta_tab.add_row(header_values)
+    # check the exiting metafile
     if os.path.isfile(metafile):
-        os.system(f'mv {metafile} {metafile}.bak')
-    meta_tab.write(metafile, format='csv')
+        if not overwrite:
+            if debug: print("Exiting file found, skip it...")
+            return
+    if data_dir is not None:
+        data_dir = data_dir.strip('/')
+        fits_Zfiles = glob.glob(data_dir+'/*.fits.Z')
+        fits_files = glob.glob(data_dir+'/*.fits')
+        if work_dir is None:
+            work_dir = '.tmp_generate_metafile'
+            clean_work_dir = True
+
+        dir_umcompressed = os.path.join(work_dir, 'umcompressed')
+        dir_header = os.path.join(work_dir, 'headers')
+        for d in [dir_umcompressed, dir_header]:
+            if not os.path.isdir(d):
+                os.system(f'mkdir -p {d}')
+        # compress the fits file
+        if len(fits_Zfiles) > 0:
+            for ff in fits_Zfiles:
+                os.system(f'cp {ff} {dir_umcompressed}/')
+            os.system(f'uncompress {dir_umcompressed}/*.Z')
+            fits_Zfiles = glob.glob(f'{dir_umcompressed}/*.fits')
+        
+        fits_files = fits_files + fits_Zfiles
+        # extract info from the headers and save the info
+        meta_tab = table.Table(names=colnames, dtype=['U32']*len(colnames))
+        if len(fits_files) > 0:
+            for ff in fits_files:
+                with fits.open(ff) as hdu:
+                    header = hdu[extname].header
+                    # [header[cn] if cn in header.keys() else '' for cn in colnames_header]
+                    header_values = []
+                    for cn in colnames_header:
+                        try: header_values.append(str(header[cn]).strip('.fits'))
+                        except: header_values.append('')
+                    meta_tab.add_row(header_values)
+    elif header_dir is not None:
+        fits_headers = glob.glob(header_dir+'/*.hdr')
+        meta_tab = table.Table(names=colnames, dtype=['U32']*len(colnames))
+        if len(fits_headers) > 0:
+            for fh in fits_headers:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', AstropyWarning)
+                    header = fits.header.Header.fromtextfile(fh)
+                    header_values = []
+                    for cn in colnames_header:
+                        try: header_values.append(str(header[cn]).strip('.fits'))
+                        except: header_values.append('')
+                    meta_tab.add_row(header_values)
+    # save the header metadata
+    if dry_run:
+        print(f"Read {len(meta_tab)} files, no problem found.")
+    if debug:
+        print('The metadata table:')
+        print(meta_tab)
+    if len(meta_tab) > 0:
+        if os.path.isfile(metafile):
+            os.system(f'mv {metafile} {metafile}.bak')
+        else:
+            if '/' in metafile:
+                os.system(f'mkdir -p {os.path.dirname(metafile)}')
+        meta_tab.write(metafile, format='csv')
     if clean_work_dir:
         os.system(f'rm -rf {work_dir}')
 
@@ -334,6 +376,7 @@ def generate_metafile(dirname, metafile='metadata.csv', extname='PRIMARY',
 
 def search_static_calib(esorex):
     # use the default staticPool
+    print(esorex)
     if '/' in esorex:
         try:
             binpath_match = re.compile('(?P<bindir>^[\/\w\s\_\.\-]*)/esorex')
@@ -436,7 +479,9 @@ def generate_calib(metafile, raw_pool='./raw', work_dir=None,
                 # read the timestamp
                 timestamp = item['Release Date']
                 openf.write(f'# detlin: date={timestamp}\n')
-        if not dry_run:
+        if dry_run:
+            print(f"{esorex_cmd} eris_ifu_detlin {detlin_sof}")
+        else:
             os.system(f"{esorex_cmd} eris_ifu_detlin {detlin_sof}")
             # if rename:
                 # detlin_bpm_filt_fits = f'{calib_pool}/eris_ifu_detlin_bpm_filt_{timestamp}.fits'
@@ -646,13 +691,13 @@ def eris_pipeline(project, start_date, band, resolution, program_id,
             os.system(f'mkdir -p {wd}')
    
     # download the calibration and science raw files
-    request_eris_calib(start_date, band, resolution, exptime, outdir=project_calib_raw,
+    request_calib(start_date, band, resolution, exptime, outdir=project_calib_raw,
                        end_date=end_date, **kwargs)
-    requests_eris_science(program_id=program_id, username=username, 
-                          outdir=project_science_raw,
-                          start_date=start_date, end_date=end_date, 
-                          observation_id=observation_id, target=target,
-                          **kwargs)
+    request_science(program_id=program_id, username=username, 
+                    outdir=project_science_raw,
+                    start_date=start_date, end_date=end_date, 
+                    observation_id=observation_id, target=target,
+                    **kwargs)
 
     # generate the calib files
     generate_calib(metafile=os.path.join(raw_pool, 'metadata.csv'), 
@@ -1179,30 +1224,28 @@ def combine_eris_ifu(image_list=None, dirname=None, pattern='', drifts_file=None
     data_combine(image_list, weighting=weighting, pixel_shifts=drifts, savefile=outfile, **kwargs)
 
 #####################################
-########## CMD wrapprt ##############
+######## helper functions ###########
 
-
-def main():
+def start_logger():
     logging.basicConfig(filename='myapp.log', level=logging.INFO)
+    logger = logging.getLogger('simple_example')
+    logger.setLevel(logging.INFO)
     logging.info('Started')
     pass
     logging.info('Finished')
 
-# add main here to run the script from cmd
+#####################################
+########## CMD wrapprt ##############
 import argparse
 
 if __name__ == '__main__':
-
-
-    logger = logging.getLogger('simple_example')
-    logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser(
             usage='%(prog)s [options]',
             prog='eris_jhchen_utils.py',
             description="Welcome to jhchen's ERIS utilities",
             epilog='Reports bugs and problems to jhchen@mpe.mpg.de')
-    parser.add_argument('--esorex', nargs='?', type=str, default='esorex',
+    parser.add_argument('--esorex', type=str, default='esorex',
                         help='specify the customed esorex')
     parser.add_argument('--debug', action='store_true',
                         help='dry run and print out all the input parameters')
@@ -1216,6 +1259,7 @@ if __name__ == '__main__':
         '''
           * request_calib: search and download the raw calibration files
           * request_science: download the science data
+          * generate_metafile: generate metadata from downloaded data
           * generate_calib: generate the calibration files
           * auto_gitter: run gitter recipe automatically
           * data_combine: combine the reduced data
@@ -1225,9 +1269,26 @@ if __name__ == '__main__':
         '''))
 
 
-    # request_eris_calib
+    subp_request_calib = subparsers.add_parser('search_static_calib',
+                                               description='search for static files')
+    subp_request_calib.add_argument('--esorex', type=str, default='esorex',
+                        help='specify the customed esorex')
+    ################################################
+    # request_calib
     subp_request_calib = subparsers.add_parser('request_calib',
-            description='Search and download the required calib files')
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            Search and download the required calib files
+            --------------------------------------------
+            Examples:
+
+              # request all the calibration data
+              eris_jhchen_utils request_calib --start_date 2023-04-09 --band K_low --resolution 100mas --exptime 600 --outdir ./raw --metafile raw/2023-04-09.metadata.csv
+
+              # requst the calibration data for dark and detlin
+              eris_jhchen_utils request_calib --steps dark detlin --start_date 2023-04-09 --band K_low --resolution 100mas --exptime 600 --outdir ./raw --metafile raw/2023-04-09.metadata.csv
+
+            '''))
     subp_request_calib.add_argument('--start_date', type=str, help='The starting date of the observation, e.g. 2023-03-08')
     subp_request_calib.add_argument('--end_date', type=str, help='The finishing date of the observation, e.g. 2023-03-08')
     subp_request_calib.add_argument('--steps', type=str, nargs='+', 
@@ -1239,8 +1300,14 @@ if __name__ == '__main__':
     subp_request_calib.add_argument('--outdir', type=str, help='Output directory',
                                     default='raw')
     subp_request_calib.add_argument('--metafile', type=str, help='Summary file')
-    subp_request_calib.add_argument('--max_days', type=int, help='Maximum searching days before and after the observing day.', default=30)
+    subp_request_calib.add_argument('--max_days', type=int, help='Maximum searching days before and after the observing day.', default=40)
+    subp_request_calib.add_argument('--debug', action='store_true',
+                        help='dry run and print out all the input parameters')
+    subp_request_calib.add_argument('--dry_run', action='store_true',
+                        help='print the commands but does not execute them')
     
+    
+    ################################################
     # request_science
     subp_request_science = subparsers.add_parser('request_science',
             description='Search and download the required calib files')
@@ -1252,14 +1319,53 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--program_id', type=str, help='Program ID')
     subp_request_science.add_argument('--observation_id', type=str, help='Observation ID')
     subp_request_science.add_argument('--metafile', type=str, help='Summary file')
+   
+
+    ################################################
+    # generate_metafile
+    subp_generate_metafile = subparsers.add_parser('generate_metafile',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            generate the metadata file from downloaded data
+            -----------------------------------------------
+            example:
+
+                eris_jhchen_utils generate_metafile --header_dir science/2023-12-06/headers --metafile metadata/2023-12-06/metadata.csv
+                
+                eris_jhchen_utils generate_metafile --data_dir science/2023-12-06 --extname DATA --metafile metadata/2023-12-06/metadata.csv
+                                        '''))
+
+    subp_generate_metafile.add_argument('--data_dir', type=str, help='The directory with all the downloaded files, including all the *.fits.Z or *.fits')
+    subp_generate_metafile.add_argument('--extname', type=str, help='The extension or card name of the targeted data in fits file', default='Primary')
+    subp_generate_metafile.add_argument('--header_dir', type=str, help='The directory with all the processed headers, header files end with *.hdr')
+    subp_generate_metafile.add_argument('--metafile', type=str, help='The output file with all the extracted informations from the fits headers')
+    subp_generate_metafile.add_argument('--overwrite', action='store_true', help='Overwrite exiting metafile if present')
+
     
+    ################################################
     # generate_calib
     subp_generate_calib = subparsers.add_parser('generate_calib',
-            description='Generate the required calibration files')
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            generate the required calibration files
+            ---------------------------------------
+            example:
+            
+            esorex=~/esorex/bin/esorex
+            
+            # generate all the calibration files
+            eris_jhchen_utils generate_calib raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --archive --archive_name 2023-04-09_Klow_100mas --esorex $esorex
+            
+            # only the specified step, eg: dark + detlin
+            eris_jhchen_utils generate_calib raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --steps dark detlin --archive --archive_name 2023-04-09_Klow_100mas --esorex $esorex
+
+                                        '''))
     subp_generate_calib.add_argument('metafile', type=str, help='The summary file')
     subp_generate_calib.add_argument('--raw_pool', type=str, help='The directory includes the raw files')
     subp_generate_calib.add_argument('--calib_pool', type=str, help='The output directory',
                                      default='./calibPool')
+    subp_generate_calib.add_argument('--esorex', nargs='?', type=str, default='esorex',
+                                     help='specify the customed esorex')
     subp_generate_calib.add_argument('--static_pool', type=str, help='The static pool')
     subp_generate_calib.add_argument('--steps', type=str, nargs='+', 
         help="Calibration steps, can be combination of: 'dark','detlin','distortion','flat','wavecal'",
@@ -1272,43 +1378,56 @@ if __name__ == '__main__':
     subp_generate_calib.add_argument('--archive', action='store_true', help='Turn on archive mode')
     subp_generate_calib.add_argument('--archive_name', help='Archive name')
 
+
+    ################################################
     # auto_gitter
     subp_auto_gitter = subparsers.add_parser('auto_gitter',
             description='Automatically run the gitter recipe')
 
+
+    ################################################
     # combine data
     subp_data_combine = subparsers.add_parser('data_combine',
             description='Combine reduced datacubes')
 
+
+    ################################################
+    # match the task name and pick the corresponding function
     args = parser.parse_args()
     if args.debug:
         print(args)
-        func_args = list(inspect.signature(request_eris_calib).parameters.keys())
+        func_args = list(inspect.signature(request_calib).parameters.keys())
         func_str = f"Executing: {args.task}("
         for ag in func_args:
             try: func_str += f"{ag}={args.__dict__[ag]},"
             except: func_str += f"{ag}=None, "
         func_str += ')'
         print(func_str)
-
-
+    if args.task == 'search_static_calib':
+        print(search_static_calib(args.esorex))
     if args.task == 'request_calib':
-        request_eris_calib(start_date=args.start_date, band=args.band, resolution=args.resolution, 
-                           exptime=args.exptime, end_date=args.end_date, outdir=args.outdir, 
-                           metafile=args.metafile, max_days=args.max_days)
-
+        request_calib(start_date=args.start_date, band=args.band, steps=args.steps,
+                      end_date=args.end_date, outdir=args.outdir, exptime=args.exptime, 
+                      resolution=args.resolution, metafile=args.metafile, 
+                      max_days=args.max_days, dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'request_science':
-        request_eris_science(program_id=args.program_id, 
-                             observation_id=args.observation_id,
-                             start_date=args.start_date, 
-                             band=args.band, resolution=args.resolution, 
-                             exptime=args.exptime, end_date=args.end_date, 
-                             outdir=args.outdir, metafile=args.metafile)
-
+        request_science(program_id=args.program_id, 
+                        observation_id=args.observation_id,
+                        start_date=args.start_date, 
+                        band=args.band, resolution=args.resolution, 
+                        exptime=args.exptime, end_date=args.end_date, 
+                        outdir=args.outdir, metafile=args.metafile,
+                        dry_run=args.dry_run, debug=args.debug)
+    elif args.task == 'generate_metafile':
+        generate_metafile(data_dir=args.data_dir, extname=args.extname,
+                          header_dir=args.header_dir, metafile=args.metafile,
+                          dry_run=args.dry_run, debug=args.debug, 
+                          overwrite=args.overwrite)
     elif args.task == 'generate_calib':
-        generate_calib(args.metafile, raw_pool=args.raw_pool, calib_pool=args.calib_pool,
-                       static_pool=args.static_pool, steps=args.steps, 
-                       dark_sof=args.dark_sof, detlin_sof=args.detlin_sof, distortion_sof=args.distortion_sof,
+        generate_calib(args.metafile, raw_pool=args.raw_pool, 
+                       calib_pool=args.calib_pool, static_pool=args.static_pool, 
+                       steps=args.steps, dark_sof=args.dark_sof, 
+                       detlin_sof=args.detlin_sof, distortion_sof=args.distortion_sof,
                        flat_sof=args.flat_sof, wavecal_sof=args.wavecal_sof, 
                        archive=args.archive, archive_name=args.archive_name,
                        esorex=args.esorex, dry_run=args.dry_run, debug=args.debug)
