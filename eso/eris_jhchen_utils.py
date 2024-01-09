@@ -325,14 +325,14 @@ def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv',
     # colnames
     colnames = ['Release Date', 'Object', 'RA', 'DEC','Program ID', 'DP.ID', 'EXPTIME', 
                 'OB.ID', 'OBS.TARG.NAME', 'DPR.CATG', 'DPR.TYPE', 'DPR.TECH', 'TPL.START', 
-                'SEQ.ARM', 'DET.SEQ1.DIT', 'INS3.SPGW.NAME', 'INS3.SPXW.NAME']
+                'SEQ.ARM', 'DET.SEQ1.DIT', 'INS3.SPGW.NAME', 'INS3.SPXW.NAME','ARCFILE']
     colnames_header = ['DATE', 'OBJECT', 'RA', 'DEC', 'HIERARCH ESO OBS PROG ID', 
                        'ARCFILE', 'EXPTIME',
                        'HIERARCH ESO OBS ID', 'HIERARCH ESO OBS TARG NAME',  
                        'HIERARCH ESO DPR CATG', 'HIERARCH ESO DPR TYPE', 
                        'HIERARCH ESO DPR TECH', 'HIERARCH ESO TPL START', 
                        'HIERARCH ESO SEQ ARM', 'HIERARCH ESO DET SEQ1 DIT',
-                       'HIERARCH ESO INS3 SPGW NAME', 'HIERARCH ESO INS3 SPXW NAME']
+                       'HIERARCH ESO INS3 SPGW NAME', 'HIERARCH ESO INS3 SPXW NAME', 'ARCFILE']
     # check the exiting metafile
     if metafile is not None:
         if os.path.isfile(metafile):
@@ -385,7 +385,7 @@ def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv',
                     header = fits.header.Header.fromtextfile(fh)
                     header_values = []
                     for cn in colnames_header:
-                        try: header_values.append(str(header[cn]))
+                        try: header_values.append(str(header[cn]).removesuffix('.fits'))
                         except: header_values.append('')
                     meta_tab.add_row(header_values)
     # clean working directory
@@ -415,7 +415,7 @@ def search_static_calib(esorex):
         except:
             raise ValueError('Failed to locate the install direction of esorex!')
     else: 
-        bindir = os.path.dirname(f'which {esorex}')
+        bindir = os.path.dirname(shutil.which(esorex))
     install_dir = os.path.dirname(bindir)
     static_pool_list = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
     static_pool = sorted(static_pool_list)[-1] # choose the latest one
@@ -629,6 +629,7 @@ def generate_calib(metadata, raw_pool='./raw', work_dir=None,
             # os.system(f'mv {work_dir}/eris_ifu_wave_arcImag_stacked.fits {wave_arcImg_stacked_fits}')
 
 def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool', 
+                sof=None,
                 static_pool=None, esorex='', mode='jitter',
                 objname=None, band=None, spaxel=None, exptime=None, 
                 dpr_tech='IFU', dpr_catg='SCIENCE', prog_id=None, ob_id=None,
@@ -636,244 +637,103 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
     """calibrate the science target or the standard stars
     """
     calib_pool = calib_pool.rstrip('/')
-    meta_tab = read_metadata(metadata)
-    
-    if not os.path.isdir(outdir):
-        subprocess.run(['mkdir','-p',outdir])
-    
-    if static_pool is None:
-        # use the default staticPool
-        static_pool = search_static_calib(esorex)
+
+    if sof is not None:
+        auto_jitter_sof = sof
     else:
-        static_pool = static_pool.rstrip('/')
-    
-    auto_jitter_sof = os.path.join(outdir, 'auto_jitter.sof')
+        meta_tab = read_metadata(metadata)
+        
+        if not os.path.isdir(outdir):
+            subprocess.run(['mkdir','-p',outdir])
+        
+        if static_pool is None:
+            # use the default staticPool
+            static_pool = search_static_calib(esorex)
+        else:
+            static_pool = static_pool.rstrip('/')
+        
 
-    # apply the selections
-    if ob_id is not None:
-        meta_tab = meta_tab[meta_tab['OB.ID'].astype(type(ob_id)) == ob_id]
-    if objname is not None:
-        meta_tab = meta_tab[meta_tab['Object'] == objname]
-    if band is not None:
-        meta_tab = meta_tab[meta_tab['INS3.SPGW.NAME'] == band]
-    if spaxel is not None:
-        meta_tab = meta_tab[meta_tab['INS3.SPXW.NAME'] == spaxel]
-    if exptime is not None:
-        meta_tab = meta_tab[(meta_tab['DET.SEQ1.DIT']-exptime)<1e-6]
-    if prog_id is not None:
-        meta_tab = meta_tab[meta_tab['Program ID'] == prog_id]
-    if dpr_tech is not None:
-        dpr_tech_select = [True if dpr_tech in item['DPR.TECH'] else False for item in meta_tab]
-        meta_tab = meta_tab[dpr_tech_select]
-    if dpr_catg is not None:
-        meta_tab = meta_tab[meta_tab['DPR.CATG'] == dpr_catg]
+        # apply the selections
+        if ob_id is not None:
+            meta_tab = meta_tab[meta_tab['OB.ID'].astype(type(ob_id)) == ob_id]
+        if objname is not None:
+            meta_tab = meta_tab[meta_tab['Object'] == objname]
+        if band is not None:
+            meta_tab = meta_tab[meta_tab['INS3.SPGW.NAME'] == band]
+        if spaxel is not None:
+            meta_tab = meta_tab[meta_tab['INS3.SPXW.NAME'] == spaxel]
+        if exptime is not None:
+            meta_tab = meta_tab[(meta_tab['DET.SEQ1.DIT']-exptime)<1e-6]
+        if prog_id is not None:
+            meta_tab = meta_tab[meta_tab['Program ID'] == prog_id]
+        if dpr_tech is not None:
+            dpr_tech_select = [True if dpr_tech in item['DPR.TECH'] else False for item in meta_tab]
+            meta_tab = meta_tab[dpr_tech_select]
+        if dpr_catg is not None:
+            meta_tab = meta_tab[meta_tab['DPR.CATG'] == dpr_catg]
 
-    if len(meta_tab) < 1:
-        print(" >> skipped, non-science data")
-        return
-    with open(auto_jitter_sof, 'w+') as openf:
-        # write OBJ
-        if mode == 'jitter':
-            for item in meta_tab[meta_tab['DPR.CATG'] == 'SCIENCE']:
-                if item['DPR.TYPE'] == 'OBJECT':
-                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z OBJ\n")
-                elif item['DPR.TYPE'] == 'SKY':
-                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
-        elif mode == 'stdstar':
-            stdstar_names = meta_tab[meta_tab[drp_type_colname] == 'STD']['OBS.TARG.NAME'].data.tolist()
-            if len(stdstar_names)>1:
-                logging.warning(f'Finding more than one stdstar: {stdstar_names}') 
-                logging.warning(f'Choosing the first one: {stdstar_names[0]}')
-            stdstar_name = stdstar_names[0]
-            for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
-                if item['OBS.TARG.NAME'] == stdstar_name:
-                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z STD #{stdstar_name}\n")
-                else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z STD #{item['OBS.TARG.NAME']}\n")
-            for item in meta_tab[meta_tab[drp_type_colname] == 'SKY,STD']:
-                if item['OBS.TARG.NAME'] == stdstar_name:
-                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{stdstar_name}\n")
-                else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{item['OBS.TARG.NAME']}\n")
-            # for psf stars
-            for item in meta_tab[meta_tab[drp_type_colname] == 'PSF,SKY,STD']: #TODO
-                if item['OBS.TARG.NAME'] == stdstar_name:
-                    openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z PSF_CALIBRATOR #{stdstar_name}\n")
-                else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_PSF_CALIBRATOR #{item['OBS.TARG.NAME']}\n")
-        openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
-        openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
-        #openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
-        openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
-        openf.write(f"{calib_pool}/eris_ifu_dark_master_dark.fits MASTER_DARK\n")
-        #openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
-        openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
-        if band in ['H_low', 'J_low', 'K_low']:
-            openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
+        if len(meta_tab) < 1:
+            print(" >> skipped, non-science data")
+            logging.warning(f"skipped {objname}({ob_id}) with {band}+{spaxel}+{exptime}, non-science data")
+            return
+        auto_jitter_sof = os.path.join(outdir, 'auto_jitter.sof')
+        with open(auto_jitter_sof, 'w+') as openf:
+            # write OBJ
+            if mode == 'jitter':
+                n_obj = 0
+                n_sky = 0
+                for item in meta_tab[meta_tab['DPR.CATG'] == 'SCIENCE']:
+                    if item['DPR.TYPE'] == 'OBJECT':
+                        openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z OBJ\n")
+                        n_obj += 1
+                    elif item['DPR.TYPE'] == 'SKY':
+                        openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_OBJ\n")
+                        n_sky += 1
+                if (n_sky < 1) or (n_obj < 1):
+                    print(f" >> skipped, on find {n_obj} science frame and {n_sky} sky frame")
+                    logging.warning(f"skipped {objname}({ob_id}) with {band}+{spaxel}+{exptime}, only find {n_obj} science frame and {n_sky} sky frame")
+                    return
+
+            elif mode == 'stdstar':
+                stdstar_names = meta_tab[meta_tab[drp_type_colname] == 'STD']['OBS.TARG.NAME'].data.tolist()
+                if len(stdstar_names)>1:
+                    logging.warning(f'Finding more than one stdstar: {stdstar_names}') 
+                    logging.warning(f'Choosing the first one: {stdstar_names[0]}')
+                stdstar_name = stdstar_names[0]
+                for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
+                    if item['OBS.TARG.NAME'] == stdstar_name:
+                        openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z STD #{stdstar_name}\n")
+                    else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z STD #{item['OBS.TARG.NAME']}\n")
+                for item in meta_tab[meta_tab[drp_type_colname] == 'SKY,STD']:
+                    if item['OBS.TARG.NAME'] == stdstar_name:
+                        openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{stdstar_name}\n")
+                    else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_STD #{item['OBS.TARG.NAME']}\n")
+                # for psf stars
+                for item in meta_tab[meta_tab[drp_type_colname] == 'PSF,SKY,STD']: #TODO
+                    if item['OBS.TARG.NAME'] == stdstar_name:
+                        openf.write(f"{raw_pool}/{item['DP.ID']}.fits.Z PSF_CALIBRATOR #{stdstar_name}\n")
+                    else: openf.write(f"#{raw_pool}/{item['DP.ID']}.fits.Z SKY_PSF_CALIBRATOR #{item['OBS.TARG.NAME']}\n")
+            openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
+            openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
+            #openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
+            openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
+            openf.write(f"{calib_pool}/eris_ifu_dark_master_dark.fits MASTER_DARK\n")
+            #openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
+            openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
+            if band in ['H_low', 'J_low', 'K_low']:
+                openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
 
     if not dry_run:
         if mode == 'stdstar':
             subprocess.run([esorex, f'--output-dir={outdir}', 'eris_ifu_stdstar', 
                             auto_jitter_sof])
         elif mode == 'jitter':
-            subprocess.run([esorex, f'--output-dir={outdir}', 'eris_ifu_jitter', 
-                            '--product_depth=2', '--sky_tweak=0',
+            subprocess.run([esorex, f'--output-dir={outdir}', 
+                            # run the pipeline even ecount corrupted or missing files
+                            '--check-sof-exist=false', 
+                            'eris_ifu_jitter', 
+                            '--product_depth=2', '--sky_tweak=0', 
                             '--dar-corr=true', '--cube.combine=FALSE', auto_jitter_sof])
-
-#####################################
-########### Quick Tools #############
-
-def get_daily_calib(date, outdir, band, spaxel, exptime, esorex='esorex', 
-                    overwrite=False):
-    """A wrapper to get daily calibration file quickly
-    """
-    archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
-    archive_dir = os.path.join(outdir, archive_name)
-    if os.path.isfile(archive_dir+'/eris_ifu_wave_map.fits'):
-        if not overwrite:
-            print(f"> re-use existing calibPool in {archive_dir}")
-            return archive_dir
-    with tempfile.TemporaryDirectory() as tmpdir:
-        metafile = os.path.join(tmpdir, f'{date}_{band}_{spaxel}_{exptime}.csv')
-        request_calib(start_date=date, band=band, spaxel=spaxel, exptime=exptime, 
-                      outdir=tmpdir, metafile=metafile)
-        archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
-        generate_calib(metafile, raw_pool=tmpdir, calib_pool=outdir, archive=True, 
-                       archive_name=archive_name, esorex=esorex)
-    return archive_dir
-
-def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=False, 
-                      debug=False, dry_run=False):
-    """A quick pipeline for archived eris data
-
-    To run this pipeline, the input datadir is organised by the dates of the 
-    observations. Within each date, all the relevant science data have been
-    download. Within each folder, a subfold "headers" can be provide to speed
-    up the analysis to identify their filetypes
-    """
-    # match all the dates
-    date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
-    date_list = []
-    for subfolder in os.listdir(datadir):
-        if date_matcher.match(subfolder):
-            date_list.append(subfolder)
-
-    # generate all the summary files
-    print(f"::eris_jhchen_utils:: generateing the metadata from {datadir}")
-    for date in date_list:
-        # metadata = generate_metadata(os.path.join(datadir, date))
-        date_metafile = os.path.join(outdir,date, f'{date}_metadata.csv')
-        if os.path.isfile(date_metafile):
-            # TODO: check the modified date of the files and metafile
-            print(f"> finding existing metadata:{date_metafile}")
-            continue
-        print(f"> generating the metadata of {date}")
-        date_folder = os.path.join(datadir, date)
-        if os.path.isdir(date_folder + '/headers'):
-            metadata = generate_metadata(header_dir=date_folder+'/headers', 
-                                         metafile=date_metafile)
-        else:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                metadata = generate_metadata(data_dir=date_folder, work_dir=tmpdir, 
-                                             metafile=date_metafile)
-
-    # identify all the science objects and their OBs
-    print(f"::eris_jhchen_utils:: reducing the science data in {datadir}")
-    
-    for date in date_list:
-        metadata = read_metadata(os.path.join(outdir, date, f'{date}_metadata.csv'))
-
-        # filter out the non-science data
-        # this will be done within auto_gitter, but here we can avoid generating 
-        # the useless calibPool
-        metadata = metadata[metadata['DPR.CATG'] == 'SCIENCE']
-        dpr_tech_select = [True if 'IFU' in item['DPR.TECH'] else False for item in metadata]
-        metadata = metadata[dpr_tech_select]
-
-        # get all the science targets
-        targets = np.unique(metadata['Object'])
-        daily_calib_pool = os.path.join(outdir, date, 'calibPool')
-        daily_datadir = os.path.join(datadir, date)
-        print(f"> generating calibPool for {date}")
-        for target in targets:
-            target_metadata = metadata[metadata['Object']==target]
-            ob_ids = np.unique(target_metadata['OB.ID'])
-            for ob_id in ob_ids:
-                # get the band, spaxel, exptime
-                first_meta = target_metadata[target_metadata['OB.ID']==ob_id][0]
-                band  = first_meta['INS3.SPGW.NAME']
-                spaxel = first_meta['INS3.SPXW.NAME']
-                exptime = int(first_meta['DET.SEQ1.DIT'])
-                # some tricky fixing, not sure whether there are any other tricks :-)
-                # generate the daily calibPool
-                daily_id_calib_pool = get_daily_calib(date, daily_calib_pool, band, 
-                                                      spaxel, exptime, esorex=esorex, 
-                                                      overwrite=overwrite)
-                # run eris_ifu_gitter
-                daily_ob_outdir = os.path.join(outdir, date, 
-                                         f'{target}_{ob_id}_{band}_{spaxel}_{exptime}s')
-                if os.path.isfile(os.path.join(daily_ob_outdir, 
-                                              'eris_ifu_jitter_dar_cube_coadd.fits')):
-                    if not overwrite:
-                        print(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
-                        continue
-                print(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
-                try:
-                    auto_jitter(metadata=target_metadata, raw_pool=daily_datadir, 
-                                outdir=daily_ob_outdir, calib_pool=daily_id_calib_pool, 
-                                ob_id=ob_id, esorex=esorex, mode='jitter', 
-                                dry_run=dry_run)
-                except:
-                    subprocess.run(['rm','-rf', daily_ob_outdir])
-                print("> Done!")
-
-
-def eris_pipeline(project, start_date, band, spaxel, prog_id, 
-                  username=None, end_date=None, ob_id='',
-                  target='',
-                  outdir='./', static_pool=None, esorex='esorex',
-                  **kwargs):
-    """simple pipeline for eris data reduction
-    
-    Args:
-        project (str): the project code, used to orgnise the folder
-        outdir (str): the output director. By default, a project folder
-                      will be created inside the output directory
-        
-    """
-    project_dir = os.path.join(outdir, project)
-    if os.path.isdir(os.path.isdir(project_dir)):
-        logging.warning("project folder existing! Reusing all the possible data!")
-    
-    # preparing the all the necessary folders
-    project_calib_raw = project_dir+'/calib_raw'
-    project_science_raw = project_dir+'/science_raw'
-    project_calib_pool = project_dir+'/calibPool'
-    project_calibrated = project_dir+'/calibrated'
-    working_dirs = [project_calib_raw, project_science_raw, project_calib_pool, 
-                    project_calibrated]
-    for wd in working_dirs:
-        if not os.path.isdir(wd):
-            subprocess.run(['mkdir','-p', wd])
-   
-    # download the calibration and science raw files
-    request_calib(start_date, band, spaxel, exptime, outdir=project_calib_raw,
-                       end_date=end_date, **kwargs)
-    request_science(prog_id=prog_id, username=username, 
-                    outdir=project_science_raw,
-                    start_date=start_date, end_date=end_date, 
-                    ob_id=ob_id, target=target,
-                    **kwargs)
-
-    # generate the calib files
-    generate_calib(metafile=os.path.join(raw_pool, 'metadata.csv'), 
-                   raw_pool=project_calib_raw, static_pool=static_pool, 
-                   calib_pool=project_calib_pool, drp_type_colname='DPR.TYPE',
-                   esorex=esorex)
-    
-    # run calibration
-    auto_jitter(metafile=os.path.join(raw_pool, 'metadata.csv'),
-                raw_pool=project_science_raw, calib_pool=project_calib_pool,
-                outdir=project_calibrated, static_pool=static_pool,
-                grating=grating, esorex=esorex)
-
 
 #####################################
 ######### DATA Combination ##########
@@ -953,7 +813,6 @@ def find_combined_wcs(image_list=None, wcs_list=None, header_ext='DATA', frame=N
             for pixel_coord in corner_pixel_coords:
                 # pixel order: [x, y, chan]
                 corner = wcs_utils.pixel_to_pixel(image_wcs, first_wcs, *pixel_coord)
-                # up_corner = wcs_utils.pixel_to_pixel(first_wcs, image_wcs, *array_shape)
                 corners.append(corner)
             resolutions.append(wcs_utils.proj_plane_pixel_scales(image_wcs))
 
@@ -974,10 +833,10 @@ def find_combined_wcs(image_list=None, wcs_list=None, header_ext='DATA', frame=N
         # shift the reference point to the center
         # reference channel point the first channel of the combined data
         try: dchan = first_wcs.wcs.cd[-1,-1]
-        except: pass
-        try: dchan = first_wcs.wcs.pc[-1,-1]
-        except: 
-            raise ValueError("Cannot read the step size of the spectral dimension!")
+        except:
+            try: dchan = first_wcs.wcs.pc[-1,-1]
+            except:  
+                raise ValueError("Cannot read the step size of the spectral dimension!")
 
         reference_chan = first_wcs.wcs.crval[-1] + (first_wcs.wcs.crpix[-1]-chan0-1)*dchan
         wcs_combined.wcs.crval = np.array([reference_skycoord.ra.to(units.deg).value, 
@@ -992,17 +851,17 @@ def find_combined_wcs(image_list=None, wcs_list=None, header_ext='DATA', frame=N
 
     # by default, the pixel size of the first image will be used
     # update the pixel size if needed
-    if pixel_size is not None:
-        min_resolutions = np.min(np.array(resolutions), axis=1)
-        scales = min_resolutions / first_resolutions
-        wcs_new = wcs_combined.deepcopy()
-        wcs_new.wcs.cd = wcs_new.wcs.cd * scales
-        if (scales[-1] - 1) > 1e-6:
-            nchan = int(wcs_combined.array_shape[0] / scales)
-        x0_new, y0_new = wcs_utils.skycoord_to_pixel(reference_skycoord)
-        wcs_new.crpix = np.array([x0_new.item(), y0_new.item(), 1]).astype(int)
-        wcs_new.array_shape = tuple(np.round(np.array(wcs_combined.array_shape) / scales).astype(int))
-        wcs_combined = wcs_new
+    # if pixel_size is not None: #<TODO>: untested
+        # min_resolutions = np.min(np.array(resolutions), axis=1)
+        # scales = min_resolutions / first_resolutions
+        # wcs_new = wcs_combined.deepcopy()
+        # wcs_new.wcs.cd = wcs_new.wcs.cd * scales
+        # if (scales[-1] - 1) > 1e-6:
+            # nchan = int(wcs_combined.array_shape[0] / scales)
+        # x0_new, y0_new = wcs_utils.skycoord_to_pixel(reference_skycoord)
+        # wcs_new.crpix = np.array([x0_new.item(), y0_new.item(), 1]).astype(int)
+        # wcs_new.array_shape = tuple(np.round(np.array(wcs_combined.array_shape) / scales).astype(int))
+        # wcs_combined = wcs_new
     return wcs_combined
 
 def find_combined_wcs_test(image_list, wcs_list=None, header_ext='DATA', frame=None, 
@@ -1074,7 +933,10 @@ def fill_mask(image, mask):
 
 def construct_wcs(header, data_shape=None):
     """try to construct the wcs from a broken header 
+
+    TODO: not tested
     """
+    return
     try:
         # read some useful information
         ndim = header['NAXIS']
@@ -1136,6 +998,9 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
         sigma (bool): the deviation scale used to control the sigma_clip
     """
     # define the default variables
+    # if isinstance(image_list, 'str'):
+        # if os.path.isfile(image_list):
+            # image_list = np.loadtxt(image_list)
     nimages = len(image_list)
     if header_ext is None:
         header_ext = data_ext
@@ -1200,10 +1065,29 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
     for i in range(nimages):
         image_wcs = wcs_list[i].celestial
         data = fits.getdata(image_list[i], data_ext)
+        
         if mask_ext is not None:
             mask = fits.getdata(image_list[i], mask_ext)
         else:
             mask = np.full(data.shape, fill_value=False)
+
+        # check if the channel length consistent with the combined wcs
+        if data.ndim == 3: #<TODO>: find a better way to do
+            if len(data) != shape_combined[0]:
+                logging.warning("Combining data with different channels!")
+            if len(data) >= shape_combined[0]:
+                data = data[:shape_combined[0]]
+                mask = mask[:shape_combined[0]]
+            else:
+                data_shape = data.shape
+                data_shape_extend = [shape_combined[0], data_shape[1], data_shape[2]]
+                data_extend = np.full(data_shape_extend, fill_value=0.)
+                mask_extend = np.full(data_shape_extend, fill_value=False)
+                data_extend[:data_shape[0]] = data[:]
+                mask_extend[:data_shape[0]] = mask[:]
+                data = data_extend
+                mask = mask_extend
+
         # reset the masked value to zero, to be removed from combination
         # <TODO>: find a better way to fix the masked pixels
         # now we just set it to zeros
@@ -1213,6 +1097,7 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
             data_masked = astro_stats.sigma_clip(
                     data_masked, sigma=sigma, maxiters=5, masked=True)
         if bgsub:
+            # subtract a median background in each channel
             data_masked = data_masked - np.ma.median(
                             data_masked, axis=(1,2))[:, np.newaxis, np.newaxis]
         data = data_masked.filled(0)
@@ -1239,9 +1124,14 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
         hdr['OBSERVER'] = 'MPE-IR'
         hdr['COMMENT'] = 'Combined by eris_jhchen_utils.py'
         # reset the cdelt
-        header['CDELT1'] = header['PC1_1']
-        header['CDELT2'] = header['PC2_2']
-        header['CDELT3'] = header['PC3_3']
+        if 'CD1_1' in header.keys():
+            header['CDELT1'] = header['CD1_1']
+            header['CDELT2'] = header['CD2_2']
+            header['CDELT3'] = header['CD3_3']
+        elif 'PC1_1' in header.keys():
+            header['CDELT1'] = header['PC1_1']
+            header['CDELT2'] = header['PC2_2']
+            header['CDELT3'] = header['PC3_3']
         primary_hdu = fits.PrimaryHDU(header=hdr)
         data_combined_hdu = fits.ImageHDU(data_combined, name="DATA", header=hdr)
         hdus = fits.HDUList([primary_hdu, data_combined_hdu])
@@ -1316,12 +1206,16 @@ def read_eris_drifts(datfile, arcfilenames):
     """read eris drifting table
     """
     pixel_center = [32., 32.] # the expected center
-    dat = table.read(datfile, format='csv')
-    drifts = np.zeros(len(arcfilenames), 2) # drift in [x, y]
-    for arcfile in arcfilenames:
+    dat = table.Table.read(datfile, format='csv')
+    drifts = np.zeros((len(arcfilenames), 2)) # drift in [x, y]
+    for i in range(len(arcfilenames)):
+        arcfile = arcfilenames[i]
         dat_img = dat[dat['ARCFILE'] == arcfile]
-        model_center = [dat_img['x_model'], ]
-        drifts[i] = dat_img['x_model']-pixel_center[0], dat_img['y_model']-pixel_center[1]
+        if len(dat_img) == 1:
+            drifts[i] = [dat_img['x_model'][0]-pixel_center[0], dat_img['y_model'][0]-pixel_center[1]]
+        else:
+            print("Drifts not found!")
+            drifts[i] = [0.,0.]
     return drifts
 
 def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary',
@@ -1364,9 +1258,13 @@ def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary'
                     image_wcs = WCS(header)
             array_offset[i][:] = (ra_offset-ra_offset_0)/ra_diff, (dec_offset-dec_offset_0)/dec_diff
     # consider additional offset
+    print(">>>>>>>>\nOCS offset:")
+    print(array_offset)
     if additional_drifts is not None:
         if isinstance(additional_drifts, str):
             additional_drifts = read_eris_drifts(additional_drifts, arcfilenames)
+            print('++++++++\n additional difts:')
+            print(additional_drifts)
         for i in range(nimage):
             array_offset[i] += additional_drifts[i]
     return array_offset
@@ -1386,6 +1284,283 @@ def combine_eris_ifu(image_list=None, dirname=None, pattern='', drifts_file=None
     weighting = compute_weighting_eris(image_list)
     drifts = compute_eris_offset(image_list, additional_drifts=drifts_file)
     data_combine(image_list, weighting=weighting, pixel_shifts=drifts, savefile=outfile, **kwargs)
+
+#####################################
+########### Quick Tools #############
+
+def get_daily_calib(date, outdir, band, spaxel, exptime, esorex='esorex', 
+                    overwrite=False):
+    """A wrapper to get daily calibration file quickly
+    """
+    archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
+    archive_dir = os.path.join(outdir, archive_name)
+    if os.path.isfile(archive_dir+'/eris_ifu_wave_map.fits'):
+        if not overwrite:
+            print(f"> re-use existing calibPool in {archive_dir}")
+            return archive_dir
+    with tempfile.TemporaryDirectory() as tmpdir:
+        metafile = os.path.join(tmpdir, f'{date}_{band}_{spaxel}_{exptime}.csv')
+        request_calib(start_date=date, band=band, spaxel=spaxel, exptime=exptime, 
+                      outdir=tmpdir, metafile=metafile)
+        archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
+        generate_calib(metafile, raw_pool=tmpdir, calib_pool=outdir, archive=True, 
+                       archive_name=archive_name, esorex=esorex)
+    return archive_dir
+
+def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=False, 
+                      debug=False, dry_run=False):
+    """A quick pipeline for archived eris data
+
+    To run this pipeline, the input datadir is organised by the dates of the 
+    observations. Within each date, all the relevant science data have been
+    download. Within each folder, a subfold "headers" can be provide to speed
+    up the analysis to identify their filetypes
+    """
+    # match all the dates
+    datadir = datadir.strip('/')
+    outdir = outdir.strip('/')
+    date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
+    date_list = []
+    for subfolder in os.listdir(datadir):
+        if date_matcher.match(subfolder):
+            date_list.append(subfolder)
+
+    # generate all the summary files
+    for date in date_list:
+
+        ## Step-1
+        print(f"::eris_jhchen_utils:: generateing the metadata from {datadir}/{date}")
+        logging.info(f"::eris_jhchen_utils:: generateing the metadata from {datadir}/{date}")
+        # metadata = generate_metadata(os.path.join(datadir, date))
+        date_metafile = os.path.join(outdir,date, f'{date}_metadata.csv')
+        if os.path.isfile(date_metafile):
+            # TODO: check the modified date of the files and metafile
+            print(f"> finding existing metadata:{date_metafile}")
+            logging.info(f"> finding existing metadata:{date_metafile}")
+        else:
+            print(f"> generating the metadata of {date}")
+            logging.info(f"> generating the metadata of {date}")
+            date_folder = os.path.join(datadir, date)
+            # if os.path.isdir(date_folder + '/headers'):
+                # metadata = generate_metadata(header_dir=date_folder+'/headers', 
+                                             # metafile=date_metafile)
+            # else:
+                # with tempfile.TemporaryDirectory() as tmpdir:
+                    # metadata = generate_metadata(data_dir=date_folder, work_dir=tmpdir, 
+                                                 # metafile=date_metafile)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                metadata = generate_metadata(data_dir=date_folder, work_dir=tmpdir, 
+                                             metafile=date_metafile)
+
+        ## Step-2
+        print(f"::eris_jhchen_utils:: reducing the science data in {datadir}/{date}")
+        logging.info(f"::eris_jhchen_utils:: reducing the science data in {datadir}/{date}")
+    
+        metadata = read_metadata(os.path.join(outdir, date, f'{date}_metadata.csv'))
+
+        # filter out the non-science data
+        # this will be done within auto_gitter, but here we can avoid generating 
+        # the useless calibPool
+        metadata = metadata[metadata['DPR.CATG'] == 'SCIENCE']
+        dpr_tech_select = [True if 'IFU' in item['DPR.TECH'] else False for item in metadata]
+        metadata = metadata[dpr_tech_select]
+        if len(metadata) < 1:
+            print(f"> No ERIS/SPIFFIER data found on {date}")
+            logging.info(f"> No ERIS/SPIFFIER data found on {date}")
+
+        # identify all the science objects and their OBs
+        targets = np.unique(metadata['Object'])
+        daily_calib_pool = os.path.join(outdir, date, 'calibPool')
+        daily_datadir = os.path.join(datadir, date)
+        for target in targets:
+            target_metadata = metadata[metadata['Object']==target]
+            ob_ids = np.unique(target_metadata['OB.ID'])
+            for ob_id in ob_ids:
+                # get the band, spaxel, exptime
+                first_meta = target_metadata[target_metadata['OB.ID']==ob_id][0]
+                band  = first_meta['INS3.SPGW.NAME']
+                spaxel = first_meta['INS3.SPXW.NAME']
+                exptime = int(first_meta['DET.SEQ1.DIT'])
+                
+                ## Step-3
+                # generate the daily calibPool
+                print(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
+                logging.info(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
+                try:
+                    daily_id_calib_pool = get_daily_calib(date, daily_calib_pool, band, 
+                                                          spaxel, exptime, esorex=esorex, 
+                                                          overwrite=overwrite)
+                except:
+                    print(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                    logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+
+                ## Step-4
+                # run eris_ifu_gitter
+                daily_ob_outdir = os.path.join(outdir, date, 
+                                         f'{target}_{ob_id}_{band}_{spaxel}_{exptime}s')
+                if (os.path.isfile(os.path.join(daily_ob_outdir, 
+                                              'eris_ifu_jitter_dar_cube_coadd.fits')) or 
+                    os.path.isfile(os.path.join(daily_ob_outdir,
+                                              'eris_ifu_jitter_obj_cube_coadd.fits'))):
+                    if not overwrite:
+                        print(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                        logging.info(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                        continue
+                print(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                logging.info(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                try:
+                    auto_jitter(metadata=target_metadata, raw_pool=daily_datadir, 
+                                outdir=daily_ob_outdir, calib_pool=daily_id_calib_pool, 
+                                ob_id=ob_id, esorex=esorex, mode='jitter', 
+                                dry_run=dry_run)
+                except:
+                    subprocess.run(['rm','-rf', daily_ob_outdir])
+                    print(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                    logging.warning(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                print("> Done!")
+
+def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=None,
+                  spaxel=None, drifts=None, outdir='./', esorex='esorex', 
+                  savefile=None, suffix='combined', overwrite=False):
+    """A wrapper of data_combine
+
+    This quick tool search the all the available and valid observations
+    and combine them with the data_combine.
+
+    This tool take the outdir from `run_eris_pipeline` as input, it will search 
+    all the available observations, and combined all the available data
+    """
+    target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
+    date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
+
+    dates = os.listdir(datadir)
+    image_list = []
+    image_exp_list = []
+    for date in dates:
+        if not date_matcher.match(date):
+            continue
+
+        for obs in os.listdir(os.path.join(datadir, date)):
+            try:
+                obs_match = target_matcher.search(obs).groupdict()
+            except:
+                obs_match = None
+                continue
+            if obs_match is not None:
+                obs_dir = os.path.join(datadir, date, obs)
+                ob_target, ob_id= obs_match['target'], obs_match['id']
+                ob_band, ob_spaxel = obs_match['band'], obs_match['spaxel']
+                ob_exptime = obs_match['exptime']
+            if ob_target != target:
+                continue
+            if (ob_band==band) and (ob_spaxel==spaxel):
+                # combine the exposures within each OB
+                exp_list = glob.glob(obs_dir+'/eris_ifu_jitter_dar_cube_[0-9]*.fits')
+                # check the arcfile name not in the excludes file list
+                exp_list_valid = []
+                exp_list_arcfilenames = []
+                for fi in exp_list:
+                    with fits.open(fi) as hdu:
+                        arcfile = hdu['PRIMARY'].header['ARCFILE']
+                        if excludes is not None:
+                            if arcfile in excludes:
+                                continue
+                        exp_list_valid.append(fi)
+                        exp_list_arcfilenames.append(arcfile)
+
+                if len(exp_list_valid) < 1:
+                    print("no valid data for {target}({ob_id}) with {ob_band},{ob_spaxel},{ob_total_exptime}s")
+                    continue
+                # within each ob, the exposure time are equal, so we just ignore the
+                # weighting
+                ob_total_exptime = int(ob_exptime) * len(exp_list)
+                obs_combined_filename = os.path.join(obs_dir, 
+                    f"{target}_{ob_id}_{ob_band}_{ob_spaxel}_{ob_total_exptime}s_{suffix}.fits")
+
+                if (not os.path.isfile(obs_combined_filename)) or overwrite:
+                    obs_offset = compute_eris_offset(exp_list, additional_drifts=drifts)
+                    data_combine(image_list=exp_list, pixel_shifts=obs_offset, 
+                                 ignore_wcs=True, 
+                                 savefile=obs_combined_filename)
+
+                image_list.append(obs_combined_filename)
+                image_exp_list.append(ob_total_exptime)
+    # then, combine the data from different OB
+    
+    if len(image_list) < 1:
+        print(f"no valid data for {target} with {band},{spaxel}")
+        return
+    # <TODO>: how to align different OBs
+    total_exp = np.sum(image_exp_list)
+    weighting = np.array(image_exp_list) / total_exp 
+    print("combining images from:")
+    with open(os.path.join(outdir,
+              f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}_list.txt'), 'w+') as fp:
+        n_combine = len(image_list)
+        for i in range(n_combine):
+            im = image_list[i]
+            im_exptime = image_exp_list[i]
+            print(f"  {im}")
+            fp.write(f"{im} {im_exptime}\n")
+            # with fits.open(im) as hdu:
+                # print(hdu.info())
+    if savefile is None:
+        savefile = os.path.join(outdir, 
+                    f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}.fits')
+    data_combine(image_list=image_list, weighting=weighting, ignore_wcs=True,
+                 mask_ext=None, savefile=savefile)
+
+
+def eris_pipeline(project, start_date, band, spaxel, prog_id, 
+                  username=None, end_date=None, ob_id='',
+                  target='',
+                  outdir='./', static_pool=None, esorex='esorex',
+                  **kwargs):
+    """simple pipeline for eris data reduction
+    
+    Args:
+        project (str): the project code, used to orgnise the folder
+        outdir (str): the output director. By default, a project folder
+                      will be created inside the output directory
+        
+    """
+    project_dir = os.path.join(outdir, project)
+    if os.path.isdir(os.path.isdir(project_dir)):
+        logging.warning("project folder existing! Reusing all the possible data!")
+    
+    # preparing the all the necessary folders
+    project_calib_raw = project_dir+'/calib_raw'
+    project_science_raw = project_dir+'/science_raw'
+    project_calib_pool = project_dir+'/calibPool'
+    project_calibrated = project_dir+'/calibrated'
+    working_dirs = [project_calib_raw, project_science_raw, project_calib_pool, 
+                    project_calibrated]
+    for wd in working_dirs:
+        if not os.path.isdir(wd):
+            subprocess.run(['mkdir','-p', wd])
+   
+    # download the calibration and science raw files
+    request_calib(start_date, band, spaxel, exptime, outdir=project_calib_raw,
+                       end_date=end_date, **kwargs)
+    request_science(prog_id=prog_id, username=username, 
+                    outdir=project_science_raw,
+                    start_date=start_date, end_date=end_date, 
+                    ob_id=ob_id, target=target,
+                    **kwargs)
+
+    # generate the calib files
+    generate_calib(metafile=os.path.join(raw_pool, 'metadata.csv'), 
+                   raw_pool=project_calib_raw, static_pool=static_pool, 
+                   calib_pool=project_calib_pool, drp_type_colname='DPR.TYPE',
+                   esorex=esorex)
+    
+    # run calibration
+    auto_jitter(metafile=os.path.join(raw_pool, 'metadata.csv'),
+                raw_pool=project_science_raw, calib_pool=project_calib_pool,
+                outdir=project_calibrated, static_pool=static_pool,
+                grating=grating, esorex=esorex)
+
 
 #####################################
 ######## helper functions ###########
@@ -1564,8 +1739,11 @@ if __name__ == '__main__':
 
             eris_jhchen_utils auto_jitter --metadata science_raw/metadata.csv --raw_pool science_raw --calib_pool calibPool/2023-04-09_K_low_100mas_600s --ob_id 3589012 --outdir science_output 
 
+            eris_jhchen_utils auto_jitter --sof manual.sof --raw_pool science_raw --calib_pool calibPool/2023-04-09_K_low_100mas_600s --outdir science_output
+
                                         '''))
     subp_auto_jitter.add_argument('--metadata', help='The summary file')
+    subp_auto_jitter.add_argument('--sof', help='Specify the exisint sof')
     subp_auto_jitter.add_argument('--raw_pool', help='The folder name with all the raw files')
     subp_auto_jitter.add_argument('--outdir', help='The output directory')
     subp_auto_jitter.add_argument('--calib_pool', help='The folder with all the calibration files')
@@ -1578,6 +1756,18 @@ if __name__ == '__main__':
     subp_auto_jitter.add_argument('--dpr_tech', help='Select only the data with DPR.TECH=dpr_tech', default='IFU')
     subp_auto_jitter.add_argument('--prog_id', help='Select only the data with Program ID=prog_id')
     subp_auto_jitter.add_argument('--ob_id', help='Select only the data with OB.ID=prog_id')
+
+    ################################################
+    # combine data
+    subp_data_combine = subparsers.add_parser('data_combine',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            Combine reduced datacubes
+            -------------------------
+            Examples:
+
+              eris_jhchen_utils run_eris_pipeline -d science_raw -o science_output -c calibPool
+                                        '''))
 
 
     ################################################
@@ -1617,18 +1807,26 @@ if __name__ == '__main__':
     subp_run_eris_pipeline.add_argument('--overwrite', action='store_true', 
                                       help='Overwrite the existing files')
 
-
+    
     ################################################
-    # combine data
-    subp_data_combine = subparsers.add_parser('data_combine',
+    # quick combine
+    subp_quick_combine = subparsers.add_parser('quick_combine',
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=textwrap.dedent('''\
-            Combine reduced datacubes
-            -------------------------
-            Examples:
+            quickly reduce the science data
+            -------------------------------
+            example:
 
-              eris_jhchen_utils run_eris_pipeline -d science_raw -o science_output -c calibPool
+              eris_jhchen_utils quick_combine --datadir science_output --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1
                                         '''))
+    subp_quick_combine.add_argument('--datadir')
+    subp_quick_combine.add_argument('--target')
+    subp_quick_combine.add_argument('--offsets')
+    subp_quick_combine.add_argument('--excludes')
+    subp_quick_combine.add_argument('--band')
+    subp_quick_combine.add_argument('--spaxel')
+    subp_quick_combine.add_argument('--drifts')
+    subp_quick_combine.add_argument('--suffix', default='combined')
 
     ################################################
     # match the task name and pick the corresponding function
@@ -1673,6 +1871,7 @@ if __name__ == '__main__':
                        esorex=args.esorex, dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'auto_jitter':
         ret = auto_jitter(metadata=args.metadata, raw_pool=args.raw_pool, 
+                          sof=args.sof,
                           outdir=args.outdir, calib_pool=args.calib_pool, 
                           mode=args.mode, objname=args.objname, band=args.band, 
                           spaxel=args.spaxel, exptime=args.exptime, 
@@ -1688,6 +1887,10 @@ if __name__ == '__main__':
         run_eris_pipeline(args.datadir, args.outdir, esorex=args.esorex, 
                           overwrite=args.overwrite, debug=args.debug,
                           dry_run=args.dry_run)
+    elif args.task == 'quick_combine':
+        quick_combine(datadir=args.datadir, target=args.target, offsets=args.offsets,
+                      excludes=args.excludes, band=args.band, spaxel=args.spaxel,
+                      drifts=args.drifts, suffix=args.suffix)
     else:
         pass
     if args.debug:
