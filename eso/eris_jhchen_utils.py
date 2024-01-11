@@ -8,11 +8,10 @@ time.
 
 History:
     - 2023-11-22: first release, v0.1
-    - 2023-11-28: bug fix for testing project 110.258S, v0.2
-    - 2023-12-28: test with eris piepline 1.5.0, v0.3
-    - 2024-01-04: add cmd interface, v0.4
+    - 2024-01-04: add cmd interface, v0.2
+    - 2024-01-11: add quick tools, v0.3
 """
-__version__ = '0.4'
+__version__ = '0.3'
 import os 
 import tempfile
 import textwrap
@@ -117,7 +116,7 @@ def save_metadata(metadata, metafile='metadata.csv'):
     except:
         raise ValueError('Unsupported metadata!')
 
-def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None):
+def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None, auth=None):
     """download the calib files of eris (wrapper of download_file)
 
     Args:
@@ -126,12 +125,14 @@ def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None):
         metafile (str): the filename of the saved tabe from eris_query_tab
         save_columns (list): the selected column names to be saved.
                              set the 'None' to save all the columns
+        username (str): the username from ESO portal
+        auth (str): the existing authentication
     """
     root_calib_url = 'https://dataportal.eso.org/dataportal_new/file/'
-    if username is not None:
-        passwd = getpass.getpass(f'{username} enter your password:\n')
-        auth = requests.auth.HTTPBasicAuth(username, passwd)
-    else: auth = None
+    if auth is None:
+        if username is not None:
+            passwd = getpass.getpass(f'{username} enter your password:\n')
+            auth = requests.auth.HTTPBasicAuth(username, passwd)
     for fileid in eris_query_tab['DP.ID']:
         file_url = root_calib_url+fileid
         download_file(file_url, outdir=outdir, auth=auth)
@@ -271,11 +272,15 @@ def request_calib(start_date=None, band=None, spaxel=None, exptime=None,
 
 def request_science(prog_id='', username=None, metafile='metadata.csv',
                     outdir=None, target='', ob_id='', exptime='',
-                    start_date='', end_date='', debug=False, **kwargs):
+                    start_date='', end_date='', debug=False, 
+                    dry_run=False, archive=False, **kwargs):
     """download the science data 
 
     To download the proprietory data, you need to provide your eso username
     and you will be asked to input your password.
+
+    If the requested data has been observed across multiple days, they will
+    be organised within each folders names of the observing dates.
 
     Args:
         prog_id (str): program id
@@ -293,7 +298,7 @@ def request_science(prog_id='', username=None, metafile='metadata.csv',
     if outdir is None:
         if prog_id is not None: outdir = prog_id+'_raw'
         else: outdir = 'raw'
-    if os.path.isdir(outdir):
+    if not os.path.isdir(outdir):
         subprocess.run(['mkdir', '-p', outdir])
     logging.info(f'Requesting the data from project: {prog_id}')
     eso = Eso()
@@ -309,10 +314,46 @@ def request_science(prog_id='', username=None, metafile='metadata.csv',
                                     'exptime': exptime,
                                     'etime': end_date,
                                     'target': target,})
-    if debug:
-        return eris_query_tab
+    # remove the persistence observations
+    eris_query_tab = eris_query_tab[eris_query_tab['DPR.TYPE'] != 'PERSISTENCE']
+
+    n_item = len(eris_query_tab)
+    if n_item < 1:
+        logging.warning("No science data has been found!")
+        return
+
+    if archive:
+        # to avaid type the password many time, we save the auth here
+        if username is not None and not dry_run:
+            passwd = getpass.getpass(f'{username} enter your password:\n')
+            auth = requests.auth.HTTPBasicAuth(username, passwd)
+
+        # check the observing dates
+        dates_list = np.full(n_item, fill_value='', dtype='U32')
+        # datetime_matcher = re.compile(r'(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})')
+        tplstarts = eris_query_tab['TPL.START']
+        for i in range(n_item):
+            i_start = datetime.datetime.fromisoformat(tplstarts[i])
+            if i_start.hour < 12:
+                dates_list[i] = i_start.strftime('%Y-%m-%d')
+            else:
+                dates_list[i] = (i_start + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        unique_dates = np.unique(dates_list)
+        for date in unique_dates:
+            daily_selection = (dates_list == date)
+            daily_outdir = os.path.join(outdir, date)
+            daily_metafile = os.path.join(daily_outdir, 'metadata.csv')
+            if dry_run:
+                print(f"On {date}: {np.sum(daily_selection)} files will be download")
+            else:
+                logging.info(f'Downloading science data of {date}...')
+                download_eris(eris_query_tab[daily_selection], auth=auth, 
+                              outdir=daily_outdir, metafile=daily_metafile)
     else:
-        download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
+        if dry_run:
+            return eris_query_tab
+        else:
+            download_eris(eris_query_tab, username=username, outdir=outdir, metafile=metafile)
 
 def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv', 
                       extname='PRIMARY', work_dir=None, clean_work_dir=False,
@@ -1296,7 +1337,7 @@ def get_daily_calib(date, outdir, band, spaxel, exptime, esorex='esorex',
     archive_dir = os.path.join(outdir, archive_name)
     if os.path.isfile(archive_dir+'/eris_ifu_wave_map.fits'):
         if not overwrite:
-            print(f"> re-use existing calibPool in {archive_dir}")
+            logging.info(f"> re-use existing calibPool in {archive_dir}")
             return archive_dir
     with tempfile.TemporaryDirectory() as tmpdir:
         metafile = os.path.join(tmpdir, f'{date}_{band}_{spaxel}_{exptime}.csv')
@@ -1329,16 +1370,13 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
     for date in date_list:
 
         ## Step-1
-        print(f"::eris_jhchen_utils:: generateing the metadata from {datadir}/{date}")
-        logging.info(f"::eris_jhchen_utils:: generateing the metadata from {datadir}/{date}")
+        logging.info(f"> generateing the metadata from {datadir}/{date}")
         # metadata = generate_metadata(os.path.join(datadir, date))
         date_metafile = os.path.join(outdir,date, f'{date}_metadata.csv')
         if os.path.isfile(date_metafile):
             # TODO: check the modified date of the files and metafile
-            print(f"> finding existing metadata:{date_metafile}")
             logging.info(f"> finding existing metadata:{date_metafile}")
         else:
-            print(f"> generating the metadata of {date}")
             logging.info(f"> generating the metadata of {date}")
             date_folder = os.path.join(datadir, date)
             # if os.path.isdir(date_folder + '/headers'):
@@ -1354,7 +1392,6 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                                              metafile=date_metafile)
 
         ## Step-2
-        print(f"::eris_jhchen_utils:: reducing the science data in {datadir}/{date}")
         logging.info(f"::eris_jhchen_utils:: reducing the science data in {datadir}/{date}")
     
         metadata = read_metadata(os.path.join(outdir, date, f'{date}_metadata.csv'))
@@ -1366,7 +1403,6 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
         dpr_tech_select = [True if 'IFU' in item['DPR.TECH'] else False for item in metadata]
         metadata = metadata[dpr_tech_select]
         if len(metadata) < 1:
-            print(f"> No ERIS/SPIFFIER data found on {date}")
             logging.info(f"> No ERIS/SPIFFIER data found on {date}")
 
         # identify all the science objects and their OBs
@@ -1385,14 +1421,12 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                 
                 ## Step-3
                 # generate the daily calibPool
-                print(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
                 logging.info(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
                 try:
                     daily_id_calib_pool = get_daily_calib(date, daily_calib_pool, band, 
                                                           spaxel, exptime, esorex=esorex, 
                                                           overwrite=overwrite)
                 except:
-                    print(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                     logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
 
                 ## Step-4
@@ -1404,10 +1438,8 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                     os.path.isfile(os.path.join(daily_ob_outdir,
                                               'eris_ifu_jitter_obj_cube_coadd.fits'))):
                     if not overwrite:
-                        print(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                         logging.info(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                         continue
-                print(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                 logging.info(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                 try:
                     auto_jitter(metadata=target_metadata, raw_pool=daily_datadir, 
@@ -1416,9 +1448,7 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                                 dry_run=dry_run)
                 except:
                     subprocess.run(['rm','-rf', daily_ob_outdir])
-                    print(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                     logging.warning(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
-                print("> Done!")
 
 def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=None,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', 
@@ -1470,7 +1500,7 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
                         exp_list_arcfilenames.append(arcfile)
 
                 if len(exp_list_valid) < 1:
-                    print("no valid data for {target}({ob_id}) with {ob_band},{ob_spaxel},{ob_total_exptime}s")
+                    logging.warning("no valid data for {target}({ob_id}) with {ob_band},{ob_spaxel},{ob_total_exptime}s")
                     continue
                 # within each ob, the exposure time are equal, so we just ignore the
                 # weighting
@@ -1489,19 +1519,18 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
     # then, combine the data from different OB
     
     if len(image_list) < 1:
-        print(f"no valid data for {target} with {band},{spaxel}")
+        logging.warning(f"no valid data for {target} with {band},{spaxel}")
         return
     # <TODO>: how to align different OBs
     total_exp = np.sum(image_exp_list)
     weighting = np.array(image_exp_list) / total_exp 
-    print("combining images from:")
+    logging.info("combining images from:")
     with open(os.path.join(outdir,
               f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}_list.txt'), 'w+') as fp:
         n_combine = len(image_list)
         for i in range(n_combine):
             im = image_list[i]
             im_exptime = image_exp_list[i]
-            print(f"  {im}")
             fp.write(f"{im} {im_exptime}\n")
             # with fits.open(im) as hdu:
                 # print(hdu.info())
@@ -1566,7 +1595,7 @@ def eris_pipeline(project, start_date, band, spaxel, prog_id,
 ######## helper functions ###########
 
 def start_logger():
-    logging.basicConfig(filename='myapp.log', level=logging.INFO)
+    logging.basicConfig(filename='myapp.log', encoding='utf-8', level=logging.INFO)
     logger = logging.getLogger('simple_example')
     logger.setLevel(logging.INFO)
     logging.info('Started')
@@ -1590,6 +1619,7 @@ if __name__ == '__main__':
                         help='dry run and print out all the input parameters')
     parser.add_argument('--dry_run', action='store_true',
                         help='print the commands but does not execute them')
+    parser.add_argument('--logfile', help='the logging output file')
     parser.add_argument('-v','--version', action='version', version=f'v{__version__}')
 
     # add subparsers
@@ -1668,7 +1698,8 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--ob_id', type=str, help='Observation ID', default='')
     subp_request_science.add_argument('--metafile', type=str, help='Summary file',default='metadata.csv')
     subp_request_science.add_argument('--end_date', type=str, help='The finishing date of the observation. Such as 2023-03-08', default='')
-   
+    subp_request_science.add_argument('--archive', action='store_true', 
+                                      help='Organise the date based on the observing date')
 
     ################################################
     # generate_metadata
@@ -1832,17 +1863,23 @@ if __name__ == '__main__':
     # match the task name and pick the corresponding function
     args = parser.parse_args()
     ret = None # return status
+    
+    # set up the logging options
+    logging.basicConfig(filename=args.logfile, encoding='utf-8', level=logging.INFO,
+                        format='%(asctime)s %(levelname)s:%(message)s')
+    logging.info(f"Welcome to eris_jhchen_utils.py {__version__}")
+
     if args.debug:
-        print(args)
+        logging.debug(args)
         func_args = list(inspect.signature(locals()[args.task]).parameters.keys())
         func_str = f"Executing:\n \t{args.task}("
         for ag in func_args:
             try: func_str += f"{ag}={args.__dict__[ag]},"
             except: func_str += f"{ag}=None, "
         func_str += ')\n'
-        print(func_str)
-        print(f"Using esorex from {args.esorex}")
-        print(f"Using static files from {search_static_calib(args.esorex)}")
+        logging.debug(func_str)
+        logging.debug(f"Using esorex from {args.esorex}")
+        logging.debug(f"Using static files from {search_static_calib(args.esorex)}")
     if args.task == 'request_calib':
         request_calib(start_date=args.start_date, band=args.band, steps=args.steps,
                       end_date=args.end_date, outdir=args.outdir, exptime=args.exptime, 
@@ -1855,6 +1892,7 @@ if __name__ == '__main__':
                               band=args.band, spaxel=args.spaxel, 
                               exptime=args.exptime, end_date=args.end_date, 
                               outdir=args.outdir, metafile=args.metafile,
+                              archive=args.archive,
                               dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'generate_metadata':
         generate_metadata(data_dir=args.data_dir, extname=args.extname,
@@ -1895,4 +1933,5 @@ if __name__ == '__main__':
         pass
     if args.debug:
         if ret is not None:
-            print(ret)
+            logging.debug(ret)
+    logging.info('Finished')
