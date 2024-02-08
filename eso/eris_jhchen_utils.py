@@ -2,16 +2,18 @@
 
 """
 Authors: Jianhang Chen
+Email: cjhastro@gmail.com
 
-This program was initially written when I learnt how to analysis the ESO/ERIS data for the first
-time. 
+This program was initially written when I learnt how to analysis the 
+ESO/ERIS data for the first time. 
 
 History:
     - 2023-11-22: first release, v0.1
     - 2024-01-04: add cmd interface, v0.2
     - 2024-01-11: add quick tools, v0.3
+    - 2024-01-30: add customized combining task, v0.4
 """
-__version__ = '0.3'
+__version__ = '0.4.3'
 import os 
 import tempfile
 import textwrap
@@ -26,10 +28,11 @@ import warnings
 import subprocess
 
 import numpy as np
+from scipy import ndimage
 import astropy.table as table
 import astropy.units as units
 from astropy.io import fits
-from astropy.utils.exceptions import AstropyWarning
+from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy import stats as astro_stats
@@ -38,9 +41,12 @@ from astroquery.eso.core import NoResultsWarning
 import requests 
 
 # for fits combination
+import scipy
 from reproject import mosaicking
-from reproject import reproject_adaptive, reproject_exact
+from reproject import reproject_adaptive, reproject_exact, reproject_interp
 
+from astropy.wcs import FITSFixedWarning
+warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 
 #####################################
 ######### DATA Retrieval ############
@@ -447,19 +453,58 @@ def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv',
 #####################################
 ######### DATA Calibration ##########
 
-def search_static_calib(esorex):
-    # use the default staticPool
-    if '/' in esorex:
+def search_static_calib(esorex, debug=False):
+    """try to automatically find the static calibration files
+
+    There are various locations this program will search for static files
+    1. the current folder: ./
+    2. the esorex installation directory: /path/to/esorex/calib/eris-*.*.*
+    3. the manually installed eris-pipeline dierectory: 
+       like esorex in /usr/local/bin/esorex, then it will search calib 
+       in /usr/local/calib/ifs
+
+    The priority deceases as the order
+    """
+    static_pool = None
+    logging.info("Search for staticPool...")
+    # first search local static calib named staticPool
+    cwd = os.getcwd()
+    if debug:
+        logging.info(f'Current directory is {cwd}')
+    if 'staticPool' in os.listdir(cwd):
+        static_pool = os.path.join(cwd, 'staticPool')
+    if static_pool is None:
+        if esorex is None:
+            esorex = shutil.which('esorex')
+        if '/' in esorex:
+            try:
+                binpath_match = re.compile('(?P<install_dir>^[\/\w\s\_\.\-]*)/bin/esorex')
+                install_dir = binpath_match.search(esorex).groupdict()['install_dir']
+            except:
+                logging.info('Failed to locate the install direction of esorex!')
+        else:
+            install_dir = '/usr/local'
         try:
-            binpath_match = re.compile('(?P<bindir>^[\/\w\s\_\.\-]*)/esorex')
-            bindir = binpath_match.search(esorex).groupdict()['bindir']
+            # search static calib names withed the pipeline version number
+            static_pool_list = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
+            static_pool = sorted(static_pool_list)[-1] # choose the latest one
         except:
-            raise ValueError('Failed to locate the install direction of esorex!')
-    else: 
-        bindir = os.path.dirname(shutil.which(esorex))
-    install_dir = os.path.dirname(bindir)
-    static_pool_list = glob.glob(os.path.join(install_dir, 'calib/eris-*'))
-    static_pool = sorted(static_pool_list)[-1] # choose the latest one
+            if 'ifs' in os.listdir(install_dir+'/calib'):
+                static_pool = os.path.join(install_dir, 'calib/ifs')
+            else:
+                static_pool = None
+        if debug:
+            logging.info(f'installing directory is {install_dir}')
+    if static_pool is not None:
+        logging.info(f'Found static_pool as {static_pool}')
+        # check whether it is a valid folder
+        static_calib_files = os.listdir(static_pool)
+        for ff in ['eris_oh_spec.fits', 'eris_ifu_wave_setup.fits', 
+                   'eris_ifu_first_fit.fits']:
+            if ff not in static_calib_files:
+                logging.warning('Found staticPool in {}, but it seems incomplete!')
+    else:
+        logging.info('Failed in locating any valid staticPool!')
     return static_pool
 
 def generate_calib(metadata, raw_pool='./raw', work_dir=None, 
@@ -491,6 +536,8 @@ def generate_calib(metadata, raw_pool='./raw', work_dir=None,
     if static_pool is None:
         # use the default staticPool
         static_pool = search_static_calib(esorex)
+        if static_pool is None:
+            raise ValueError("Cannot find static calibration files!")
     else: static_pool = static_pool.rstrip('/')
     if archive:
         if archive_name is None:
@@ -674,6 +721,7 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
                 static_pool=None, esorex='', mode='jitter',
                 objname=None, band=None, spaxel=None, exptime=None, 
                 dpr_tech='IFU', dpr_catg='SCIENCE', prog_id=None, ob_id=None,
+                sky_tweak=True, product_depth=2,
                 dry_run=False, debug=False):
     """calibrate the science target or the standard stars
     """
@@ -773,7 +821,8 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
                             # run the pipeline even ecount corrupted or missing files
                             '--check-sof-exist=false', 
                             'eris_ifu_jitter', 
-                            '--product_depth=2', '--sky_tweak=0', 
+                            '--product_depth={}'.format(product_depth), 
+                            '--sky_tweak={}'.format(int(sky_tweak)), 
                             '--dar-corr=true', '--cube.combine=FALSE', auto_jitter_sof])
 
 #####################################
@@ -788,6 +837,29 @@ def fix_micron_unit_header(header):
         if header['CUNIT3'] == 'MICRON':
             header['CUNIT3'] = 'um'
     return header
+
+def get_wavelength(image, output_unit='um'):
+    if isinstance(image, WCS):
+        header = image.to_header()
+        header['NAXIS3'],header['NAXIS2'],header['NAXIS1'] = image.array_shape
+    else:
+        #if isinstance(image, fits.Header):
+        header = image
+    if 'PC3_3' in header.keys():
+        cdelt3 = header['PC3_3']
+    elif 'CD3_3' in header.keys():
+        cdelt3 = header['CD3_3']
+    else: 
+        cdelt3 = header['CDELT3']
+    # because wcs.slice with change the reference channel, the generated ndarray should 
+    # start with 1 
+    chandata = (header['CRVAL3'] + (np.arange(1, header['NAXIS3']+1)-header['CRPIX3']) * cdelt3)
+    if 'CUNIT3' in header.keys():
+        chandata = chandata*units.Unit(header['CUNIT3'])
+        wavelength = chandata.to(units.Unit(output_unit)).value
+    else:
+        wavelength = chandata
+    return wavelength
 
 def find_combined_wcs(image_list=None, wcs_list=None, header_ext='DATA', frame=None, 
                       pixel_size=None, pixel_shifts=None):
@@ -943,34 +1015,54 @@ def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
                 time_list.append(header['EXPTIME'])
         return np.array(time_list)/total_time
 
-def fill_mask(image, mask):
+def fill_mask(data, mask=None, step=1, debug=False):
     """Using iterative median to filled the masked region
     In each cycle, the masked pixel is set to the median value of all the values in the 
     surrounding region (in cubic 3x3 region, total 8 pixels)
     Inspired by van Dokkum+2023 (PASP) and extended to support 3D datacube
-    
+   
+    This implementation are pure python code, so it is super
+    slow if the number of masked pixels are large
+    <TODO>: rewrite this extension with c
+
     Args:
-        image (ndarray): the input image
-        mask (ndarray): the same shape as image, with masked pixels are 1 and rest are 0
+        data (ndarray): the input data
+        mask (ndarray): the same shape as data, with masked pixels are 1 (True)
+                        and the rest are 0 (False)
     """
-    ndim = image.ndim
-    image_filled = image.copy().astype(float)
-    image_filled[mask==1] = np.nan
-    image_shape = np.array(image.shape)
-    up_boundaries = np.repeat(image_shape, 2) - 1
+    if isinstance(data, np.ma.MaskedArray):
+        mask = data.mask
+        data = data.data
+    elif mask is None:
+        data = np.ma.masked_invalid(data)
+        mask = data.mask
+        data = data.data
+    # skip the filling if there are too little data
+    if debug:
+        print("data and mask:",data.size, np.sum(mask))
+        print(f"mask ratio: {1.*np.sum(mask)/data.size}")
+    if 1.*np.sum(mask)/data.size > 0.2:
+        logging.warning(f"skip median filling, too inefficient...")
+        data[mask] = np.median(data[~mask])
+        return data
+    ndim = data.ndim
+    data_filled = data.copy().astype(float)
+    data_filled[mask==1] = np.nan
+    data_shape = np.array(data.shape)
+    up_boundaries = np.repeat(data_shape,2).reshape(len(data_shape),2)-1
     mask_idx = np.argwhere(mask > 0)
-    while np.any(np.isnan(image_filled)):
+    while np.any(np.isnan(data_filled)):
         for idx in mask_idx:
-            idx_range = np.array([[i-1,i+2] for i in idx])
+            idx_range = np.array([[i-step,i+1+step] for i in idx])
             # check if reaches low boundaries, 0
-            if np.any(idx < 1):  
+            if np.any(idx_range < 1):  
                 idx_range[idx_range < 0] = 0
             # check if reach the upper boundaries
-            if np.any(image_shape - idx < 1):
+            if np.any(idx > up_boundaries):
                 idx_range[idx_range>up_boundaries] = up_boundaries[idx_range>up_boundaries]
             ss = tuple(np.s_[idx_range[i][0]:idx_range[i][1]] for i in range(ndim))
-            image_filled[tuple(idx)] = np.nanmedian(image_filled[ss])
-    return image_filled
+            data_filled[tuple(idx)] = np.nanmedian(data_filled[ss])
+    return data_filled
 
 def construct_wcs(header, data_shape=None):
     """try to construct the wcs from a broken header 
@@ -1021,11 +1113,119 @@ def construct_wcs(header, data_shape=None):
             wcs_mock.wcs.ctype = 'RA', 'DEC', 'Wavelength'
             wcs_mock.array_shape = [ndim, ysize, xsize]
 
-def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',  
-                 pixel_shifts=None, ignore_wcs=False, 
-                 sigma_clip=True, sigma=3.0, bgsub=True,
+def mask_spectral_lines(wavelength, redshift=0, line_width=1000,):
+    """mask spectral lines
+
+    Args:
+        wavelength (ndarray): wavelength in um
+        redshift (float): redshift
+        line_width (float): velocity width in km/s
+    """
+    line_dict = {
+         'Halpha': 6564.61 * units.AA, 
+         'NII6548': 6549.86 * units.AA, 
+         'NII6583': 6585.27 * units.AA, 
+         'SII6717': 6718.29 * units.AA, 
+         'SII6731': 6732.67 * units.AA, 
+         'Hbeta': 4862.68 * units.AA, 
+         'OIII4959': 4960.295 * units.AA, 
+         'OIII5007': 5008.240 * units.AA,
+         }
+    wave_masked = np.full_like(wavelength, fill_value=False)
+    for line_name in line_dict:
+        line_wave = (line_dict[line_name] * (1.0 + redshift)).to(units.um).value
+        #line_width = 800.0 # km/s
+        line_mask = np.logical_and(
+            (wavelength >= (line_wave - (line_width/2.0/3e5)*line_wave)),
+            (wavelength <= (line_wave + (line_width/2.0/3e5)*line_wave))
+        )
+        wave_masked = np.logical_or(wave_masked, line_mask)
+    return wave_masked
+
+def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_subtract=True,
+               cont_subtract=False, median_filter=True, median_filter_size=(5,3,3),
+               channel_chunk=None, sigma=5.0):
+    """clean the datacubes
+
+    It supports:
+      - sigma clipping
+      - background subtraction
+      - continue subtraction
+    """
+    if mask is not None:
+        if datacube.shape != mask.shape:
+            raise ValueError("Mask does not match with data!")
+    nchan, ny, nx = datacube.shape
+    mask = mask | np.ma.masked_invalid(datacube).mask
+
+    if median_filter:
+        # apply the median filter to filter out the outliers caused by sky lines
+        # choose the filter size to preserve weak science data
+        datacube = ndimage.median_filter(datacube, size=median_filter_size)
+
+    # prepare the masked data
+    datacube_masked = np.ma.array(datacube, mask=mask)
+
+    if sigma_clip:
+        # it is only safe to apply the sigma_clip if the signal is weak,
+        # and the single exposure is dominated by noise and sky line (residuals)
+        datacube_masked = astro_stats.sigma_clip(datacube_masked, sigma=sigma, 
+                                                 maxiters=2, masked=True) 
+        if channel_chunk is not None:
+            # apply chunk based sigma clip, it could be useful if different 
+            # spectral window show different noise level
+            # chose the chunk size so that the signal is weaker than noise
+            cube_chunk_mask = np.full_like(datacube, fill_value=False)
+            chunk_steps = np.hstack((np.arange(0, nchan, channel_chunk)[:-1], 
+                                   (np.arange(nchan, 0, -channel_chunk)-channel_chunk)[:-1]))
+            for chan in chunk_steps:
+                chunk_masked = astro_stats.sigma_clip(datacube_masked[chan:chan+channel_chunk], 
+                                                      maxiters=2, sigma=sigma, masked=True)
+                cube_chunk_mask[chan:chan+channel_chunk] = chunk_masked.mask
+            datacube_masked = np.ma.array(datacube_masked, mask=cube_chunk_mask)
+
+        # apply channel-wise sigma_clip (deprecated, too dangerous)
+        # datacube_masked = astro_stats.sigma_clip(datacube_masked, maxiters=2, sigma=sigma,
+                                                 # axis=(1,2), masked=True)
+        
+        # apply sigma_clip along the spectral axis
+        # make sure to mask signals (through signal_mask) before applying this
+        # datacube_masked = astro_stats.sigma_clip(datacube_masked, maxiters=2, sigma=sigma,
+                                                 # axis=0, masked=True)
+
+    if median_subtract:
+        #
+        datacube_signal_masked = np.ma.array(datacube_masked, mask=signal_mask)
+
+        # apply a global median subtraction
+        datacube_masked -= np.ma.median(datacube_signal_masked, axis=0).data[np.newaxis,:,:]
+
+        # row and column based median subtraction
+        # by y-axis
+        datacube_masked -= np.ma.median(datacube_signal_masked, axis=1).data[:,np.newaxis,:]
+        # by x-axis
+        datacube_masked -= np.ma.median(datacube_signal_masked, axis=2).data[:,:,np.newaxis]
+        
+        datacube_signal_masked = np.ma.array(datacube_masked, mask=signal_mask)
+        # median subtraction image by image
+        spec_median =  np.ma.median(datacube_signal_masked, axis=(1,2))
+        spec_median_filled = fill_mask(spec_median, step=5)
+        datacube_masked -= spec_median_filled[:,np.newaxis, np.newaxis]
+
+    if cont_subtract: # this will take a very long time
+        # apply a very large median filter to cature large scale continue variation
+        cont_datacube = ndimage.median_filter(datacube_signal_masked, size=(200, 10, 10))
+        # set the science masked region as the median value of the final median subtracted median
+        datacube_masked = datacube_masked - cont_datacube
+        
+    return datacube_masked
+
+def combine_data(image_list, data_ext='DATA', mask_ext='DQI',  
+                 pixel_shifts=None, ignore_wcs=False, z=None,
+                 sigma_clip=True, sigma=3.0, median_subtract=True,
+                 cont_subtract=False,
                  header_ext=None, weighting=None, frame=None, projection='TAN', 
-                 pixel_size=None, savefile=None):
+                 pixel_size=None, savefile=None, overwrite=False):
     """combine the multiple observation of the same target
 
     By default, the combined wcs uses the frame of the first image
@@ -1097,6 +1297,7 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
     data_combined = np.full(shape_combined, fill_value=0.)
     coverage_combined = np.full(shape_combined, fill_value=1e-8)
     
+
     # handle the weighting
     if weighting is None:
         # treat each dataset equally
@@ -1106,11 +1307,12 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
     for i in range(nimages):
         image_wcs = wcs_list[i].celestial
         data = fits.getdata(image_list[i], data_ext)
+        img_ny, img_nx = data.shape[-2:]
         
         if mask_ext is not None:
-            mask = fits.getdata(image_list[i], mask_ext)
+            img_mask = fits.getdata(image_list[i], mask_ext)
         else:
-            mask = np.full(data.shape, fill_value=False)
+            img_mask = np.full(data.shape, fill_value=False)
 
         # check if the channel length consistent with the combined wcs
         if data.ndim == 3: #<TODO>: find a better way to do
@@ -1118,40 +1320,39 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
                 logging.warning("Combining data with different channels!")
             if len(data) >= shape_combined[0]:
                 data = data[:shape_combined[0]]
-                mask = mask[:shape_combined[0]]
+                img_mask = img_mask[:shape_combined[0]]
             else:
                 data_shape = data.shape
                 data_shape_extend = [shape_combined[0], data_shape[1], data_shape[2]]
                 data_extend = np.full(data_shape_extend, fill_value=0.)
                 mask_extend = np.full(data_shape_extend, fill_value=False)
                 data_extend[:data_shape[0]] = data[:]
-                mask_extend[:data_shape[0]] = mask[:]
+                mask_extend[:data_shape[0]] = img_mask[:]
                 data = data_extend
-                mask = mask_extend
+                img_mask = mask_extend
+        
+            # get the wavelength
+            if z is not None:
+                wavelength = get_wavelength(wcs_combined)
+                wave_mask = mask_spectral_lines(wavelength, redshift=z)
+                cube_wave_mask = np.repeat(wave_mask, img_ny*img_nx).reshape(len(wavelength), 
+                                                                             img_ny, img_nx)
 
-        # reset the masked value to zero, to be removed from combination
-        # <TODO>: find a better way to fix the masked pixels
-        # now we just set it to zeros
-        data_masked = np.ma.masked_array(data, mask=mask)
+        data_masked = clean_cube(data, mask=img_mask, signal_mask=cube_wave_mask, 
+                                 sigma_clip=sigma_clip, median_subtract=median_subtract,
+                                 cont_subtract=cont_subtract)
 
-        if sigma_clip:
-            data_masked = astro_stats.sigma_clip(
-                    data_masked, sigma=sigma, maxiters=5, masked=True)
-        if bgsub:
-            # subtract a median background in each channel
-            data_masked = data_masked - np.ma.median(
-                            data_masked, axis=(1,2))[:, np.newaxis, np.newaxis]
         data = data_masked.filled(0)
         mask = data_masked.mask
         # 
-        data_reprojected, footprint = reproject_adaptive((data, image_wcs), 
+        data_reprojected, footprint = reproject_interp((data, image_wcs), 
                                                           wcs_combined.celestial, 
-                                                          shape_out=shape_combined,
-                                                          conserve_flux=True)
-        mask_reprojected, footprint = reproject_adaptive((mask, image_wcs), 
+                                                          shape_out=shape_combined,)
+                                                          # conserve_flux=True)
+        mask_reprojected, footprint = reproject_interp((mask, image_wcs), 
                                                           wcs_combined.celestial, 
-                                                          shape_out=shape_combined,
-                                                          conserve_flux=False)
+                                                          shape_out=shape_combined,)
+                                                          # conserve_flux=False)
         data_combined += data_reprojected * weighting[i]
         footprint = footprint.astype(bool)
         coverage_combined += (1.-mask_reprojected)
@@ -1176,70 +1377,211 @@ def data_combine(image_list, data_ext='DATA', mask=None, mask_ext='DQI',
         primary_hdu = fits.PrimaryHDU(header=hdr)
         data_combined_hdu = fits.ImageHDU(data_combined, name="DATA", header=hdr)
         hdus = fits.HDUList([primary_hdu, data_combined_hdu])
-        hdus.writeto(savefile, overwrite=True)
+        hdus.writeto(savefile, overwrite=overwrite)
     else:
-        return data_combined, error_combined
+        return data_combined
 
-def data_combine_pixel(image_list, offsets=None, savefile=None):
-    """deprecated, will be removed in the future
-
+def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
+                      sigma_clip=True, sigma=5.0, median_subtract=True,
+                      mask_ext=None, median_filter=False, median_filter_size=(5,3,3),
+                      cont_subtract=False, weighting=None, overwrite=True, debug=False):
+    """test combination directly in pixel space
     this function combine the image/datacube in the pixel space
 
     image_list (list): the list of filenames or ndarray
     offset (list,ndarray): the offset (x, y) of each image
     """
-    data_combined = 0.0
-    coverage_combined = 1.0
+    ncubes = len(cube_list)
+    # check the input variables
+    if pixel_shifts is not None:
+        if len(pixel_shifts) != ncubes:
+            raise ValueError("Pixel_shift does not match the number of images!")
+        pixel_shifts = np.array(pixel_shifts)
     
-    # quick test without offsets
-    if offsets is None:
-        for i,image in enumerate(image_list):
-            header = fits.getheader(image, 'DATA')
-            image_data = fits.getdata(image, 'DATA')
-            image_mask = fits.getdata(image, 'DQI')
-            image_data[(1.0-image_mask)<1e-6] = 0.0
+    # quick combine without offsets
+    if pixel_shifts is None:
+        print('Direct combining cubes...')
+        for i in range(ncubes):
+            cube = cube_list[i]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', AstropyWarning)
+                header = fits.getheader(cube, 'DATA')
+                cube_data = fits.getdata(cube, 'DATA')
+                if i == 0:
+                    first_header = header
+                    first_wcs = WCS(header)
+            if mask_ext is not None:
+                cube_mask = fits.getdata(cube, mask_ext)
+            else:
+                cube_mask = np.full(cube_data.shape, fill_value=1e-8)
+            cube_data[np.abs(1.0-cube_mask)<1e-6] = 0.0
             if i == 0:
-                data_combined = np.zeros_like(image_data)
-                coverage_combined = np.zeros_like(image_mask)
-                header_combined = fits.getheader(image, 0)
-            data_combined += image_data
-            coverage_combined += (1 - image_mask)
+                data_combined = np.zeros_like(cube_data, dtype=float)
+                coverage_combined = np.zeros_like(cube_mask, dtype=float)
+                header_combined = fits.getheader(cube, 0)
+            data_combined += cube_data
+            coverage_combined += (1 - cube_mask)
     else:
+        print('Combining cubes with input drifts...')
+        # find the combined wcs
         # calculate the combined image size
         # to make things simpler, here we still keep the x and y equal
-        padding = np.max(offsets)
-        for i,image in enumerate(image_list):
-            header = fits.getheader(image, 'DATA')
-            image_data = fits.getdata(image, 'DATA')
-            image_mask = fits.getdata(image, 'DQI')
-            if i==0:
-                # skip the resampling
-                ygrid, xgrid = np.mgrid(ny, nx) + padding
-                pass
-            else:
-                # get the real pixel coordinate of the image
-                ygrid, xgrid = np.mgrid(ny, nx) + padding + offsets[i]
-                # get the nearest grid pixel
-                ygrid2, xgrid2 = np.round(ygrid), np.round(xgrid)
-                # resample the image to be aligned with the grid
-                image_resampling(image, offset)
-                scipy.interpolate.griddata(np.array(list(zip(ygrid, xgrid))), 
-                                           image_data.ravel(), 
-                                           np.array(list(zip(ygrid2, xgrid2))),
-                                           method='linear',)
 
-    data_combined = data_combined / coverage_combined
+        # read the first image to get the image size
+        # <TODO>: read all the header and compute the best size and wavelength
+        # such as: wcs_combined = find_combined_wcs(image_list, offsets=offsets)
+        first_header = fits.getheader(cube_list[0], 'DATA')
+        first_wcs = WCS(first_header)
+        pad = np.round(np.abs(pixel_shifts).max()).astype(int)
+        padded_cube_size = (first_header['NAXIS3'], 
+                             first_header['NAXIS2'] + 2*pad,
+                             first_header['NAXIS1'] + 2*pad)
+
+        # define the final product
+        wavelength = get_wavelength(first_header)
+        len_wavelength = len(wavelength)
+        data_combined = np.full(padded_cube_size, fill_value=0.)
+        coverage_combined = np.full(padded_cube_size, fill_value=0.)
+
+        # to avoid numerical issue, scaling is needed to extrapolate 3D datacube
+        # we will normalize the wavelength to be roughly the same as values of
+        # the pixel coordinates
+        wave_scale = np.mean(padded_cube_size[1:]) # mean size of the x and y shape
+        wave_min, wave_max = np.min(wavelength), np.max(wavelength)
+        wavelength_norm = (wavelength - wave_min)/wave_max*wave_scale
+          
+        # (deprecated), the weighting is now taking care by the coverage
+        # # handle the weighting
+        # if weighting is None:
+            # # treat each dataset equally
+            # try:
+                # # get the weighting by the exposure time
+                # weighting = compute_weighting_eris(cube_list)
+            # except:
+                # # otherwise treat every observation equally
+                # weighting = np.full(ncubes, fill_value=1./ncubes)
+ 
+        for i in range(ncubes):
+            # ge the offset, we need to multiply -1 to inverse the shifts
+            # as the calculation of pixel shifts is the (x0-xi, y0-yi) 
+            # later we can them directly use "+"
+            offset = -1 * pixel_shifts[i]
+
+            # read data from each observation
+            cube = cube_list[i]
+            logging.info(f'{i+1}/{ncubes} working on: {cube}')
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', AstropyWarning)
+                header = fits.getheader(cube, 'DATA')
+                cube_exptime = float(header['EXPTIME'])
+                cube_data = fits.getdata(cube, 'DATA')
+            if mask_ext is not None:
+                cube_mask = fits.getdata(cube, mask_ext)
+            else:
+                cube_mask = np.full(cube_data.shape, fill_value=False)
+            cube_wavelength = get_wavelength(header)
+            cube_wavelength_norm = (cube_wavelength-wave_min)/wave_max*wave_scale
+            cube_nchan, cube_ny, cube_nx = cube_data.shape
+        
+            if z is not None:
+                # with redshift, we can mask the signals, here are the H-alpha and [N II]
+                wave_mask = mask_spectral_lines(cube_wavelength, redshift=z)
+                cube_wave_mask = np.repeat(wave_mask, cube_ny*cube_nx).reshape(
+                                           len(cube_wavelength), cube_ny, cube_nx)
+            else:
+                cube_wave_mask = None
+            
+            # mask the outliers and subtract median noise, see clean_cube for details
+            # needs to be cautious in preveting removing possible signal 
+            cube_data_masked = clean_cube(cube_data, mask=cube_mask, signal_mask=cube_wave_mask, 
+                                          sigma_clip=sigma_clip, median_subtract=median_subtract,
+                                          median_filter=median_filter, cont_subtract=cont_subtract)
+            # simple alternative is:
+            # cube_data_masked = astro_stats.sigma_clip(cube_data, sigma=5)
+
+            cube_data = cube_data_masked.filled(0)
+            cube_mask = cube_data_masked.mask
+
+            # follow two steps
+            # step 1: get the pixel level shifts
+            offset_pixel = np.round(offset).astype(int) 
+            offset_residual = np.array(offset) - offset_pixel
+            # step 2: interpolate the sub-pixel shift 
+            #         to get the data on the closest grid
+            xidx = np.arange(0., cube_nx)
+            yidx = np.arange(0., cube_ny)
+            xidx_origin = xidx + offset_residual[0]
+            yidx_origin = yidx + offset_residual[1]
+
+            # define the final grid
+            wavegrid, ygrid, xgrid = np.meshgrid(wavelength_norm, yidx, xidx, indexing='ij')
+            # if np.sum(np.abs(offset_residual)) < 1e-2:
+                # print('skip interpolation')
+                # # skip interpolation
+                # cube_data_new = cube_data
+                # cube_mask_new = cube_mask
+            # else:
+                # pass
+            if True:
+                if debug:
+                    print(f'Current cube shape: {cube_data.shape}')
+                    print(f'Extrapolated cube shape: {len_wavelength, cube_ny, cube_nx}')
+                    print(f'the first two channel: {wavelength[0]} vs {cube_wavelength[0]}')
+                    print(f'the last two channel: {wavelength[-1]} vs {cube_wavelength[-1]}')
+                # the commented one is too slow for 3D datacube, so switch to the second method
+                # cube_data_new = scipy.interpolate.griddata((wavegrid_origin, ygrid_origin, xgrid_origin), 
+                                                        # cube_data.ravel(), (wavegrid, ygrid, xgrid), 
+                                                        # method='linear', fill_value=0)
+                cube_data_new = scipy.interpolate.interpn(
+                        (cube_wavelength_norm, yidx_origin, xidx_origin), cube_data,
+                        np.vstack([wavegrid.ravel(), ygrid.ravel(), xgrid.ravel()]).T, 
+                        method='linear', bounds_error=False, fill_value=0).reshape(
+                                (len_wavelength, cube_ny, cube_nx))
+
+                # for the mask, we use the nearest interpolate
+                # cube_mask_new = scipy.interpolate.griddata((wavegrid_origin, ygrid_origin, xgrid_origin), 
+                                                            # cube_mask.ravel(), (wavegrid_final, ygrid, xgrid), 
+                                                            # method='nearest', fill_value=0)
+                cube_mask_new = scipy.interpolate.interpn(
+                        (cube_wavelength_norm, yidx_origin, xidx_origin), cube_mask.astype(float), 
+                        np.vstack([wavegrid.ravel(), ygrid.ravel(), xgrid.ravel()]).T, 
+                        method='nearest', bounds_error=False, fill_value=True).reshape(
+                                len_wavelength,cube_ny,cube_nx)
+            if debug:
+                print(f'slicing in y: {offset_pixel[1]+pad} {offset_pixel[1]+cube_ny+pad}')
+                print(f'slicing in x: {offset_pixel[0]+pad} {offset_pixel[0]+cube_nx+pad}')
+            data_combined[:, (offset_pixel[1]+pad):(offset_pixel[1]+cube_ny+pad), 
+                          (offset_pixel[0]+pad):(offset_pixel[0]+cube_nx+pad)] += cube_data_new
+            coverage_combined[:, (offset_pixel[1]+pad):(offset_pixel[1]+cube_ny+pad), 
+                              (offset_pixel[0]+pad):(offset_pixel[0]+cube_nx+pad)] += cube_exptime*(1.-cube_mask_new)
+    # the divide rescale the unit from asu to asu/second
+    # (*+1e-8) is to avid numerical issue
+    with np.errstate(divide='ignore', invalid='ignore'):
+        data_combined = data_combined / (coverage_combined) 
 
     if savefile is not None:
         # save the combined data
-        hdr = header_combined 
-        hdr['OBSERVER'] = ''
-        hdr['COMMENT'] = ''
-        primary_hdu = fits.PrimaryHDU(header=hdr)
+        hdr = first_wcs.to_header()
+        # for key in ['NAXIS3', 'CTYPE3', 'CUNIT3', 'CRPIX3', 'CRVAL3', 'CDELT3', 
+                    # 'CRVAL1', 'CRVAL2', 'CDELT1', 'CDELT2',
+                    # 'CD3_3', 'CD1_3', 'CD2_3', 'CD3_1', 'CD3_2', 
+                    # 'PC3_3', 'PC1_3', 'PC2_3', 'PC3_1', 'PC3_2']:
+            # try:
+                # hdr[key] = first_header[key]
+            # except:
+                # pass
+        if pixel_shifts is not None:
+            hdr['CRPIX1'] = first_header['CRPIX1'] + pad + pixel_shifts[0][0]
+            hdr['CRPIX2'] = first_header['CRPIX2'] + pad + pixel_shifts[0][1]
+        hdr['BUNIT'] = first_header['BUNIT'].strip() + '/s'
+        hdr['OBSERVER'] = 'galphy'
+        hdr['COMMENT'] = 'MPE/IR'
+        hdr['COMMENT'] = 'Report problems to jhchen@mpe.mpg.de'
+        primary_hdu = fits.PrimaryHDU()
         data_combined_hdu = fits.ImageHDU(data_combined, name="DATA", header=hdr)
         # error_combined_hdu = fits.ImageHDU(error_combined, name="ERROR", header=hdr)
         hdus = fits.HDUList([primary_hdu, data_combined_hdu])
-        hdus.writeto(savefile, overwrite=True)
+        hdus.writeto(savefile, overwrite=overwrite)
     else:
         return data_combined 
 
@@ -1264,7 +1606,7 @@ def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary'
                         ra_offset_header='HIERARCH ESO OCS CUMOFFS RA',
                         dec_offset_header='HIERARCH ESO OCS CUMOFFS DEC',
                         x_drift_colname='x_model', y_drift_colname='y_model',
-                        coord_system='sky'):
+                        coord_system='sky', debug=False, outfile=None):
     """compute the eris offset based on the telescope pointing
 
     This program will read the cumulative OCS offset from the header of each image,
@@ -1289,25 +1631,32 @@ def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary'
             arcfilenames.append(header['ARCFILE'])
             ra_offset = header[ra_offset_header]
             dec_offset = header[dec_offset_header]
-            ra_diff = abs(data_header['CD1_1']*3600.)
-            dec_diff = abs(data_header['CD2_2']*3600.)
+            ra_diff = data_header['CD1_1']*3600.
+            dec_diff = data_header['CD2_2']*3600.
             if i == 0: 
                 ra_offset_0 = ra_offset
                 dec_offset_0 = dec_offset
+                # <TODO>: add support for sky level offset
                 # convert the skycoords to pixels use the first wcs
-                if coord_system == 'sky':
-                    image_wcs = WCS(header)
-            array_offset[i][:] = (ra_offset-ra_offset_0)/ra_diff, (dec_offset-dec_offset_0)/dec_diff
+                # if coord_system == 'sky':
+                    # image_wcs = WCS(header)
+            array_offset[i][:] = (ra_offset_0-ra_offset)/ra_diff, (dec_offset_0-dec_offset)/dec_diff
     # consider additional offset
-    print(">>>>>>>>\nOCS offset:")
-    print(array_offset)
+    if debug:
+        print(">>>>>>>>\nOCS offset:")
+        print(array_offset)
     if additional_drifts is not None:
         if isinstance(additional_drifts, str):
             additional_drifts = read_eris_drifts(additional_drifts, arcfilenames)
-            print('++++++++\n additional difts:')
-            print(additional_drifts)
+            if debug:
+                print('++++++++\n additional difts:')
+                print(additional_drifts)
         for i in range(nimage):
             array_offset[i] += additional_drifts[i]
+    if outfile is not None:
+        with open(outfile, 'w+') as fp:
+            for i in array_offset:
+                fp.write(f"{i[0]:.2f} {i[1]:.2f} \n")
     return array_offset
 
 def search_eris_files(dirname, pattern=''):
@@ -1319,36 +1668,88 @@ def search_eris_files(dirname, pattern=''):
             matched_files.append(ff)
     return matched_files
 
-def combine_eris_ifu(image_list=None, dirname=None, pattern='', drifts_file=None, outfile=None, **kwargs):
-    if dirname is not None:
-        image_list = search_eris_files(dirname, pattern)
-    weighting = compute_weighting_eris(image_list)
-    drifts = compute_eris_offset(image_list, additional_drifts=drifts_file)
-    data_combine(image_list, weighting=weighting, pixel_shifts=drifts, savefile=outfile, **kwargs)
+def search_archive(datadir, target=None, band=None, spaxel=None, excludes=None, outfile=None, 
+                   tag='',):
+    target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
+    date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
+
+    dates = os.listdir(datadir)
+    image_list = []
+    image_exp_list = []
+    for date in dates:
+        if not date_matcher.match(date):
+            continue
+        for obs in os.listdir(os.path.join(datadir, date)):
+            try:
+                obs_match = target_matcher.search(obs).groupdict()
+            except:
+                obs_match = None
+                continue
+            if obs_match is not None:
+                obs_dir = os.path.join(datadir, date, obs)
+                ob_target, ob_id= obs_match['target'], obs_match['id']
+                ob_band, ob_spaxel = obs_match['band'], obs_match['spaxel']
+                ob_exptime = obs_match['exptime']
+
+            if ob_target != target:
+                continue
+            if (ob_band==band) and (ob_spaxel==spaxel):
+                # combine the exposures within each OB
+                exp_list = glob.glob(obs_dir+'/eris_ifu_jitter_dar_cube_[0-9]*.fits')
+                # check the arcfile name not in the excludes file list
+                for fi in exp_list:
+                    with fits.open(fi) as hdu:
+                        arcfile = hdu['PRIMARY'].header['ARCFILE']
+                        if excludes is not None:
+                            if arcfile in excludes:
+                                continue
+                        image_list.append(fi)
+                        image_exp_list.append(ob_exptime)
+
+    if outfile is not None:
+        with open(outfile, 'w+') as fp:
+            for img in image_list:
+                fp.write(f"{img} {tag}\n")
+    return image_list, image_exp_list
 
 #####################################
 ########### Quick Tools #############
 
-def get_daily_calib(date, outdir, band, spaxel, exptime, esorex='esorex', 
-                    overwrite=False):
+def get_daily_calib(date, band, spaxel, exptime, outdir='./', esorex='esorex', 
+                    calib_raw=None, overwrite=False, debug=False, dry_run=False):
     """A wrapper to get daily calibration file quickly
+
     """
     archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
     archive_dir = os.path.join(outdir, archive_name)
+    # check if existing calibration files are exists
     if os.path.isfile(archive_dir+'/eris_ifu_wave_map.fits'):
         if not overwrite:
             logging.info(f"> re-use existing calibPool in {archive_dir}")
             return archive_dir
+
+    # The date here is not the starting date. Normally, we can safely assume the
+    # starting date is date - 1day, if the search is started at 12pm.
+    # which is the default of eris_auto_quary
+    start_date = (datetime.date.fromisoformat(date) 
+                  - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     with tempfile.TemporaryDirectory() as tmpdir:
-        metafile = os.path.join(tmpdir, f'{date}_{band}_{spaxel}_{exptime}.csv')
-        request_calib(start_date=date, band=band, spaxel=spaxel, exptime=exptime, 
-                      outdir=tmpdir, metafile=metafile)
+        if calib_raw is None:
+            calib_daily_raw = tmpdir
+        else:
+            calib_daily_raw = os.path.join(calib_raw, date)
+        metafile = os.path.join(calib_daily_raw, f'{date}_{band}_{spaxel}_{exptime}.csv')
+        request_calib(start_date=start_date, band=band, spaxel=spaxel, exptime=exptime, 
+                      outdir=calib_daily_raw, metafile=metafile, debug=debug, 
+                      dry_run=dry_run)
         archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
-        generate_calib(metafile, raw_pool=tmpdir, calib_pool=outdir, archive=True, 
-                       archive_name=archive_name, esorex=esorex)
+        generate_calib(metafile, raw_pool=calib_daily_raw, calib_pool=outdir, 
+                       archive=True, archive_name=archive_name, esorex=esorex, 
+                       debug=debug, dry_run=dry_run)
     return archive_dir
 
 def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=False, 
+                      calib_pool='calibPool', calib_raw='calib_raw',
                       debug=False, dry_run=False):
     """A quick pipeline for archived eris data
 
@@ -1366,13 +1767,13 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
         if date_matcher.match(subfolder):
             date_list.append(subfolder)
 
-    # generate all the summary files
     for date in date_list:
 
         ## Step-1
+        # generate all the summary files
         logging.info(f"> generateing the metadata from {datadir}/{date}")
         # metadata = generate_metadata(os.path.join(datadir, date))
-        date_metafile = os.path.join(outdir,date, f'{date}_metadata.csv')
+        date_metafile = os.path.join(datadir, date, 'metadata.csv')
         if os.path.isfile(date_metafile):
             # TODO: check the modified date of the files and metafile
             logging.info(f"> finding existing metadata:{date_metafile}")
@@ -1392,9 +1793,10 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                                              metafile=date_metafile)
 
         ## Step-2
-        logging.info(f"::eris_jhchen_utils:: reducing the science data in {datadir}/{date}")
+        # read available data 
+        logging.info(f"> reducing the science data in {datadir}/{date}")
     
-        metadata = read_metadata(os.path.join(outdir, date, f'{date}_metadata.csv'))
+        metadata = read_metadata(date_metafile)
 
         # filter out the non-science data
         # this will be done within auto_gitter, but here we can avoid generating 
@@ -1407,7 +1809,7 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
 
         # identify all the science objects and their OBs
         targets = np.unique(metadata['Object'])
-        daily_calib_pool = os.path.join(outdir, date, 'calibPool')
+        daily_calib_pool = os.path.join(calib_pool, date)
         daily_datadir = os.path.join(datadir, date)
         for target in targets:
             target_metadata = metadata[metadata['Object']==target]
@@ -1419,18 +1821,7 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                 spaxel = first_meta['INS3.SPXW.NAME']
                 exptime = int(first_meta['DET.SEQ1.DIT'])
                 
-                ## Step-3
-                # generate the daily calibPool
-                logging.info(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
-                try:
-                    daily_id_calib_pool = get_daily_calib(date, daily_calib_pool, band, 
-                                                          spaxel, exptime, esorex=esorex, 
-                                                          overwrite=overwrite)
-                except:
-                    logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
-
-                ## Step-4
-                # run eris_ifu_gitter
+                # check whether the OB has been reduced
                 daily_ob_outdir = os.path.join(outdir, date, 
                                          f'{target}_{ob_id}_{band}_{spaxel}_{exptime}s')
                 if (os.path.isfile(os.path.join(daily_ob_outdir, 
@@ -1440,23 +1831,36 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
                     if not overwrite:
                         logging.info(f"> Done: {date}:{target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                         continue
+                
+                ## Step-3
+                # generate the daily calibPool
+                logging.info(f"> generating calibPool for {date} with {band}+{spaxel}+{exptime}s")
+                daily_id_calib_pool = get_daily_calib(date,  band, spaxel, exptime, esorex=esorex,
+                                                      outdir=daily_calib_pool, calib_raw=calib_raw,
+                                                      overwrite=overwrite)
+                # except:
+                    # logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+
+                ## Step-4
+                # run eris_ifu_gitter
                 logging.info(f"> working on {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
                 try:
                     auto_jitter(metadata=target_metadata, raw_pool=daily_datadir, 
                                 outdir=daily_ob_outdir, calib_pool=daily_id_calib_pool, 
                                 ob_id=ob_id, esorex=esorex, mode='jitter', 
+                                sky_tweak=1, product_depth=2,
                                 dry_run=dry_run)
                 except:
                     subprocess.run(['rm','-rf', daily_ob_outdir])
                     logging.warning(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
 
-def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=None,
-                  spaxel=None, drifts=None, outdir='./', esorex='esorex', 
+def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None, band=None,
+                  spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
                   savefile=None, suffix='combined', overwrite=False):
-    """A wrapper of data_combine
+    """A wrapper of combine_data
 
     This quick tool search the all the available and valid observations
-    and combine them with the data_combine.
+    and combine them with the combine_data.
 
     This tool take the outdir from `run_eris_pipeline` as input, it will search 
     all the available observations, and combined all the available data
@@ -1464,6 +1868,8 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
     target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
     date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
 
+    if not os.path.isdir(outdir):
+        subprocess.run(['mkdir','-p', outdir])
     dates = os.listdir(datadir)
     image_list = []
     image_exp_list = []
@@ -1510,9 +1916,9 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
 
                 if (not os.path.isfile(obs_combined_filename)) or overwrite:
                     obs_offset = compute_eris_offset(exp_list, additional_drifts=drifts)
-                    data_combine(image_list=exp_list, pixel_shifts=obs_offset, 
-                                 ignore_wcs=True, 
-                                 savefile=obs_combined_filename)
+                    combine_eris_cube(cube_list=exp_list, pixel_shifts=obs_offset, 
+                                      z=z, overwrite=overwrite,
+                                      savefile=obs_combined_filename)
 
                 image_list.append(obs_combined_filename)
                 image_exp_list.append(ob_total_exptime)
@@ -1537,9 +1943,81 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
     if savefile is None:
         savefile = os.path.join(outdir, 
                     f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}.fits')
-    data_combine(image_list=image_list, weighting=weighting, ignore_wcs=True,
-                 mask_ext=None, savefile=savefile)
+    combine_eris_cube(cube_list=image_list, weighting=weighting, z=z,
+                      sigma_clip=False, median_subtract=False, overwrite=overwrite,
+                      mask_ext=None, savefile=savefile)
 
+def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=None,
+                  spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
+                  savefile=None, suffix='combined', overwrite=False):
+    """A wrapper of combine_data
+
+    This quick tool search the all the available and valid observations
+    and combine them with the combine_data.
+
+    This tool take the outdir from `run_eris_pipeline` as input, it will search 
+    all the available observations, and combined all the available data
+    """
+    target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
+    date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
+
+    if not os.path.isdir(outdir):
+        subprocess.run(['mkdir','-p', outdir])
+    dates = os.listdir(datadir)
+    image_list = []
+    image_exp_list = []
+    image_arcname_list = []
+    for date in dates:
+        if not date_matcher.match(date):
+            continue
+        for obs in os.listdir(os.path.join(datadir, date)):
+            try:
+                obs_match = target_matcher.search(obs).groupdict()
+            except:
+                obs_match = None
+                continue
+            if obs_match is not None:
+                obs_dir = os.path.join(datadir, date, obs)
+                ob_target, ob_id= obs_match['target'], obs_match['id']
+                ob_band, ob_spaxel = obs_match['band'], obs_match['spaxel']
+                ob_exptime = obs_match['exptime']
+            if ob_target != target:
+                continue
+            if (ob_band==band) and (ob_spaxel==spaxel):
+                # combine the exposures within each OB
+                exp_list = glob.glob(obs_dir+'/eris_ifu_jitter_dar_cube_[0-9]*.fits')
+                # check the arcfile name not in the excludes file list
+                for fi in exp_list:
+                    with fits.open(fi) as hdu:
+                        arcfile = hdu['PRIMARY'].header['ARCFILE']
+                        if excludes is not None:
+                            if arcfile in excludes:
+                                continue
+                        image_list.append(fi)
+                        image_arcname_list.append(arcfile)
+                        image_exp_list.append(float(ob_exptime))
+
+    if len(image_list) < 1:
+        logging.warning(f"no valid data for {target} with {band},{spaxel}")
+        return
+    # <TODO>: how to align different OBs
+    total_exp = np.sum(image_exp_list)
+    logging.info("combining images from:")
+    with open(os.path.join(outdir,
+              f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}_list.txt'), 'w+') as fp:
+        n_combine = len(image_list)
+        for i in range(n_combine):
+            im = image_list[i]
+            im_exptime = image_exp_list[i]
+            fp.write(f"{im} {im_exptime}\n")
+    if savefile is None:
+        savefile = os.path.join(outdir, 
+                    f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}.fits')
+    obs_offset = compute_eris_offset(image_list, additional_drifts=drifts)
+    combine_eris_cube(cube_list=image_list, pixel_shifts=obs_offset, 
+                      z=z, overwrite=overwrite,
+                      savefile=savefile)
+    logging.info(f'Found the combined cube: {savefile}')
 
 def eris_pipeline(project, start_date, band, spaxel, prog_id, 
                   username=None, end_date=None, ob_id='',
@@ -1554,42 +2032,7 @@ def eris_pipeline(project, start_date, band, spaxel, prog_id,
                       will be created inside the output directory
         
     """
-    project_dir = os.path.join(outdir, project)
-    if os.path.isdir(os.path.isdir(project_dir)):
-        logging.warning("project folder existing! Reusing all the possible data!")
-    
-    # preparing the all the necessary folders
-    project_calib_raw = project_dir+'/calib_raw'
-    project_science_raw = project_dir+'/science_raw'
-    project_calib_pool = project_dir+'/calibPool'
-    project_calibrated = project_dir+'/calibrated'
-    working_dirs = [project_calib_raw, project_science_raw, project_calib_pool, 
-                    project_calibrated]
-    for wd in working_dirs:
-        if not os.path.isdir(wd):
-            subprocess.run(['mkdir','-p', wd])
-   
-    # download the calibration and science raw files
-    request_calib(start_date, band, spaxel, exptime, outdir=project_calib_raw,
-                       end_date=end_date, **kwargs)
-    request_science(prog_id=prog_id, username=username, 
-                    outdir=project_science_raw,
-                    start_date=start_date, end_date=end_date, 
-                    ob_id=ob_id, target=target,
-                    **kwargs)
-
-    # generate the calib files
-    generate_calib(metafile=os.path.join(raw_pool, 'metadata.csv'), 
-                   raw_pool=project_calib_raw, static_pool=static_pool, 
-                   calib_pool=project_calib_pool, drp_type_colname='DPR.TYPE',
-                   esorex=esorex)
-    
-    # run calibration
-    auto_jitter(metafile=os.path.join(raw_pool, 'metadata.csv'),
-                raw_pool=project_science_raw, calib_pool=project_calib_pool,
-                outdir=project_calibrated, static_pool=static_pool,
-                grating=grating, esorex=esorex)
-
+    pass
 
 #####################################
 ######## helper functions ###########
@@ -1631,12 +2074,13 @@ if __name__ == '__main__':
           * generate_metadata: generate metadata from downloaded data
           * generate_calib: generate the calibration files
           * auto_jitter: run jitter recipe automatically
-          * data_combine: combine the reduced data
+          * combine_data: combine the reduced data
 
           Quick tools:
 
           * get_daily_calib: quick way to get dalily calibration files
-          * run_eris_pipeline: quick to reduce science data with raw files
+          * run_eris_pipeline: quickly reduce science data with raw files
+          * quick_combine: quick combine reduced science data
 
           To get more details about each task:
           $ eris_jhchen_utils.py task_name --help
@@ -1701,6 +2145,22 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--archive', action='store_true', 
                                       help='Organise the date based on the observing date')
 
+
+    ################################################
+    # search_static_calib
+    subp_search_static_calib = subparsers.add_parser('search_static_calib',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            search for the static calibration files
+            -----------------------------------------------
+            example:
+
+                eris_jhchen_utils search_static_calib --esorex esorex
+                                        '''))
+
+    subp_search_static_calib.add_argument('--esorex', type=str, help='The callable esorex command')
+ 
+
     ################################################
     # generate_metadata
     subp_generate_metadata = subparsers.add_parser('generate_metadata',
@@ -1734,10 +2194,10 @@ if __name__ == '__main__':
             esorex=~/esorex/bin/esorex
             
             # generate all the calibration files
-            eris_jhchen_utils generate_calib --metadata raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --archive --archive_name 2023-04-09_Klow_100mas --esorex $esorex
+            eris_jhchen_utils generate_calib --metadata raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --archive --archive_name 2023-04-09_Klow_100mas
             
             # only the specified step, eg: dark + detlin
-            eris_jhchen_utils generate_calib --metadata raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --steps dark detlin --archive --archive_name 2023-04-09_Klow_100mas --esorex $esorex
+            eris_jhchen_utils generate_calib --metadata raw/2023-04-09.metadata.csv --raw_pool raw --calib_pool calibPool --steps dark detlin --archive --archive_name 2023-04-09_Klow_100mas
 
                                         '''))
     subp_generate_calib.add_argument('--metadata', type=str, help='The summary file')
@@ -1790,15 +2250,15 @@ if __name__ == '__main__':
 
     ################################################
     # combine data
-    subp_data_combine = subparsers.add_parser('data_combine',
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-            description=textwrap.dedent('''\
-            Combine reduced datacubes
-            -------------------------
-            Examples:
+    # subp_combine_data = subparsers.add_parser('combine_data',
+            # formatter_class=argparse.RawDescriptionHelpFormatter,
+            # description=textwrap.dedent('''\
+            # Combine reduced datacubes
+            # -------------------------
+            # Examples:
 
-              eris_jhchen_utils run_eris_pipeline -d science_raw -o science_output -c calibPool
-                                        '''))
+              # eris_jhchen_utils run_eris_pipeline -d science_raw -o science_output -c calibPool
+                                        # '''))
 
 
     ################################################
@@ -1810,13 +2270,16 @@ if __name__ == '__main__':
             ---------------------------------------
             example:
             
-              eris_jhchen_utils get_daily_calib -d 2023-04-09 -o calibPool -b K_low -s 100mas -e 600
+              eris_jhchen_utils get_daily_calib -d 2023-04-09 -b K_low -s 100mas -e 600 -o calibPool 
                                         '''))
     subp_get_daily_calib.add_argument('-d','--date', help='Observing date')
-    subp_get_daily_calib.add_argument('-o','--outdir', help='Calibration Pool')
     subp_get_daily_calib.add_argument('-b','--band', help='Observation band')
     subp_get_daily_calib.add_argument('-s','--spaxel', help='Pixel size')
     subp_get_daily_calib.add_argument('-e','--exptime', help='Exposure time')
+    subp_get_daily_calib.add_argument('--outdir', default='./', 
+                                      help='Output directory, default ./')
+    subp_get_daily_calib.add_argument('--calib_raw', default='calib_raw', 
+                                      help='Directory for raw calibration files, default calib_raw')
     subp_get_daily_calib.add_argument('--overwrite', action='store_true', 
                                       help='Overwrite the existing files')
 
@@ -1830,13 +2293,17 @@ if __name__ == '__main__':
             -------------------------------
             example:
 
-              eris_jhchen_utils run_eris_pipeline -d science_raw -o science_reduced -c calibPool
+              eris_jhchen_utils run_eris_pipeline -d science_raw -o science_reduced
                                         '''))
     subp_run_eris_pipeline.add_argument('-d', '--datadir', 
                                           help='The folder with downloaded science data')
-    subp_run_eris_pipeline.add_argument('-o', '--outdir', help='The output folder')
+    subp_run_eris_pipeline.add_argument('--outdir', help='The output folder')
+    subp_run_eris_pipeline.add_argument('--calib_pool',
+                                        help='The calibration pool')
+    subp_run_eris_pipeline.add_argument('--calib_raw', 
+                                        help='The raw pool of calibration files')
     subp_run_eris_pipeline.add_argument('--overwrite', action='store_true', 
-                                      help='Overwrite the existing files')
+                                        help='Overwrite the existing files')
 
     
     ################################################
@@ -1848,7 +2315,7 @@ if __name__ == '__main__':
             -------------------------------
             example:
 
-              eris_jhchen_utils quick_combine --datadir science_output --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1
+              eris_jhchen_utils quick_combine --datadir science_output --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1 --outdir combined
                                         '''))
     subp_quick_combine.add_argument('--datadir')
     subp_quick_combine.add_argument('--target')
@@ -1856,8 +2323,11 @@ if __name__ == '__main__':
     subp_quick_combine.add_argument('--excludes')
     subp_quick_combine.add_argument('--band')
     subp_quick_combine.add_argument('--spaxel')
+    subp_quick_combine.add_argument('--z', type=float)
     subp_quick_combine.add_argument('--drifts')
+    subp_quick_combine.add_argument('--outdir')
     subp_quick_combine.add_argument('--suffix', default='combined')
+    subp_quick_combine.add_argument('--overwrite', action='store_true', help='Overwrite exiting fits file')
 
     ################################################
     # match the task name and pick the corresponding function
@@ -1868,6 +2338,11 @@ if __name__ == '__main__':
     logging.basicConfig(filename=args.logfile, encoding='utf-8', level=logging.INFO,
                         format='%(asctime)s %(levelname)s:%(message)s')
     logging.info(f"Welcome to eris_jhchen_utils.py {__version__}")
+
+    if args.logfile is not None:
+        esorex = f"{args.esorex} --log-file={args.logfile} --log-level=info"
+    else:
+        esorex = args.esorex
 
     if args.debug:
         logging.debug(args)
@@ -1894,6 +2369,8 @@ if __name__ == '__main__':
                               outdir=args.outdir, metafile=args.metafile,
                               archive=args.archive,
                               dry_run=args.dry_run, debug=args.debug)
+    elif args.task == 'search_static_calib':
+        search_static_calib(args.esorex, debug=args.debug)
     elif args.task == 'generate_metadata':
         generate_metadata(data_dir=args.data_dir, extname=args.extname,
                           header_dir=args.header_dir, metafile=args.metafile,
@@ -1906,29 +2383,30 @@ if __name__ == '__main__':
                        detlin_sof=args.detlin_sof, distortion_sof=args.distortion_sof,
                        flat_sof=args.flat_sof, wavecal_sof=args.wavecal_sof, 
                        archive=args.archive, archive_name=args.archive_name,
-                       esorex=args.esorex, dry_run=args.dry_run, debug=args.debug)
+                       esorex=esorex, dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'auto_jitter':
         ret = auto_jitter(metadata=args.metadata, raw_pool=args.raw_pool, 
                           sof=args.sof,
                           outdir=args.outdir, calib_pool=args.calib_pool, 
                           mode=args.mode, objname=args.objname, band=args.band, 
                           spaxel=args.spaxel, exptime=args.exptime, 
-                          dpr_tech=args.dpr_tech, esorex=args.esorex, 
+                          dpr_tech=args.dpr_tech, esorex=esorex, 
                           prog_id=args.prog_id, ob_id=args.ob_id, 
                           dry_run=args.dry_run, debug=args.debug)
     # the quick tools
     elif args.task == 'get_daily_calib':
-        get_daily_calib(args.date, args.outdir, args.band, args.spaxel, args.exptime, 
-                        esorex=args.esorex, overwrite=args.overwrite, debug=args.debug,
-                        dry_run=args.dry_run)
+        get_daily_calib(args.date, args.band, args.spaxel, args.exptime, 
+                        outdir=args.outdir, esorex=esorex, overwrite=args.overwrite, 
+                        debug=args.debug, dry_run=args.dry_run)
     elif args.task == 'run_eris_pipeline':
-        run_eris_pipeline(args.datadir, args.outdir, esorex=args.esorex, 
-                          overwrite=args.overwrite, debug=args.debug,
-                          dry_run=args.dry_run)
+        run_eris_pipeline(args.datadir, outdir=args.outdir, calib_pool=args.calib_pool, 
+                          calib_raw=args.calib_raw, esorex=esorex, overwrite=args.overwrite, 
+                          debug=args.debug, dry_run=args.dry_run)
     elif args.task == 'quick_combine':
         quick_combine(datadir=args.datadir, target=args.target, offsets=args.offsets,
                       excludes=args.excludes, band=args.band, spaxel=args.spaxel,
-                      drifts=args.drifts, suffix=args.suffix)
+                      z=args.z, overwrite=args.overwrite,
+                      outdir=args.outdir, drifts=args.drifts, suffix=args.suffix)
     else:
         pass
     if args.debug:
