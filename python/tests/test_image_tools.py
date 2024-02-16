@@ -11,7 +11,7 @@ from scipy.signal import convolve
 
 from astropy.wcs import WCS
 
-from python_tools.image_tools import Image, make_gaussian_image, source_finder, measure_flux, aperture_correction
+from image_utils import Image, make_gaussian_image, source_finder, measure_flux, aperture_correction
 
 def test_create_image():
     # generate the image data
