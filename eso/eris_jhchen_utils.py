@@ -13,8 +13,9 @@ History:
     - 2024-01-11: add quick tools, v0.3
     - 2024-01-30: add customized combining task, v0.4
     - 2024-02-26: support reducing PSF and standard stars, v0.5
+    - 2024-04-07: add data quicklook tools, v0.6
 """
-__version__ = '0.5.4'
+__version__ = '0.6.2'
 
 # import the standard libraries
 import os 
@@ -34,17 +35,24 @@ import argparse
 # external but required libraries
 import numpy as np
 import scipy
-from scipy import ndimage
+from scipy import ndimage, optimize
 import astropy.table as table
 import astropy.units as units
+import astropy.units as u
 from astropy.io import fits
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy import stats as astro_stats
+from astropy.modeling import models
+from astropy.convolution import convolve, Gaussian2DKernel
 from astroquery.eso import Eso
 from astroquery.eso.core import NoResultsWarning
+from photutils.aperture import EllipticalAperture, RectangularAperture
 import requests 
+# for plot
+from matplotlib import pyplot as plt
+import matplotlib.gridspec as gridspec
 
 # filtering the warnings
 from astropy.wcs import FITSFixedWarning
@@ -178,28 +186,50 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
     if end_date is not None:
         edatetime = datetime.datetime.strptime(f'{end_date} {end_time:0>2d}', '%Y-%m-%d %H')
         sdatetime = (edatetime - sdatetime)/2 + sdatetime
-    delta_time = datetime.timedelta(days=1)
+    delta_oneday = datetime.timedelta(days=1)
     matched = 0
     for i in range(0, max_days):
-        if matched == 0:
-            t_start = (sdatetime - 0.5*datetime.timedelta(days=i))
-            t_end = (sdatetime + 0.5*datetime.timedelta(days=i))
-            column_filters['stime'] = t_start.strftime('%Y-%m-%d')
-            column_filters['etime'] = t_end.strftime('%Y-%m-%d')
-            column_filters['starttime'] = t_start.strftime('%H')
-            column_filters['endtime'] = t_end.strftime('%H')
-            warnings.simplefilter('ignore', category=NoResultsWarning)
-            tab_eris = eso.query_instrument('eris', column_filters=column_filters)
-            if tab_eris is not None:
-                matched = 1
-                # for some addition validity check
-                dptype = column_filters['dp_type']
-                if 'FLAT' in dptype:
-                    # make sure both dark and lamp are present
-                    n_dark = np.sum(tab_eris['DPR.TYPE'] == 'FLAT,DARK')
-                    n_lamp = np.sum(tab_eris['DPR.TYPE'] == 'FLAT,LAMP')
-                    if n_dark != n_lamp:
-                        matched = 0
+        # t_start = (sdatetime - 0.5*datetime.timedelta(days=i))
+        # t_end = (sdatetime + 0.5*datetime.timedelta(days=i))
+        for j in [-1, 1]:
+            if matched == 0:
+                if j == -1:
+                    t_start = (sdatetime - datetime.timedelta(days=i))
+                    t_end = sdatetime + delta_oneday
+                elif j == 1:
+                    t_start = sdatetime
+                    t_end = (sdatetime + datetime.timedelta(days=i))
+                column_filters['stime'] = t_start.strftime('%Y-%m-%d')
+                column_filters['etime'] = t_end.strftime('%Y-%m-%d')
+                column_filters['starttime'] = t_start.strftime('%H')
+                column_filters['endtime'] = t_end.strftime('%H')
+                warnings.simplefilter('ignore', category=NoResultsWarning)
+                tab_eris = eso.query_instrument('eris', column_filters=column_filters)
+                if tab_eris is not None:
+                    matched = 1
+                    # for some addition validity check
+                    dptype = column_filters['dp_type']
+                    if 'FLAT' in dptype:
+                        # make sure both dark and lamp are present
+                        n_flat_dark = np.sum(tab_eris['DPR.TYPE'] == 'FLAT,DARK')
+                        n_flat_lamp = np.sum(tab_eris['DPR.TYPE'] == 'FLAT,LAMP')
+                        if (n_flat_dark<1) or (n_flat_dark!=n_flat_lamp):
+                            matched = 0
+                    if 'NS' in dptype:
+                        n_ds_fiber = np.sum(tab_eris['DPR.TYPE'] == 'NS,SLIT')
+                        n_ds_fiber_dark = np.sum(tab_eris['DPR.TYPE'] == 'NS,FLAT,DARK')
+                        n_ds_fiber_lamp = np.sum(tab_eris['DPR.TYPE'] == 'NS,FLAT,LAMP')
+                        n_ds_wave_dark = np.sum(tab_eris['DPR.TYPE'] == 'NS,WAVE,DARK')
+                        n_ds_wave_lamp = np.sum(tab_eris['DPR.TYPE'] == 'NS,WAVE,LAMP')
+                        # print("NS", n_ds_fiber, n_ds_fiber_dark, n_ds_fiber_lamp, n_ds_wave_dark, n_ds_wave_lamp)
+                        if (n_ds_fiber!=1) or (n_ds_fiber_lamp!=1) or (n_ds_fiber_lamp!=n_ds_fiber_dark) or (n_ds_wave_lamp<1) or (n_ds_wave_dark<1):
+                            matched = 0
+                    if 'WAVE' in dptype:
+                        n_wave_dark = np.sum(tab_eris['DPR.TYPE'] == 'WAVE,DARK')
+                        n_wave_lamp = np.sum(tab_eris['DPR.TYPE'] == 'WAVE,LAMP')
+                        # print("WAVE", n_wave_dark, n_wave_lamp)
+                        if (n_wave_dark<1) or (n_wave_lamp<1) or ((n_wave_dark+n_wave_lamp)>6):
+                            matched = 0
 
     if matched == 0:
         # print("Cannot find proper calib files, please check your input")
@@ -293,6 +323,7 @@ def request_science(prog_id='', metafile='metadata.csv',
                     username=None, password=None, auth=None, 
                     outdir=None, target='', ob_id='', exptime='',
                     start_date='2022-04-01', end_date='', debug=False, 
+                    dp_type='',
                     dry_run=False, archive=False, uncompress=False,
                     **kwargs):
     """download the science data 
@@ -313,6 +344,8 @@ def request_science(prog_id='', metafile='metadata.csv',
         ob_id (str, int): the id of the observation
         start_date (str): starting data, in the format of '2023-04-08'
         end_date (str): end date, same format as start_date
+        dp_type (str): the type of the calib, set it to "%PSF-CALIBRATOR" 
+                       along with the project id to download the PSF star only
         **kwargs: other keyword filters
     """
     root_calib_url = 'https://dataportal.eso.org/dataportal_new/file/'
@@ -334,6 +367,7 @@ def request_science(prog_id='', metafile='metadata.csv',
                     'stime': start_date,
                     'exptime': exptime,
                     'etime': end_date,
+                    'dp_type': dp_type, 
                     'obs_targ_name': target,}
     if debug:
         for key, item in column_filters.items():
@@ -474,6 +508,7 @@ def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv',
     else:
         return meta_tab
 
+
 #####################################
 ######### DATA Calibration ##########
 
@@ -497,6 +532,8 @@ def search_static_calib(esorex=None, debug=False):
         logging.info(f'Current directory is {cwd}')
     if 'staticPool' in os.listdir(cwd):
         static_pool = os.path.join(cwd, 'staticPool')
+    if 'STATIC_CALIB' in os.environ:
+        static_pool = os.environ['STATIC_CALIB']
     if static_pool is None:
         if ' ' in esorex:
             esorex = esorex.split(' ')[0]
@@ -575,6 +612,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if dark_sof is None:
             # generate the sof for dark calibration
             dark_sof = os.path.join(calib_pool, 'dark.sof')
+        if not os.path.isfile(dark_sof):
             with open(dark_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} DARK\n")
@@ -590,6 +628,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if detlin_sof is None:
             # generate the sof for detector's linarity
             detlin_sof = os.path.join(calib_pool, 'detlin.sof')
+        if not os.path.isfile(detlin_sof):
             with open(detlin_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,DARK,DETCHAR']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} LINEARITY_LAMP\n")
@@ -608,6 +647,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if distortion_sof is None:
             # generate the sof for distortion
             distortion_sof = os.path.join(calib_pool, 'distortion.sof')
+        if not os.path.isfile(distortion_sof):
             with open(distortion_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'NS,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} DARK_NS\n")
@@ -637,6 +677,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if flat_sof is None:
             # generate the sof for flat
             flat_sof = os.path.join(calib_pool, 'flat.sof')
+        if not os.path.isfile(flat_sof):
             with open(flat_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} FLAT_LAMP\n")
@@ -658,6 +699,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if wavecal_sof is None:
             # generate the sof for wavecal
             wavecal_sof = os.path.join(calib_pool, 'wavecal.sof')
+        if not os.path.isfile(wavecal_sof):
             with open(wavecal_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} WAVE_LAMP\n")
@@ -682,6 +724,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if stdstar_sof is None:
             # generate the sof for wavecal
             stdstar_sof = os.path.join(calib_pool, 'stdstar.sof')
+        if not os.path.isfile(stdstar_sof):
             with open(stdstar_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} STD\n")
@@ -862,57 +905,177 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
                             '--product_depth={}'.format(product_depth), 
                             auto_jitter_sof])
 
+
+#####################################
+######### Flux calibration ##########
+
+def gaussian_2d(params, x=None, y=None):
+    """a simple 2D gaussian function
+    
+    Args:
+        params: all the free parameters
+                [amplitude, x_center, y_center, x_sigma, y_sigma, beta]
+        x: x grid
+        y: y grid
+    """
+    amp, x0, y0, xsigma, ysigma, beta = params
+    return amp*np.exp(-0.5*(x-x0)**2/xsigma**2 - beta*(x-x0)*(y-y0)/(xsigma*ysigma)- 0.5*(y-y0)**2/ysigma**2)
+
+def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
+             extract_spectrum=True, star_type=None, T_star=None,
+             outfile=None):
+    """two dimentional Gaussian fit
+
+    """
+    # read the fits file
+    with fits.open(starfits) as hdu:
+        header = hdu[0].header
+        cube_header = hdu[1].header
+        cube = hdu[1].data
+        wavelength = ((((np.arange(cube_header['NAXIS3'])+1.0) - cube_header['CRPIX3']) * cube_header['CD3_3'] 
+                       + cube_header['CRVAL3']) * u.Unit(cube_header['CUNIT3'])).to(u.um)
+        exptime = header['EXPTIME']
+        arcfile = header['ARCFILE']
+
+    nchan, yshape, xshape = cube.shape
+    rms = 1
+
+    # collapse the cube to get the image of the star
+    # this is used to find the star and get its shape (by 2d-Gaussian fitting)
+    image = np.ma.median(np.ma.masked_invalid(cube), axis=0)
+
+    # star the gaussian fitting for the 2D-image
+    # generate the grid
+    sigma2FWHM = np.sqrt(8*np.log(2))
+    ygrid, xgrid = np.mgrid[0:yshape,0:xshape]
+    # ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
+                               # (np.arange(0, xshape)+0.5)*pixel_size)
+    # automatically estimate the initial parameters
+    if x0 is None:
+        # amp = np.percentile(image, 0.8)
+        amp = np.max(image)
+        yidx, xidx = np.where(image>0.9*amp)
+        x0, y0 = np.median(xidx), np.median(yidx)
+        xsigma, ysigma = pixel_size, pixel_size 
+        p_init = [amp, x0, y0, xsigma, ysigma, 0]
+
+    def _cost(params, xgrid, ygrid):
+        return np.sum((image - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='BFGS')
+
+    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+    # print(xfwhm_fit, yfwhm_fit)
+   
+    if extract_spectrum:
+        # get all the best fit value
+        aperture_size = np.mean([xfwhm_fit, yfwhm_fit])
+        aperture_correction = 1.0667
+        aperture = EllipticalAperture([x0_fit, y0_fit], aperture_size, aperture_size, theta=0)
+        aper_mask = aperture.to_mask().to_image([xshape, yshape]).astype(bool)
+        aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
+        data_selected = cube[aper_mask_3D]
+        spectrum = aperture_correction*np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
+        spectrum = spectrum / exptime # units in adu/second
+        output = spectrum
+        output_unit = 'adu/s'
+
+    if T_star is not None:
+        blackbody_star = models.BlackBody(temperature=T_star*u.K, 
+                                          scale=1.0*u.erg/u.s/u.cm**2/u.um/u.sr)
+
+        transmission = spectrum/blackbody_star(wavelength)
+        dwavelength = wavelength[1] - wavelength[0]
+        # TODO: mask the possible spectral obsorption lines
+        norm = np.nansum(transmission * dwavelength) / (dwavelength * np.nansum(np.ones_like(transmission)))
+        transmission_norm = transmission/norm
+        output = transmission_norm.value
+        output_unit = transmission_norm.unit.to_string()
+
+    if plot:
+        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 3)
+        ax1 = fig.add_subplot(gs[0,0])
+        ax1.imshow(image, origin='lower')
+        ax1.plot([x0], [y0], 'x', color='red')
+        ax2 = fig.add_subplot(gs[0,1])
+        ax2.imshow(fit_image, origin='lower')
+        ax3 = fig.add_subplot(gs[0,2])
+        ax3.imshow(image - fit_image, origin='lower')
+        ax4 = fig.add_subplot(gs[1,:])
+        ax4.plot(wavelength, output)
+        if T_star is not None:
+            pass
+            #ax4.plot(wavelength, blackbody_star(wavelength))
+    if outfile is not None:
+        np.savetxt(outfile, np.vstack([wavelength.value, output]).T, delimiter=',',
+                   header=wavelength.unit.to_string()+','+output_unit)
+    else:
+        return wavelength.value, output
+
+def apply_filter(spectrum, filter_profile, filter_name=None):
+    wave_spec, data = spectrum
+    wave_filter, transmission = filter_profile
+    dwave = np.min([wave_spec[1]-wave_spec[0], wave_filter[1]-wave_filter[0]])
+    # check if the spectrum covered the whole filter
+    max_wave_filter = np.max(wave_filter)
+    min_wave_filter = np.min(wave_filter)
+    if (np.min(wave_spec) > min_wave_filter) or (np.max(wave_spec) < max_wave_filter):
+        print(np.min(wave_spec), np.max(wave_spec))
+        print(min_wave_filter, max_wave_filter)
+        # raise ValueError("The spectrum cannot be covered by the given filter!")
+        print('Warning: the spectrum cannot be covered by the given filter!')
+    wave_ref = np.arange(min_wave_filter, max_wave_filter, dwave)
+    spec_resampled = np.interp(wave_ref, wave_spec, data)
+    filter_resampled = np.interp(wave_ref, wave_filter, transmission)
+    return np.nansum(spec_resampled*filter_resampled*dwave)/np.sum(filter_resampled*dwave)
+
+def magnitude2flux_2mass(magnitude, band):
+    # transform Ks magnitude in total flux, integrated over the filter band pass
+    # https://iopscience.iop.org/article/10.1086/376474/pdf
+    if band == 'Ks':
+        flux0 = 4.283e-7 # erg/s/cm2/micron #
+    elif band == 'J':
+        flux0 = 3.129e-7
+    elif band == 'H':
+        flux0 = 2.843e-7
+    f = magnitude / (-2.5) + np.log10(flux0)
+    return 10**f * u.erg / (u.cm * u.cm * u.s * u.um)
+
+def get_zero_point(spec, filter_profile, magnitude, band, transmission):
+    """get the zero point of from the STD star
+    """
+    wave_star, spec_star = spec
+    wave_filter, transmission_filter = filter_profile
+    star_raw = spec_star / transmission[1] # adu/s
+    flux = magnitude2flux_2mass(magnitude, band) 
+    zp = flux / apply_filter([wave_star, spec_star], filter_profile)
+    return zp
+
+def correct_cube(fitscube, transmission=None, zp=None, suffix='.corrected'):
+    """correct the flux the cube"""
+    with fits.open(fitscube) as hdu:
+        header = hdu[0].header
+        cube = hdu[1].data
+        cube_header = hdu[1].header
+
+    correction = 1.0
+    if transmission is not None:
+        transmission_corr = np.loadtxt(transmission, delimiter=',')
+        correction = correction/transmission_corr[:,1]
+    if zp is not None:
+        cube_header['BUNIT'] = 'erg/s/cm^2/um'
+        correction = correction * zp
+    primary_hdu = fits.PrimaryHDU(header=header)
+    modified_hdu = fits.ImageHDU(cube*correction[:,np.newaxis, np.newaxis], name="DATA", header=cube_header)
+    # error_combined_hdu = fits.ImageHDU(error_combined, name="ERROR", header=hdr)
+    hdus = fits.HDUList([primary_hdu, modified_hdu])
+    hdus.writeto(fitscube[:-5]+f'{suffix}.fits', overwrite=True)
+
+
 #####################################
 ######### DATA Combination ##########
-
-def fix_micron_unit_header(header):
-    """this small program fix the unrecongnized unit "micron" by astropy.wcs
-
-    *only tested with the 3D datacube from VLT/ERIS
-    """
-    if 'CUNIT3' in header:
-        if header['CUNIT3'] == 'MICRON':
-            header['CUNIT3'] = 'um'
-    return header
-
-def get_wavelength(image, output_unit='um'):
-    if isinstance(image, WCS):
-        header = image.to_header()
-        header['NAXIS3'],header['NAXIS2'],header['NAXIS1'] = image.array_shape
-    else:
-        #if isinstance(image, fits.Header):
-        header = image
-    if 'PC3_3' in header.keys():
-        cdelt3 = header['PC3_3']
-    elif 'CD3_3' in header.keys():
-        cdelt3 = header['CD3_3']
-    else: 
-        cdelt3 = header['CDELT3']
-    # because wcs.slice with change the reference channel, the generated ndarray should 
-    # start with 1 
-    chandata = (header['CRVAL3'] + (np.arange(1, header['NAXIS3']+1)-header['CRPIX3']) * cdelt3)
-    if 'CUNIT3' in header.keys():
-        chandata = chandata*units.Unit(header['CUNIT3'])
-        wavelength = chandata.to(units.Unit(output_unit)).value
-    else:
-        wavelength = chandata
-    return wavelength
-
-def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
-    """compute the weighting of each image
-
-    1. computing the weighting based on the integration time
-    2. based on the RMS level
-    """
-    if mode == 'exptime':
-        total_time = 0
-        time_list = []
-        for img in image_list:
-            with fits.open(img) as hdu:
-                header = hdu[header_ext].header
-                total_time += header['EXPTIME']
-                time_list.append(header['EXPTIME'])
-        return np.array(time_list)/total_time
 
 def fill_mask(data, mask=None, step=1, debug=False):
     """Using iterative median to filled the masked region
@@ -1042,7 +1205,7 @@ def mask_spectral_lines(wavelength, redshift=0, line_width=1000,):
     return wave_masked
 
 def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_subtract=True,
-               cont_subtract=False, median_filter=True, median_filter_size=(5,3,3),
+               cont_subtract=False, median_filter=False, median_filter_size=(5,3,3),
                channel_chunk=None, sigma=5.0):
     """clean the datacubes
 
@@ -1064,6 +1227,10 @@ def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_su
 
     # prepare the masked data
     datacube_masked = np.ma.array(datacube, mask=mask)
+
+    if z is not None:
+        # mask the possible spectral line
+
 
     if sigma_clip:
         # it is only safe to apply the sigma_clip if the signal is weak,
@@ -1118,6 +1285,22 @@ def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_su
         datacube_masked = datacube_masked - cont_datacube
         
     return datacube_masked
+
+def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
+    """compute the weighting of each image
+
+    1. computing the weighting based on the integration time
+    2. based on the RMS level
+    """
+    if mode == 'exptime':
+        total_time = 0
+        time_list = []
+        for img in image_list:
+            with fits.open(img) as hdu:
+                header = hdu[header_ext].header
+                total_time += header['EXPTIME']
+                time_list.append(header['EXPTIME'])
+        return np.array(time_list)/total_time
 
 def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
                       sigma_clip=True, sigma=5.0, median_subtract=True,
@@ -1330,17 +1513,20 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
     else:
         return data_combined 
 
-def read_eris_drifts(datfile, arcfilenames):
+def read_eris_drifts(datfile, arcfilenames, xcolname='Xref', ycolname='Yref'):
     """read eris drifting table
     """
     pixel_center = [32., 32.] # the expected center
     dat = table.Table.read(datfile, format='csv')
     drifts = np.zeros((len(arcfilenames), 2)) # drift in [x, y]
+    if xcolname not in dat.colnames:
+        print(f"Failed read the drift from the colname {xcolname} in {datfile}")
+        return drifts
     for i in range(len(arcfilenames)):
         arcfile = arcfilenames[i]
         dat_img = dat[dat['ARCFILE'] == arcfile]
         if len(dat_img) == 1:
-            drifts[i] = [dat_img['x_model'][0]-pixel_center[0], dat_img['y_model'][0]-pixel_center[1]]
+            drifts[i] = [dat_img[xcolname][0]-pixel_center[0], dat_img[ycolname][0]-pixel_center[1]]
         else:
             print("Drifts not found!")
             drifts[i] = [0.,0.]
@@ -1459,174 +1645,252 @@ def search_archive(datadir, target=None, band=None, spaxel=None, excludes=None, 
 
 
 #####################################
-######### DATA Analysis ##########
-from scipy import optimize
-from matplotlib import pyplot as plt
-import matplotlib.gridspec as gridspec
-from photutils.aperture import EllipticalAperture
-import astropy.units as u
-from astropy.modeling import models
+######### DATA Quicklook ############
 
-def gaussian_2d(params, x=None, y=None):
-    """a simple 2D gaussian function
-    
+def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
+               vmin=-400, vmax=400,
+               length=1, width=1, theta=0, debug=False, plot=True, pixel_size=1):
+    """generate the PV diagram of the cube
+
+    Args:
+        datacube: the 3D data [velocity, y, x]
+        pixel_center: the center of aperture
+        lengthth: the length of the aperture, in x axis when theta=0
+        width: the width of the aperture, in y axis when theta=0
+        theta: the angle in degree, from positive x to positive y axis
+    """
+    # nchan, ny, nx = datacube.shape
+    if isinstance(datacube, str):
+        if z is not None:
+            velocity, datacube, header = read_eris_cube(datacube, z=z)
+        else:
+            wavelength, datacube, header = read_eris_cube(datacube)
+    # extract data within the velocity range 
+    if velocity is not None:
+        vel_selection = (velocity > vmin) & (velocity < vmax)
+        datacube = datacube[vel_selection]
+        velocity = velocity[vel_selection]
+    cubeshape = datacube.shape
+    aper = RectangularAperture(pixel_center, length, width, theta=theta/180*np.pi)
+    s1,s2 = aper.to_mask().get_overlap_slices(cubeshape[1:])
+    # cutout the image
+    sliced_cube = datacube[:,s1[0],s1[1]]
+    # rotate the cube to make the aperture with theta=0
+    sliced_cube_rotated = ndimage.rotate(sliced_cube, aper.theta/np.pi*180, axes=[1,2], reshape=True, prefilter=False, order=0, cval=np.nan)
+    # sum up the central plain (x axis) within the height
+    nchan, nynew, nxnew = sliced_cube_rotated.shape
+    # define the new aperture on the rotated sub-cube
+    aper_rotated = RectangularAperture([0.5*(nxnew-1), 0.5*(nynew-1)], length, width, theta=0)
+
+    hi_start = np.round(nynew/2.-width/2.).astype(int)
+    width_slice = np.s_[hi_start:hi_start+width]
+    sliced_pvmap = np.nansum(sliced_cube_rotated[:,width_slice,:], axis=1)
+    if debug: # debug plot 
+        fig = plt.figure(figsize=(12,5))
+        ax1 = plt.subplot2grid((2, 4), (0, 0), rowspan=2, colspan=2)
+        ax2 = plt.subplot2grid((2, 4), (0, 2), colspan=2)
+        ax3 = plt.subplot2grid((2, 4), (1, 2), colspan=2)
+        ax1.imshow(np.sum(datacube,axis=0),origin='lower')
+        aper.plot(ax=ax1)
+        ax2.imshow(np.sum(sliced_cube_rotated, axis=0), origin='lower')
+        aper_rotated.plot(ax=ax2)
+        ax3.imshow(sliced_pvmap.T, origin='lower')
+    if plot:
+        fig = plt.figure(figsize=(12,5))
+        # ax = fig.subplots(1,2)
+        ax1 = plt.subplot2grid((2, 4), (0, 0), rowspan=2, colspan=2)
+        ax2 = plt.subplot2grid((2, 4), (0, 2), colspan=2)
+        ax3 = plt.subplot2grid((2, 4), (1, 2), colspan=2)
+        vmin, vmax = -1*np.nanstd(sliced_cube), 4*np.nanmax(sliced_cube)
+        ax1.imshow(np.sum(datacube, axis=0), origin='lower', vmin=vmin, vmax=vmax, cmap='magma')
+        aper.plot(ax=ax1, color='white', linewidth=4)
+        # show the pv-diagram
+        # ax[1].imshow(sliced_pvmap, origin='lower', cmap='magma', extent=extent)
+        positions = np.linspace(-0.5*length, 0.5*length, nxnew)
+        if velocity is None:
+            velocity = np.linspace(-1,1,nchan)
+        vmesh, pmesh = np.meshgrid(velocity,positions)
+        ax2.pcolormesh(vmesh, pmesh, sliced_pvmap.T, cmap='magma')
+        gauss_kernel = Gaussian2DKernel(1)
+        smoothed_pvmap = convolve(sliced_pvmap, gauss_kernel)
+        ax3.pcolormesh(vmesh, pmesh, smoothed_pvmap.T, cmap='magma')
+        ax2.set_ylabel('Position')
+        ax3.set_ylabel('Position')
+        ax3.set_xlabel('Velocity')
+    return 
+
+def gaussian_1d(params, velocity=None):
+    """a simple 1D gaussian function
     Args:
         params: all the free parameters
-                [amplitude, x_center, y_center, x_sigma, y_sigma, beta]
-        x: x grid
-        y: y grid
+                [amplitude, center, sigma, cont]
+        v: velocity
     """
-    amp, x0, y0, xsigma, ysigma, beta = params
-    return amp*np.exp(-0.5*(x-x0)**2/xsigma**2 - beta*(x-x0)*(y-y0)/(xsigma*ysigma)- 0.5*(y-y0)**2/ysigma**2)
-
-def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
-             extract_spectrum=True, star_type=None, T_star=None,
-             outfile=None):
-    """two dimentional Gaussian fit
-
-    """
-    # read the fits file
-    with fits.open(starfits) as hdu:
-        header = hdu[0].header
-        cube_header = hdu[1].header
-        cube = hdu[1].data
-        wavelength = ((((np.arange(cube_header['NAXIS3'])+1.0) - cube_header['CRPIX3']) * cube_header['CD3_3'] 
-                       + cube_header['CRVAL3']) * u.Unit(cube_header['CUNIT3'])).to(u.um)
-        exptime = header['EXPTIME']
-        arcfile = header['ARCFILE']
-
-    nchan, yshape, xshape = cube.shape
-    rms = 1
-
-    # collapse the cube to get the image of the star
-    # this is used to find the star and get its shape (by 2d-Gaussian fitting)
-    image = np.ma.median(np.ma.masked_invalid(cube), axis=0)
-
-    # star the gaussian fitting for the 2D-image
-    # generate the grid
-    sigma2FWHM = np.sqrt(8*np.log(2))
-    ygrid, xgrid = np.mgrid[0:yshape,0:xshape]
-    # ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
-                               # (np.arange(0, xshape)+0.5)*pixel_size)
-    # automatically estimate the initial parameters
-    if x0 is None:
-        # amp = np.percentile(image, 0.8)
-        amp = np.max(image)
-        yidx, xidx = np.where(image>0.9*amp)
-        x0, y0 = np.median(xidx), np.median(yidx)
-        xsigma, ysigma = pixel_size, pixel_size 
-        p_init = [amp, x0, y0, xsigma, ysigma, 0]
-
-    def _cost(params, xgrid, ygrid):
-        return np.sum((image - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='BFGS')
-
-    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
-    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
-    # print(xfwhm_fit, yfwhm_fit)
-   
-    if extract_spectrum:
-        # get all the best fit value
-        aperture_size = np.mean([xfwhm_fit, yfwhm_fit])
-        aperture_correction = 1.0667
-        aperture = EllipticalAperture([x0_fit, y0_fit], aperture_size, aperture_size, theta=0)
-        aper_mask = aperture.to_mask().to_image([xshape, yshape]).astype(bool)
-        aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
-        data_selected = cube[aper_mask_3D]
-        spectrum = aperture_correction*np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
-        spectrum = spectrum / exptime # units in adu/second
-        output = spectrum
-        output_unit = 'adu/s'
-
-    if T_star is not None:
-        blackbody_star = models.BlackBody(temperature=T_star*u.K, 
-                                          scale=1.0*u.erg/u.s/u.cm**2/u.um/u.sr)
-
-        transmission = spectrum/blackbody_star(wavelength)
-        dwavelength = wavelength[1] - wavelength[0]
-        # TODO: mask the possible spectral obsorption lines
-        norm = np.nansum(transmission * dwavelength) / (dwavelength * np.nansum(np.ones_like(transmission)))
-        transmission_norm = transmission/norm
-        output = transmission_norm.value
-        output_unit = transmission_norm.unit.to_string()
-
-    if plot:
-        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
-        fig = plt.figure(figsize=(12, 6))
-        gs = gridspec.GridSpec(2, 3)
-        ax1 = fig.add_subplot(gs[0,0])
-        ax1.imshow(image, origin='lower')
-        ax1.plot([x0], [y0], 'x', color='red')
-        ax2 = fig.add_subplot(gs[0,1])
-        ax2.imshow(fit_image, origin='lower')
-        ax3 = fig.add_subplot(gs[0,2])
-        ax3.imshow(image - fit_image, origin='lower')
-        ax4 = fig.add_subplot(gs[1,:])
-        ax4.plot(wavelength, output)
-        if T_star is not None:
-            pass
-            #ax4.plot(wavelength, blackbody_star(wavelength))
-    if outfile is not None:
-        np.savetxt(outfile, np.vstack([wavelength.value, output]).T, delimiter=',',
-                   header=wavelength.unit.to_string()+','+output_unit)
+    n_param = len(params)
+    amp, v0, sigma = params[:3]
+    if n_param == 4:
+        cont = params[3]
     else:
-        return wavelength.value, output
+        cont = 0
+    # return amp / ((2*np.pi)**0.5 * sigma) * np.exp(-0.5*(velocity-v0)**2/sigma**2) + cont
+    return amp * np.exp(-0.5*(velocity-v0)**2/sigma**2) + cont
 
-def apply_filter(spectrum, filter_profile, filter_name=None):
-    wave_spec, data = spectrum
-    wave_filter, transmission = filter_profile
-    dwave = np.min([wave_spec[1]-wave_spec[0], wave_filter[1]-wave_filter[0]])
-    # check if the spectrum covered the whole filter
-    max_wave_filter = np.max(wave_filter)
-    min_wave_filter = np.min(wave_filter)
-    if (np.min(wave_spec) > min_wave_filter) or (np.max(wave_spec) < max_wave_filter):
-        print(np.min(wave_spec), np.max(wave_spec))
-        print(min_wave_filter, max_wave_filter)
-        # raise ValueError("The spectrum cannot be covered by the given filter!")
-        print('Warning: the spectrum cannot be covered by the given filter!')
-    wave_ref = np.arange(min_wave_filter, max_wave_filter, dwave)
-    spec_resampled = np.interp(wave_ref, wave_spec, data)
-    filter_resampled = np.interp(wave_ref, wave_filter, transmission)
-    return np.nansum(spec_resampled*filter_resampled*dwave)/np.sum(filter_resampled*dwave)
+def calc_gaussian1d_chi2(params, velocity=None, spec=None, std=None):
+    fit = gaussian_1d(params, velocity=velocity)
+    chi2 = np.sum((spec-fit)**2/std**2)
+    return chi2
 
-def magnitude2flux_2mass(magnitude, band):
-    # transform Ks magnitude in total flux, integrated over the filter band pass
-    # https://iopscience.iop.org/article/10.1086/376474/pdf
-    if band == 'Ks':
-        flux0 = 4.283e-7 # erg/s/cm2/micron #
-    elif band == 'J':
-        flux0 = 3.129e-7
-    elif band == 'H':
-        flux0 = 2.843e-7
-    f = magnitude / (-2.5) + np.log10(flux0)
-    return 10**f * u.erg / (u.cm * u.cm * u.s * u.um)
+def fit_spec(vel, spec, std, plot=False, ax=None,
+             sigma_guess=30, velocity_bounds=[-400,500], 
+             intensity_bounds=[0, np.inf], sigma_bouds=[10,1000], 
+             fit_cont=True, cont_bounds=[0, np.inf], ):
+    """a simple spectrum fitter
+    """
+    # normalize the spectrum to aviod numerical issue
+    norm_scale = np.ma.max(spec)
+    spec_norm = spec/norm_scale
+    # guess the initial parameters
+    spec_selection = spec_norm > np.percentile(spec_norm, 90)
+    I0 = 2*np.mean(spec_norm[spec_selection])
+    vel0 = np.median(vel[spec_selection])
+    vsig0 = sigma_guess
+    bounds = [intensity_bounds, velocity_bounds, sigma_bouds]
+    if fit_cont:
+        cont0 = np.median(spec_norm[~spec_selection])
+        initial_guess = [I0, vel0, vsig0, cont0]
+        bounds.append(cont_bounds)
+    else:
+        cont0 = 0
+        initial_guess = [I0, vel0, vsig0]
+    # make profile of initial guess.  this is only used for information/debugging purposes.
+    guess = gaussian_1d(initial_guess, velocity=vel)
+    # do the fit
+    fit_result = optimize.minimize(calc_gaussian1d_chi2, initial_guess, 
+                                   args=(vel, spec_norm, std*spec_norm), bounds=bounds)
 
-def get_zero_point(spec, filter_profile, magnitude, band, transmission):
-    wave_star, spec_star = spec
-    wave_filter, transmission_filter = filter_profile
-    star_raw = spec_star / transmission[1] # adu/s
-    flux = magnitude2flux_2mass(magnitude, band) 
-    zp = flux / apply_filter([wave_star, spec_star], filter_profile)
-    return zp
+    # make profile of the best fit 
+    bestfit = gaussian_1d(fit_result.x, velocity=vel)
+    if plot:
+        if ax is None:
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+        ax.step(vel, spec_norm, color='black', where='mid', label='data')
+        ax.plot(vel, guess, linestyle='dashed', color='blue', label='guess')
+        # ax.plot(vel, spec*0+cont0+std, linestyle='dashed', color='blue', alpha=0.5)
+        # ax.plot(vel, spec*0+cont0-std, linestyle='dashed', color='blue', alpha=0.5)
+        ax.plot(vel, bestfit, color='red')
+        plt.show()
+    bestfit_params = fit_result.x
+    bestfit_params[0] = bestfit_params[0]*norm_scale
+    if fit_cont:
+        bestfit_params[-1] = bestfit_params[-1]*norm_scale
+    return bestfit_params
 
-def correct_cube(fitscube, transmission=None, zp=None, suffix='.corrected'):
-    with fits.open(fitscube) as hdu:
-        header = hdu[0].header
-        cube = hdu[1].data
-        cube_header = hdu[1].header
+def fit_eris_cube(cube, velocity=None, SNR_limit=2, plot=False, fit_cont=True,
+                  z=None, rest_wave=0.656279*u.um, 
+                  minaper=1, maxaper=4, box=None, 
+                  vel_low=-400, vel_up=400, savefile=None):
+    """fit gaussian line through the cube
 
-    correction = 1.0
-    if transmission is not None:
-        transmission_corr = np.loadtxt(transmission, delimiter=',')
-        correction = correction/transmission_corr[:,1]
-    if zp is not None:
-        cube_header['BUNIT'] = 'erg/s/cm^2/um'
-        correction = correction * zp
-    primary_hdu = fits.PrimaryHDU(header=header)
-    modified_hdu = fits.ImageHDU(cube*correction[:,np.newaxis, np.newaxis], name="DATA", header=cube_header)
-    # error_combined_hdu = fits.ImageHDU(error_combined, name="ERROR", header=hdr)
-    hdus = fits.HDUList([primary_hdu, modified_hdu])
-    hdus.writeto(fitscube[:-5]+f'{suffix}.fits', overwrite=True)
+    Args:
+        datacube: it can be the fitsfile or the datacube
+        box: the selection pixel of a box 'z1,z2,y1,y2,x1,x2', 
+             (x1, y1): the bottom left coord
+             (x2, y2): upper right coord
+    """
+    if isinstance(cube, str):
+        vel, cube, header = read_eris_cube(cube, z=z, rest_wave=rest_wave)
+    if box is not None:
+        box_idx = box.split(',')
+        box_idx = np.array(box.split(',')).astype(int)
+        cube = cube[box_idx[0]:box_idx[1], box_idx[2]:box_idx[3], box_idx[4]:box_idx[5]]
+        vel = vel[box_idx[0]:box_idx[1]]
+    cube_shape = cube.shape
+    fitcube = np.zeros_like(cube)
+    imagesize = cube_shape[-2:]
+    nspec = cube_shape[-3]
+    # mean, median, std = astro_stats.sigma_clipped_stats(cube, sigma=10)
+    # mask = np.ma.masked_invalid(cube).mask
+    # vmax = 1.5*np.percentile(cube[~mask], 90)
+
+    # A cube to save all the best-fit values (maps)
+    # [amp, velocity, sigma, SNR]
+    fitmaps = np.full((5, cube_shape[-2], cube_shape[-1]), fill_value=np.nan)
+    
+    if plot:
+        fig = plt.figure()
+    # loop over all pixels in the cube and fit 1d spectra
+    for y in range(0, cube_shape[-2]):
+        for x in range(0, cube_shape[-1]):
+            is_fitted = False
+            # loop over the range of adaptive binning vakues
+            for aper in range(minaper,maxaper+1):
+                if is_fitted:
+                    break
+                if True:
+                    # deal with the edges of the cube
+                    sz = cube_shape
+                    xlo = x - aper
+                    xhi = x + aper
+                    ylo = y - aper
+                    yhi = y + aper
+                    if xlo <= 0: xlo = 0
+                    if xhi > sz[2]: xhi = sz[2]
+                    if ylo <= 0: ylo = 0
+                    if yhi >= sz[1]: yhi = sz[1]
+
+                    # vector to hold the spectra
+                    spec = np.zeros(sz[0])
+                    # loop over x/y and integrate the cube to make a 1D spectrum
+                    for m in range(xlo,xhi):
+                        for n in range(ylo,yhi):
+                            tmp = cube[:,n,m]
+                            tmp = tmp-np.median(tmp)
+                            spec = spec + tmp
+                    spec = spec / ((yhi-ylo) * (xhi-xlo))
+
+                    # spec = cube[:, y, x]
+                    # only do a fit if there are values in the array
+                    if np.nansum(spec) != 0:
+                        # measure the std
+                        cont_window = np.where((vel<=vel_low) | (vel>=vel_up))
+                        std = np.std(spec[cont_window[0]])                            
+                        med = np.median(spec[cont_window[0]])
+                        # get chi^2 of straight line fit
+                        chi2_sline = np.sum((spec-med)**2 / std**2)
+                        # do a Gaussian profile fit of the line
+                        px = fit_spec(vel, spec, std, fit_cont=fit_cont)
+                        bestfit = gaussian_1d(px, velocity=vel)
+                        # calculate the chi^2 of the Gaussian profile fit
+                        chi2_gauss = np.sum((spec-bestfit)**2 / std**2)
+                        # calculate the S/N of the fit: sqrt(delta_chi^2)=S/N
+                        SNR = (chi2_sline - chi2_gauss)**0.5
+
+                        # store the fit parameters with S/N>SNR_limit
+                        if SNR >= SNR_limit:
+                            is_fitted = True
+                            print(f'fit found at {(x,y)} with S/N={SNR}')
+                            fitmaps[0:3, y, x] = px[:3] # amp, vcenter, vsigma
+                            if fit_cont:
+                                fitmaps[3, y, x] = px[3]
+                            fitmaps[4, y, x] = SNR
+                            fitcube[:,y,x] = bestfit
+
+                            # plot data and fit if S/N is above threshold
+                            if plot:
+                                ax = fig.add_subplot(111)
+                                ax.step(vel, spec, color='black', where='mid', label='data')
+                                ax.plot(vel, bestfit, color='red', alpha=0.8)
+                                plt.show(block=False)
+                                plt.pause(0.02)
+                                plt.clf()
+                        elif SNR<SNR_limit:
+                            print(f'no fit found at {(x,y)} with S/N={SNR}')
+    if savefile is None:
+        return fitcube, fitmaps
+    else:
+        # keep files into fits file
+        pass
 
 
 #####################################
@@ -1634,42 +1898,40 @@ def correct_cube(fitscube, transmission=None, zp=None, suffix='.corrected'):
 
 def get_daily_calib(date, band, spaxel, exptime, outdir='./', esorex='esorex', 
                     calib_raw=None, overwrite=False, static_pool=None, 
-                    steps=None, 
-                    archive=False, rename=False, debug=False, dry_run=False):
+                    steps=None, max_days=60, 
+                    rename=False, debug=False, dry_run=False):
     """A wrapper to get daily calibration file quickly
 
     """
     if steps is None:
         steps=['dark','detlin','distortion','flat','wavecal']
-    if archive:
-        archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
-        outdir = os.path.join(outdir, archive_name)
-        is_reduced = True
-        # check if existing calibration files are exists
-        if 'dark' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_wave_map.fits'):
-                is_reduced = False
-        if 'detlin' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_detlin_bpm_filt.fits'):
-                is_reduced = False
-        if 'distortion' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_distortion_distortion.fits'):
-                is_reduced = False
-        if 'flat' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_flat_master_flat.fits'):
-                is_reduced = False
-        if 'wavecal' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_wave_map.fits'):
-                is_reduced = False
-        if 'stdstar' in steps:
-            if not os.path.isfile(outdir+'/eris_ifu_stdstar_std_cube_coadd.fits'):
-                is_reduced = False
-        if is_reduced:
-            if not overwrite:
-                logging.info(f"> re-use existing calibPool in {outdir}")
-                return outdir 
-    else:
-        archive_name = ''
+    logging.info(f'Requesting calibration files on {date}:{band}+{spaxel}+{exptime}s...')
+    archive_name = f'{date}_{band}_{spaxel}_{exptime}s'
+    archive_outdir = os.path.join(outdir, archive_name)
+    is_reduced = True
+    # check if existing calibration files are exists
+    if 'dark' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_dark_master_dark.fits'):
+            is_reduced = False
+    if 'detlin' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_detlin_bpm_filt.fits'):
+            is_reduced = False
+    if 'distortion' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_distortion_distortion.fits'):
+            is_reduced = False
+    if 'flat' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_flat_master_flat.fits'):
+            is_reduced = False
+    if 'wavecal' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_wave_map.fits'):
+            is_reduced = False
+    if 'stdstar' in steps:
+        if not os.path.isfile(archive_outdir+'/eris_ifu_stdstar_std_cube_coadd.fits'):
+            is_reduced = False
+    if is_reduced:
+        if not overwrite:
+            logging.info(f"> re-use existing calibPool in {outdir}")
+            return archive_outdir 
 
     # The date here is not the starting date. Normally, we can safely assume the
     # starting date is date - 1day, if the search is started at 12pm.
@@ -1684,19 +1946,22 @@ def get_daily_calib(date, band, spaxel, exptime, outdir='./', esorex='esorex',
         metafile = os.path.join(calib_daily_raw, f'{date}_{band}_{spaxel}_{exptime}s.csv')
         request_calib(start_date=start_date, band=band, spaxel=spaxel, exptime=exptime, 
                       outdir=calib_daily_raw, metafile=metafile, steps=steps,
-                      debug=debug, dry_run=dry_run)
-        generate_calib(metafile, raw_pool=calib_daily_raw, outdir=outdir, 
+                      max_days=max_days, debug=debug, dry_run=dry_run)
+        generate_calib(metafile, raw_pool=calib_daily_raw, outdir=archive_outdir, 
                        static_pool=static_pool, steps=steps, esorex=esorex,
                        debug=debug, dry_run=dry_run)
-    if (not archive) and rename:
+    if rename:
         # rename the files name to avoid conflicts
-        for ff in glob.glob(os.path.join(outdir, '*.fits')):
+        for ff in glob.glob(os.path.join(archive_outdir, '*.fits')):
             ff_basename = os.path.basename(ff)
             if 'dark' in ff_basename:
                 subprocess.run(['mv', ff, os.path.join(outdir, ff_basename[:-5]+f'_{exptime}s_{date}'+'.fits')])
             else:
                 subprocess.run(['mv', ff, os.path.join(outdir, ff_basename[:-5]+f'_{band}_{spaxel}_{date}'+'.fits')])
-    return outdir
+        subprocess.run(['rm','-rf', archive_outdir])
+        return outdir
+    else:
+        return archive_outdir
 
 def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=False, 
                       calib_pool='calibPool', calib_raw='calib_raw',
@@ -1711,7 +1976,10 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
     """
     # match all the dates
     datadir = datadir.strip('/')
-    outdir = outdir.strip('/')
+    if outdir is not None:
+        outdir = outdir.strip('/')
+    else:
+        outdir = '.'
     date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
     date_list = []
     for subfolder in os.listdir(datadir):
@@ -1782,65 +2050,68 @@ def run_eris_pipeline(datadir=None, outdir=None, esorex='esorex', overwrite=Fals
             for cat in ob_cats_unique:
                 if cat not in selected_categories:
                     continue
-                stdstar_type = ''
-                first_meta = ob_metadata[ob_metadata['DPR.CATG']==cat][0]
-                band  = first_meta['INS3.SPGW.NAME']
-                spaxel = first_meta['INS3.SPXW.NAME']
-                exptime = int(first_meta['DET.SEQ1.DIT'])
-                if cat == 'CALIB':
-                    # determine it is STD or PSF_CALIBRATOR
-                    dpr_type = first_meta['DPR.TYPE']
-                    if 'PSF' in dpr_type:
-                        stdstar_type = 'PSF'
-                    elif 'STD' in dpr_type:
-                        stdstar_type = 'STD'
+                cat_metadata = ob_metadata[ob_metadata['DPR.CATG']==cat]
+                cat_exptime_list = np.unique(cat_metadata['DET.SEQ1.DIT']).astype(int).tolist()
+                logging.info(f'{cat} recieve exptime with: {cat_exptime_list}')
+                for exptime in cat_exptime_list:
+                    stdstar_type = ''
+                    first_meta = cat_metadata[(cat_metadata['DET.SEQ1.DIT']-exptime)<1e-6][0]
+                    band  = first_meta['INS3.SPGW.NAME']
+                    spaxel = first_meta['INS3.SPXW.NAME']
+                    if cat == 'CALIB':
+                        # determine it is STD or PSF_CALIBRATOR
+                        dpr_type = first_meta['DPR.TYPE']
+                        if 'PSF' in dpr_type:
+                            stdstar_type = 'PSF'
+                        elif 'STD' in dpr_type:
+                            stdstar_type = 'STD'
 
-                # check whether the OB has been reduced
-                is_reduced = False
-                daily_ob_cat_outdir = os.path.join(outdir, date, 
-                                         f'{target}_{cat}{stdstar_type}_{ob_id}_{band}_{spaxel}_{exptime}s')
-                expected_output = ['eris_ifu_jitter_dar_cube_coadd.fits', 
-                                   'eris_ifu_jitter_obj_cube_coadd.fits',
-                                   'eris_ifu_stdstar_obj_cube_000.fits',
-                                   'eris_ifu_stdstar_sky_cube_000.fits',
-                                   'eris_ifu_stdstar_psf_cube_000.fits',
-                                   ]
-                for eo in expected_output:
-                    if os.path.isfile(os.path.join(daily_ob_cat_outdir, eo)):
-                        if not overwrite:
-                            logging.info(f"> Done: {date}:{target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
-                            is_reduced = True
-                if is_reduced:
-                    continue
-                # check whether the cat of the OB has been tried but failed
-                if os.path.isfile(os.path.join(daily_ob_cat_outdir, 'failed')):
-                    if not overwrite:
-                        logging.info(f"> Skip failure: {date}:{target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
+                    # check whether the OB has been reduced
+                    is_reduced = False
+                    daily_ob_cat_outdir = os.path.join(outdir, date, 
+                                             f'{target}_{cat}{stdstar_type}_{ob_id}_{band}_{spaxel}_{exptime}s')
+                    expected_output = ['eris_ifu_jitter_dar_cube_coadd.fits', 
+                                       'eris_ifu_jitter_obj_cube_coadd.fits',
+                                       'eris_ifu_stdstar_obj_cube_000.fits',
+                                       'eris_ifu_stdstar_sky_cube_000.fits',
+                                       'eris_ifu_stdstar_psf_cube_000.fits',
+                                       ]
+                    for eo in expected_output:
+                        if os.path.isfile(os.path.join(daily_ob_cat_outdir, eo)):
+                            if not overwrite:
+                                logging.info(f"> Done: {date}:{target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
+                                is_reduced = True
+                    if is_reduced:
                         continue
-                
-                ## Step-3
-                # generate the daily calibPool
-                logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime}s")
-                daily_calib_pool_id = get_daily_calib(date,  band, spaxel, exptime, esorex=esorex,
-                                                      outdir=daily_calib_pool, calib_raw=calib_raw,
-                                                      archive=True, overwrite=overwrite)
-                # except:
-                    # logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                    # check whether the cat of the OB has been tried but failed
+                    if os.path.isfile(os.path.join(daily_ob_cat_outdir, 'failed')):
+                        if not overwrite:
+                            logging.info(f"> Skip failure: {date}:{target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
+                            continue
+                    
+                    ## Step-3
+                    # generate the daily calibPool
+                    logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime}s")
+                    daily_calib_pool_id = get_daily_calib(date,  band, spaxel, exptime, esorex=esorex,
+                                                          outdir=daily_calib_pool, calib_raw=calib_raw,
+                                                          overwrite=overwrite)
+                    # except:
+                        # logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
 
-                ## Step-4
-                # run eris_ifu_gitter on science target and acquisition/psf stars
-                logging.info(f"> working on {date}: {target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
+                    ## Step-4
+                    # run eris_ifu_gitter on science target and acquisition/psf stars
+                    logging.info(f"> working on {date}: {target}(OB.ID={ob_id}) with {cat}+{band}+{spaxel}+{exptime}s")
 
-                try:
-                    auto_jitter(metadata=ob_metadata, raw_pool=daily_datadir, 
-                                outdir=daily_ob_cat_outdir, calib_pool=daily_calib_pool_id, 
-                                ob_id=ob_id, esorex=esorex, dpr_catg=cat, 
-                                stdstar_type=stdstar_type, product_depth=2,
-                                dry_run=dry_run)
-                except:
-                    # subprocess.run(['rm','-rf', daily_ob_outdir])
-                    # subprocess.run(['touch', daily_ob_outdir+'/failed'])
-                    logging.warning(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
+                    try:
+                        auto_jitter(metadata=ob_metadata, raw_pool=daily_datadir, 
+                                    outdir=daily_ob_cat_outdir, calib_pool=daily_calib_pool_id, 
+                                    ob_id=ob_id, esorex=esorex, dpr_catg=cat, 
+                                    stdstar_type=stdstar_type, product_depth=2,
+                                    dry_run=dry_run)
+                    except:
+                        # subprocess.run(['rm','-rf', daily_ob_outdir])
+                        # subprocess.run(['touch', daily_ob_outdir+'/failed'])
+                        logging.warning(f"> Error found in runing {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
 
 def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None, band=None,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
@@ -1937,7 +2208,7 @@ def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None,
 
 def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=None,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
-                  savefile=None, suffix='combined', overwrite=False):
+                  savefile=None, recipe='combine_eris_cube', suffix='combined', overwrite=False):
     """A wrapper of combine_data
 
     This quick tool search the all the available and valid observations
@@ -1948,6 +2219,7 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
     """
     target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_()(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
     date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
+    esorex_cmd_list = esorex.split(' ')
 
     if not os.path.isdir(outdir):
         subprocess.run(['mkdir','-p', outdir])
@@ -2002,13 +2274,81 @@ def quick_combine(datadir=None, target=None, offsets=None, excludes=None, band=N
         savefile = os.path.join(outdir, 
                     f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}.fits')
     obs_offset = compute_eris_offset(image_list, additional_drifts=drifts)
-    combine_eris_cube(cube_list=image_list, pixel_shifts=obs_offset, 
-                      z=z, overwrite=overwrite,
-                      savefile=savefile)
+    if recipe == 'combine_eris_cube':
+        combine_eris_cube(cube_list=image_list, pixel_shifts=obs_offset, 
+                          z=z, overwrite=overwrite,
+                          savefile=savefile)
+    elif recipe == 'eris_ifu_combine':
+        # create the combine.sof
+        combine_sof = os.path.join(outdir, 
+                    f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}_combine.sof')
+        if not os.path.isfile(combine_sof):
+            with open(combine_sof, 'w+') as fp:
+                for img in image_list:
+                    fp.write(f"{img} OBJECT_CUBE\n")
+        # save the offset into text file
+        combine_offset_file = os.path.join(outdir, 
+                    f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}_offset.list')
+        if not os.path.isfile(combine_offset_file):
+            with open(combine_offset_file, 'w+') as fp:
+                for ofs in obs_offset:
+                    fp.write(f"{ofs[0]} {ofs[1]}\n")
+        subprocess.run([*esorex_cmd_list, 'eris_ifu_combine',
+                        '--ks_clip=TRUE', '--kappa=3.0',
+                        '--offset_mode=FALSE', f'--name_i={combine_offset_file}',
+                        f'--name_o={savefile}', combine_sof])
     logging.info(f'Found the combined cube: {savefile}')
+
 
 #####################################
 ######## helper functions ###########
+
+def read_eris_cube(cubefile, z=None, rest_wave=0.656279*u.um, header_ext='DATA',):
+    """read eris datacube and convert the wavelength to velocity relative to Ha
+    """
+    with fits.open(cubefile) as hdu:
+        header = hdu[header_ext].header
+        cube = hdu[header_ext].data
+    header = fix_micron_unit_header(header)
+    wavelength = get_wavelength(header, output_unit='um')
+    if z is not None:
+        refwave = (rest_wave * (1+z)).to(u.um).value
+        velocity = 299792.458 * (wavelength-refwave)/refwave
+        return velocity, cube, header
+    return wavelength, cube, header
+
+def fix_micron_unit_header(header):
+    """this small program fix the unrecongnized unit "micron" by astropy.wcs
+
+    *only tested with the 3D datacube from VLT/ERIS
+    """
+    if 'CUNIT3' in header:
+        if header['CUNIT3'] == 'MICRON':
+            header['CUNIT3'] = 'um'
+    return header
+
+def get_wavelength(header=None, wcs=None, output_unit='um'):
+    if header is None:
+        try:
+            header = wcs.to_header()
+            header['NAXIS3'],header['NAXIS2'],header['NAXIS1'] = wcs.array_shape
+        except:
+            raise ValueError("Please provide valid header or wcs!")
+    if 'PC3_3' in header.keys():
+        cdelt3 = header['PC3_3']
+    elif 'CD3_3' in header.keys():
+        cdelt3 = header['CD3_3']
+    else: 
+        cdelt3 = header['CDELT3']
+    # because wcs.slice with change the reference channel, the generated ndarray should 
+    # start with 1 
+    chandata = (header['CRVAL3'] + (np.arange(1, header['NAXIS3']+1)-header['CRPIX3']) * cdelt3)
+    if 'CUNIT3' in header.keys():
+        chandata = chandata*units.Unit(header['CUNIT3'])
+        wavelength = chandata.to(units.Unit(output_unit)).value
+    else:
+        wavelength = chandata
+    return wavelength
 
 def start_logger():
     logging.basicConfig(filename='myapp.log', encoding='utf-8', level=logging.INFO)
@@ -2018,8 +2358,9 @@ def start_logger():
     pass
     logging.info('Finished')
 
+
 #####################################
-########## CMD wrapprt ##############
+########## CMD wrapper ##############
 
 if __name__ == '__main__':
 
@@ -2107,6 +2448,7 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--start_date', type=str, help='The starting date of the observation. Such as 2023-03-08', default='2022-04-01')
     subp_request_science.add_argument('--band', type=str, help='Observing band', default='')
     subp_request_science.add_argument('--spaxel', type=str, help='Spatial pixel resolution', default='')
+    subp_request_science.add_argument('--target', type=str, help='The name of the target', default='')
     subp_request_science.add_argument('--exptime', type=str, help='Integration time', default='')
     subp_request_science.add_argument('--username', type=str, help='The user name in ESO User portal.', default='')
     subp_request_science.add_argument('--password', type=str, help='The password in ESO User Eortal.')
@@ -2115,6 +2457,7 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--ob_id', type=str, help='Observation ID', default='')
     subp_request_science.add_argument('--metafile', type=str, help='Summary file',default='metadata.csv')
     subp_request_science.add_argument('--end_date', type=str, help='The finishing date of the observation. Such as 2023-03-08', default='')
+    subp_request_science.add_argument('--dp_type', type=str, help='The type of the observation, set to "%PSF-CALIBRATOR" to download only the PSF star', default='')
     subp_request_science.add_argument('--archive', action='store_true', 
                                       help='Organise the date based on the observing date')
     subp_request_science.add_argument('--uncompress', action='store_true', 
@@ -2243,12 +2586,12 @@ if __name__ == '__main__':
                                       help='Static calibration pool directory')
     subp_get_daily_calib.add_argument('--steps', nargs='+', default=None, 
                                       help='Calibration steps to be proceeded')
-    subp_get_daily_calib.add_argument('--calib_raw', default='calib_raw', 
+    subp_get_daily_calib.add_argument('--calib_raw', default=None, 
                                       help='Directory for raw calibration files, default calib_raw')
+    subp_get_daily_calib.add_argument('--max_days', default=60, 
+                                      help='The maxium days to search for calibration raw files')
     subp_get_daily_calib.add_argument('--overwrite', action='store_true', 
                                       help='Overwrite the existing files')
-    subp_get_daily_calib.add_argument('--archive', action='store_true', 
-                                      help='Organise the output files in a archived folder. The output files will be include in a folder named date_band_spaxel_exptime')
     subp_get_daily_calib.add_argument('--rename', action='store_true', 
                                       help='Rename output files with detailed configurations')
     
@@ -2267,7 +2610,7 @@ if __name__ == '__main__':
                                         '''))
     subp_run_eris_pipeline.add_argument('-d', '--datadir', 
                                           help='The folder with downloaded science data')
-    subp_run_eris_pipeline.add_argument('--outdir', help='The output folder')
+    subp_run_eris_pipeline.add_argument('--outdir', default='./', help='The output folder')
     subp_run_eris_pipeline.add_argument('--calib_pool', default='calibPool',
                                         help='The calibration pool')
     subp_run_eris_pipeline.add_argument('--calib_raw', default='calib_raw', 
@@ -2288,7 +2631,7 @@ if __name__ == '__main__':
             -------------------------------
             example:
 
-              eris_jhchen_utils quick_combine --datadir science_output --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1 --outdir combined
+              eris_jhchen_utils quick_combine --datadir science_reduced --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1 --outdir combined
                                         '''))
     subp_quick_combine.add_argument('--datadir', help='The data dierectory')
     subp_quick_combine.add_argument('--target', help='The target name')
@@ -2301,6 +2644,8 @@ if __name__ == '__main__':
     subp_quick_combine.add_argument('--outdir', help='Output dierectory')
     subp_quick_combine.add_argument('--suffix', default='combined', 
                                     help='The suffix of the output files')
+    subp_quick_combine.add_argument('--recipe', default='combine_eris_cube', 
+                                    help='The combine recipe to be used, set to "eris_ifu_combine" to use the pipeline\'s default combine recipe')
     subp_quick_combine.add_argument('--overwrite', action='store_true', help='Overwrite exiting fits file')
 
 
@@ -2339,10 +2684,12 @@ if __name__ == '__main__':
     elif args.task == 'request_science':
         ret = request_science(prog_id=args.prog_id, ob_id=args.ob_id, 
                               start_date=args.start_date, 
+                              target=args.target,
                               username=args.username, password=args.password,
                               band=args.band, spaxel=args.spaxel, 
                               exptime=args.exptime, end_date=args.end_date, 
                               outdir=args.outdir, metafile=args.metafile,
+                              dp_type=args.dp_type,
                               archive=args.archive, uncompress=args.uncompress,
                               dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'search_static_calib':
@@ -2373,7 +2720,8 @@ if __name__ == '__main__':
         get_daily_calib(args.date, args.band, args.spaxel, args.exptime, 
                         outdir=args.outdir, steps=args.steps, esorex=esorex, 
                         static_pool=args.static_pool, rename=args.rename,
-                        archive=args.archive, overwrite=args.overwrite, 
+                        calib_raw=args.calib_raw,
+                        max_days=args.max_days, overwrite=args.overwrite, 
                         debug=args.debug, dry_run=args.dry_run)
     elif args.task == 'run_eris_pipeline':
         run_eris_pipeline(args.datadir, outdir=args.outdir, calib_pool=args.calib_pool, 
@@ -2383,7 +2731,7 @@ if __name__ == '__main__':
     elif args.task == 'quick_combine':
         quick_combine(datadir=args.datadir, target=args.target, offsets=args.offsets,
                       excludes=args.excludes, band=args.band, spaxel=args.spaxel,
-                      z=args.z, overwrite=args.overwrite,
+                      z=args.z, overwrite=args.overwrite, recipe=args.recipe,
                       outdir=args.outdir, drifts=args.drifts, suffix=args.suffix)
     else:
         pass
