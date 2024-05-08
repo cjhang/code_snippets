@@ -15,7 +15,7 @@ History:
     - 2024-02-26: support reducing PSF and standard stars, v0.5
     - 2024-04-07: add data quicklook tools, v0.6
 """
-__version__ = '0.6.11'
+__version__ = '0.6.12'
 
 # import the standard libraries
 import os 
@@ -156,13 +156,14 @@ def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None, au
     if metafile is not None:
         save_metadata(eris_query_tab, metafile=metafile)
 
-def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_days=40, 
+def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_days=60, 
                     column_filters={}, dry_run=False, debug=False, **kwargs):
     """query ESO/ERIS raw data from the database
 
     Args:
-        start_date (str): the starting date: lile 2023-04-08
+        start_date (str): the starting date: like 2023-04-08
         end_date (str): the same format as start_date, the default value is start_date + 1day
+        start_time (int): the starting hour, it is set to 9am (UT), which is 12:00 in Chile
         column_filters: the parameters of the query form
                         such as: 
                         column_filters = {
@@ -209,6 +210,10 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
                     matched = 1
                     # for some addition validity check
                     dptype = column_filters['dp_type']
+                    if 'DARK' in dptype:
+                        n_dark = np.sum(tab_eris['DPR.TYPE'] == 'DARK')
+                        if n_dark < 3:
+                            matched = 0
                     if 'FLAT' in dptype:
                         # make sure both dark and lamp are present
                         n_flat_dark = np.sum(tab_eris['DPR.TYPE'] == 'FLAT,DARK')
@@ -221,8 +226,7 @@ def eris_auto_quary(start_date, end_date=None, start_time=12, end_time=12, max_d
                         n_ds_fiber_lamp = np.sum(tab_eris['DPR.TYPE'] == 'NS,FLAT,LAMP')
                         n_ds_wave_dark = np.sum(tab_eris['DPR.TYPE'] == 'NS,WAVE,DARK')
                         n_ds_wave_lamp = np.sum(tab_eris['DPR.TYPE'] == 'NS,WAVE,LAMP')
-                        # print("NS", n_ds_fiber, n_ds_fiber_dark, n_ds_fiber_lamp, n_ds_wave_dark, n_ds_wave_lamp)
-                        if (n_ds_fiber!=1) or (n_ds_fiber_lamp!=1) or (n_ds_fiber_lamp!=n_ds_fiber_dark) or (n_ds_wave_lamp<1) or (n_ds_wave_dark<1):
+                        if (n_ds_fiber!=1) or (n_ds_fiber_lamp!=n_ds_fiber_dark) or (n_ds_wave_lamp<1) or (n_ds_wave_dark<1):
                             matched = 0
                     if 'WAVE' in dptype:
                         n_wave_dark = np.sum(tab_eris['DPR.TYPE'] == 'WAVE,DARK')
@@ -389,7 +393,7 @@ def request_science(prog_id='', metafile='metadata.csv',
         if username is not None:
             if password is None:
                 password = getpass.getpass(f'{username} enter your password:\n')
-        auth = requests.auth.HTTPBasicAuth(username, password)
+            auth = requests.auth.HTTPBasicAuth(username, password)
 
     if archive:
         # check the observing dates
@@ -873,9 +877,9 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
         with open(auto_jitter_sof, 'a+') as openf:    
             openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
             openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
-            # openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
             openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
             openf.write(f"{calib_pool}/eris_ifu_dark_master_dark.fits MASTER_DARK\n")
+            # openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
             # openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
             openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
             if (dpr_catg == 'CALIB') and (stdstar_type == 'STD'):
@@ -1801,7 +1805,7 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
 
     outfile: save the archive file in the format of sof, with the arcfile followed by the tag
     """
-    target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD))_(?P<id>\d{7})_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
+    target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD))_(?P<id>\d{7})_(?P<tpl_start>[\d\-\:T]+)_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
     date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
     if oblist is not None:
         if isinstance(oblist, str):
@@ -2658,7 +2662,7 @@ if __name__ == '__main__':
     subp_request_science.add_argument('--spaxel', type=str, help='Spatial pixel resolution', default='')
     subp_request_science.add_argument('--target', type=str, help='The name of the target', default='')
     subp_request_science.add_argument('--exptime', type=str, help='Integration time', default='')
-    subp_request_science.add_argument('--username', type=str, help='The user name in ESO User portal.', default='')
+    subp_request_science.add_argument('--username', type=str, help='The user name in ESO User portal.')
     subp_request_science.add_argument('--password', type=str, help='The password in ESO User Eortal.')
     subp_request_science.add_argument('--outdir', type=str, help='Output directory')
     subp_request_science.add_argument('--prog_id', type=str, help='Program ID', default='')
