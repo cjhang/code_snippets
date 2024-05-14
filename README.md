@@ -1,4 +1,4 @@
-# code_snippets
+# cjh_snippets
 
 A collection of small snippets for various functions. Each file can be used on its own. These files were written at different stages of my scientific career. It is hard to make them as a single package, especially when it comes to sharing with other people. So I decided to create this repository as a place to put all these little gadgets.
 
