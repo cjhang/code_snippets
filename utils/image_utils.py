@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
+
+# -*- coding: utf-8 -*-
 """A minimalist tool to deal with fits images
 
 Author: Jianhang Chen, cjhastro@gmail.com
-History:
-    2022-01-11: first release to handle fits images from CASA, v1, Garching
-    2024-02-16: seperate the Image class for different tasks, v2, IRAM30, Granada
-
 
 Notes:
     1. Throughout the code, the aperture are follow the `photoutils`
@@ -18,9 +16,15 @@ Requirement:
     astropy >= 5.0
     photutils >= 1.0
     sep (optional, used for source_finder)
+
+History:
+    2022-01-11: first release to handle fits images from CASA, v0.1, Garching
+    2024-02-16: seperate the Image class for different tasks, v0.2, IRAM30, Granada
+    2024-06-14: add test, v0.3, MPE, Garching
+
 """
 
-__version__ = '1.0.9'
+__version__ = '0.3.0'
 
 import os
 import sys
@@ -41,16 +45,15 @@ from matplotlib import patches
 from astropy.modeling import models, fitting
 from astropy import convolution 
 
-from photutils.aperture import (aperture_photometry, EllipticalAperture, 
-                                RectangularAperture, SkyEllipticalAperture)
-from photutils.detection import find_peaks
-
 # Filtering warnings
 from astropy.wcs import FITSFixedWarning
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 
-
 # optional library
+from photutils.aperture import (aperture_photometry, EllipticalAperture, 
+                                RectangularAperture, SkyEllipticalAperture)
+from photutils.detection import find_peaks
+
 try: import reproject
 except: pass
 
@@ -58,58 +61,112 @@ except: pass
 ######### Image ##############
 ##############################
 
-class Image(object):
-    """The data strcuture to handle the 2D astronomical images from CASA
+class BaseImage(object):
+    """The data strcuture to handle the 2D astronomical image
 
-    The Image 
     """
-    def __init__(self, data=None, header=None, beam=None, wcs=None, mask=None,
-                 name=None):
+    def __init__(self, data=None, name=None, mask=None, unit=None, 
+                 header=None, beam=None, wcs=None,
+                ):
         """initialize the image
 
         Args:
             data: the image data, with or without units
+            name: the name of the image, used for plot and file handling
+            mask: the mask of the data, True value to be exclude
             header: the header can be identified by astropy.wcs.WCS
             beam: the beam shape in the units of [arcsec, arcsec, deg]
-            wcs (optional): another way to set celestial reference
-            mask (optional): same shape as the data
+            wcs: another way to set celestial reference
         """
-        self.data = data
-        self.header = header
-        self.wcs = wcs
-        self.beam = beam
-        self.mask = mask
+        if isinstance(data, u.Quantity):
+            self.data = data.value
+            self._unit = data.unit
+        else:
+            self.data = data
+            self._unit = unit
+        if mask is not None:
+            if mask.shape != self.data.shape:
+                raise ValueError("unmatched mask and data!")
+            self.mask = mask
         self.name = name 
-        if self.header is not None:
-            if self.wcs is None:
-                self.update_wcs()
+        # hide the orinal header and wcs, due to their interchangeability
+        self._header = header
+        self._wcs = wcs
+        # keep the original beam
+        self._beam = beam
+        # create a header if not exists
         if self.header is None:
-            if self.wcs is not None:
-                self.header = self.wcs.to_header()
-        self.pixel2arcsec = None
-    def __getitem__(self, i):
-            return self.data.value[i]
+            self._header = fits.Header()
+        if self._header is None:
+            self._header = self.header
+    # def __getitem__(self, i):
+            # return self.data[i]
     @property
-    def info(self):
-        # shortcut for print all the basic info
-        print(f"Shape: {self.shape}")
-        print(f"Units: {self.image.unit}")
-        print(f"Pixel size {self.pixel_sizes}")
-        print(f"Beam {self.beam}")
+    def header(self):
+        if self._header is not None:
+            return self._header
+        elif self.wcs is not None:
+            return self.wcs.to_header()
+        else:
+            return None
+    @header.setter
+    def header(self, header):
+        self._header = header
     @property
-    def image(self):
-        # return the full image with units
-        if isinstance(self.data, u.Quantity):
-            return self.data
-        return u.Quantity(self.data)
+    def wcs(self):
+        if self._wcs is not None:
+            fullwcs = self._wcs
+        elif self._header is not None:
+            fullwcs = WCS(self._header)
+        else:
+            fullwcs = None
+        if (fullwcs is not None) and (fullwcs.naxis > 3):
+            # drop the stokes axis
+            return fullwcs.sub(['longitude','latitude'])
+        return fullwcs
+    @wcs.setter
+    def wcs(self, wcs):
+        self._wcs = wcs
     @property
     def unit(self):
-        if isinstance(self.image, u.Quantity):
-            return self.image.unit
-        else: return None
+        if self._unit is not None:
+            return u.Unit(self.unit)
+        elif self.header is not None:
+            try:
+                return u.Unit(self._header['BUNIT'])
+            except:
+                pass
+        return u.Unit('')
+    @unit.setter
+    def unit(self, unit):
+        self._unit = u.Unit(unit)
+        self._header.update({'BUNIT': self._unit.to_string()})
     @property
-    def shape(self):
-        return self.image.shape
+    def image(self):
+        # always return the Quantify
+        return self.data*self.unit
+    @property
+    def beam(self):
+        # return beam shape in [bmaj, bmin, PA] in [arcsec, arcsec, degree]
+        if self._beam is not None:
+            return self._beam
+        if self.header is not None:
+            try:
+                header = self.header
+                header_beam = np.array([header['BMAJ'], header['BMIN'], header['BPA']]).T
+                image_beam = header_beam * np.array([3600.,3600.,1]) # convert deg to arcsec
+                return image_beam
+            except: pass
+        return None
+    @beam.setter
+    def beam(self, beam):
+        """the beam should be a 1D array, like [bmaj, bmin, PA]
+        the units should be [arcsec, arcsec, degree]
+        """
+        self._beam = beam
+        header_beams = np.array(beam) * np.array([1/3600., 1/3600, 1]) # convert arcsec to deg
+        self._header.update({'BMAJ':header_beams[0], 'BMIN':header_beams[1], 
+                             'BPA':header_beams[2]})
     @property
     def pixel_sizes(self):
         if self.header is not None:
@@ -126,25 +183,59 @@ class Image(object):
         else:
             pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
         return u.Quantity([pixel2arcsec_ra, pixel2arcsec_dec])
-    @property
-    def imstats(self):
-        return stats.sigma_clipped_stats(self.image, sigma=5.0, maxiters=2)
-    def update_wcs(self, wcs=None, header=None):
-        if wcs is not None:
-            self.wcs = wcs
-        elif header is not None:
-            self.wcs = WCS(header).sub(['longitude','latitude'])
+    @pixel_sizes.setter
+    def pixel_sizes(self, size):
+        """ the size can be a list with two values for ra and dec or a single
+        value for both. The default units should be [arcsec, arcsec]
+        """
+        if isinstance(size, u.Quantity):
+            size = size.value
+            sunit = size.unit
         else:
-            self.wcs = WCS(self.header).sub(['longitude','latitude'])
-    def update_mask(self, mask=None, mask_invalid=True):
-        newmask = np.zeros(self.imagesize, dtype=bool)
-        if mask_invalid:
-            image_masked = np.ma.masked_invalid(self.data)
-            invalid_mask = image_masked.mask.reshape(self.imagesize)
-            newmask = newmask | invalid_mask
-        if mask is not None:
-            mask = newmask | mask
-        self.mask = mask
+            sunit = u.Unit('arcsec')
+        if not isinstance(size, [tuple, list, np.ndarray]):
+            size = [size, size]
+        self._header.update({'CDELT1':size[0], 'CDELT2':size[1], 
+                             'CUNIT1':sunit.to_string(), 'CUNIT2':sunit.to_string()})
+    @property
+    def shape(self):
+        return self.data.shape
+    @property
+    def info(self):
+        # shortcut for print all the basic info
+        print(f"Shape: {self.shape}")
+        print(f"Units: {self.image.unit}")
+        print(f"Pixel size {self.pixel_sizes}")
+        print(f"Beam {self.beam}")
+    @property
+    def beamarea(self):
+        # calculate the beamszie in number of pixels
+        # the final unit is pixels/beam, convert the Jy/beam to Jy/pixel need to divive the beam
+        pixel_sizes = self.pixel_sizes
+        beam = self.beam
+        pixel_area = pixel_sizes[0].to('arcsec').value * pixel_sizes[1].to('arcsec').value
+        return 1/(np.log(2)*4.0) * np.pi * beam[0] * beam[1] / pixel_area 
+        # return calculate_beamarea(self.beam, scale=1/pixel_area)
+
+    def pixel_beam(self):
+        # convert the beam size into pixel sizes
+        if self.beam is None:
+            warnings.warn('No beam infomation has been found!')
+            return None
+        try:
+            bmaj, bmin, bpa = self.beam
+            pixel_sizes = self.pixel_sizes
+            x_scale = 1/pixel_sizes[0].to(u.arcsec).value
+            y_scale = 1/pixel_sizes[1].to(u.arcsec).value
+            bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
+            bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
+            pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
+        except:
+            pixel_beam = None
+        return pixel_beam
+
     def pixel2skycoords(self, pixel_coords):
         """covert from pixel to skycoords
 
@@ -154,11 +245,13 @@ class Image(object):
         """
         pixel_coords = np.array(pixel_coords).T
         return pixel_to_skycoord(*pixel_coords, self.wcs)
+
     def skycoords2pixels(self, skycoords):
         if skycoords.size == 1:
             return np.array(skycoord_to_pixel(skycoords, self.wcs))
         else:
             return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
+
     def subimage(self, s_):
         """extract subimage from the orginal image
 
@@ -168,7 +261,7 @@ class Image(object):
         Return:
             :obj:`Image`
         """
-        image_sliced = self.image[s_].copy()
+        image_sliced = self.data[s_].copy()
         shape_sliced = image_sliced.shape
         wcs_sliced = self.wcs[s_].deepcopy()
         # TODO: temperary solution, more general solution needs to consider the 
@@ -183,7 +276,122 @@ class Image(object):
         header_sliced.set('NAXIS',naxis)
         header_sliced.set('NAXIS1',shape_sliced[-1])
         header_sliced.set('NAXIS2',shape_sliced[-2])
-        return Image(image_sliced, header_sliced, self.beam)
+        return BaseImage(image_sliced, header_sliced, self.beam)
+
+    def writefits(self, filename, overwrite=False, shift_reference=False):
+        """write to fits file
+        
+        This function also shifts the reference pixel of the image to the image center
+        """
+        ysize, xsize = self.shape
+        header = self.header
+        if self._beam is not None:
+            self.beam = self._beam
+        if shift_reference:
+            try: # shift the image reference pixel, tolerence is 4 pixels
+                if header['CRPIX1'] < (xsize//2-4) or header['CRPIX1'] > (xsize//2+4):
+                    header['CRVAL1'] += (1 - header['CRPIX1']) * header['CDELT1']
+                    header['CRPIX1'] = xsize//2
+                    print('Warning: automatically shifted the x axis reference.')
+                if header['CRPIX2'] < (ysize//-4) or header['CRPIX2'] > (ysize//2+4):
+                    header['CRVAL2'] += (1 - header['CRPIX2']) * header['CDELT2']
+                    header['CRPIX2'] = ysize//2
+                    print('Warning: automatically shifted the y axis reference.')
+            except: pass
+        imagehdu = fits.PrimaryHDU(data=self.data, header=header)
+        header.update({'history':'created by image_utils.Image',})
+        imagehdu.writeto(filename, overwrite=overwrite)
+
+    def readfits(self, fitsimage, extname='primary', name=None, debug=False, 
+                 correct_beam=False, spec_idx=0, stokes_idx=0):
+        """read the fits file
+
+        Parameters
+        ----------
+        fitsimage : str
+            the filename of the fits file.
+        name : str, optinal
+            the name of the image.
+        debug : bool 
+            set to true to print the details of the fits file
+        correct_beam : bool 
+            set to True to correct the beams if the beam 
+            information is available
+        spec_idx : int
+            the index of the select channel along the spectral dimension, 
+            default to be the median value
+        stokes_idx : int
+            the index of the select stocks dimension, default to be the first axis
+            
+        """
+        with fits.open(fitsimage) as image_hdu:
+            if debug:
+                print(image_hdu.info())
+            image_header = image_hdu[extname].header
+            ndim = image_header['NAXIS']
+            if ndim > 4 or ndim < 2:
+                raise ValueError("Unsupported data dimension! Only support 2D, 3D and 4D data!")
+            image_data = image_hdu[extname].data
+            if ndim > 3:
+                image_data = image_data[stokes_idx]
+            if ndim > 2:
+                image_data = image_data[spec_idx]
+            if 'BUNIT' in image_header.keys():
+                image_data = image_data * u.Unit(image_header['BUNIT'])
+            # try to read the beam from the headers
+            if 'BMAJ' in image_header.keys():
+                image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
+                              image_header['BPA']]
+            else:
+                try: full_beam = image_hdu['BEAMS'].data
+                except: full_beam = None
+                if full_beam is not None:
+                    if ndim > 3:
+                        full_beam = full_beam[stokes_idx]
+                    if ndim > 2:
+                        # image_beam = np.median(full_beam, axis=0)
+                        image_beam = full_beam[spec_idx]
+                else: image_beam = None
+        if name is None:
+            name = os.path.basename(fitsimage)
+        self.data = image_data
+        self._header = image_header
+        self._beam = image_beam
+        self.name = name
+
+class Image(BaseImage):
+    """The image used for various handy analysis
+    """
+    def __init__(self, data=None, name=None, mask=None, unit=None,
+                 header=None, beam=None, wcs=None, 
+                 ):
+        """initialize the image
+        """
+        if data is not None:
+            if isinstance(data, (BaseImage, Image)):
+                # copy the Image
+                super().__init__(data=data.data, name=data.name, mask=data.mask, 
+                                 header=data.header, beam=data.beam, 
+                                 wcs=data.wcs)
+            else:
+                super().__init__(data=data, header=header, beam=beam, wcs=wcs, 
+                                 mask=mask, name=name)
+
+    def readfits(self, fitsimage, **kwargs):
+        Image(super().readfits(fitsimage, **kwargs))
+
+    def imstats(self, sigma=5.0, maxiters=2):
+        return stats.sigma_clipped_stats(self.image, sigma=sigma, maxiters=maxiters)
+
+    def update_mask(self, mask=None, mask_invalid=True):
+        newmask = np.zeros(self.imagesize, dtype=bool)
+        if mask_invalid:
+            image_masked = np.ma.masked_invalid(self.data)
+            invalid_mask = image_masked.mask.reshape(self.imagesize)
+            newmask = newmask | invalid_mask
+        if mask is not None:
+            mask = newmask | mask
+        self.mask = mask
 
     def plot(self, image=None, name=None, ax=None, figsize=(8,6), 
              contour=None, contour_levels=None, 
@@ -384,146 +592,6 @@ class Image(object):
             raise ValueError("Please specify the output referece system, either the header_out or the wcs_out")
         return Image(data=data_new, header=header_out, wcs=wcs_out)
  
-    def writefits(self, filename, overwrite=False, shift_reference=False):
-        """write to fits file
-        
-        This function also shifts the reference pixel of the image to the image center
-        """
-        ysize, xsize = self.shape
-        header = self.header
-        if header is None:
-            if self.wcs is not None:
-                header = wcs.to_header()
-            else: # create a new
-                header = fits.Header()
-        if shift_reference:
-            try: # shift the image reference pixel, tolerence is 4 pixels
-                if header['CRPIX1'] < (xsize//2-4) or header['CRPIX1'] > (xsize//2+4):
-                    header['CRVAL1'] += (1 - header['CRPIX1']) * header['CDELT1']
-                    header['CRPIX1'] = xsize//2
-                    print('Warning: automatically shifted the x axis reference.')
-                if header['CRPIX2'] < (ysize//-4) or header['CRPIX2'] > (ysize//2+4):
-                    header['CRVAL2'] += (1 - header['CRPIX2']) * header['CDELT2']
-                    header['CRPIX2'] = ysize//2
-                    print('Warning: automatically shifted the y axis reference.')
-            except: pass
-        if self.beam is not None:
-            # follow the same rule as CASA, which use the units of deg
-            header['BMAJ'] = self.beam[0] / 3600.
-            header['BMIN'] = self.beam[1] / 3600.
-            header['BPA'] = self.beam[2]
-        if self.unit is not None:
-            header.set('BUNIT', self.unit.to_string())
-            imagehdu = fits.PrimaryHDU(data=self.image.value, header=header)
-        else:
-            imagehdu = fits.PrimaryHDU(data=self.image, header=header)
-        header.update({'history':'created by image_tools.Image',})
-        imagehdu.writeto(filename, overwrite=overwrite)
-
-   
-    @staticmethod
-    def read(fitsimage, extname='primary', name=None, debug=False, correct_beam=False, 
-             spec_idx=0, stokes_idx=0):
-        """read the fits file
-
-        Parameters
-        ----------
-        fitsimage : str
-            the filename of the fits file.
-        name : str, optinal
-            the name of the image.
-        debug : bool 
-            set to true to print the details of the fits file
-        correct_beam : bool 
-            set to True to correct the beams if the beam 
-            information is available
-        spec_idx : int
-            the index of the select channel along the spectral dimension, 
-            default to be the median value
-        stokes_idx : int
-            the index of the select stocks dimension, default to be the first axis
-            
-        """
-        with fits.open(fitsimage) as image_hdu:
-            if debug:
-                print(image_hdu.info())
-            image_header = image_hdu[extname].header
-            ndim = image_header['NAXIS']
-            if ndim > 4 or ndim < 2:
-                raise ValueError("Unsupported data dimension! Only support 2D, 3D and 4D data!")
-            image_data = image_hdu[extname].data
-            if ndim > 3:
-                image_data = image_data[stokes_idx]
-            if ndim > 2:
-                image_data = image_data[spec_idx]
-            if 'BUNIT' in image_header.keys():
-                image_data = image_data * u.Unit(image_header['BUNIT'])
-            # try to read the beam from the headers
-            if 'BMAJ' in image_header.keys():
-                image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
-                              image_header['BPA']]
-            else:
-                try: full_beam = image_hdu['BEAMS'].data
-                except: full_beam = None
-                if full_beam is not None:
-                    if ndim > 3:
-                        full_beam = full_beam[stokes_idx]
-                    if ndim > 2:
-                        # image_beam = np.median(full_beam, axis=0)
-                        image_beam = full_beam[spec_idx]
-                else: image_beam = None
-        if correct_beam:
-            # convert Jy/beam to Jy
-            if image_beam is not None:
-                if '/beam' in image_header['BUNIT']:
-                    pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
-                    pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
-                    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
-                    beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
-                    image_data = image_data / beamsize * u.beam
-        if name is None:
-            name = os.path.basename(fitsimage)
-        return Image(data=image_data, header=image_header, beam=image_beam, name=name)
-
-class ALMAImage(Image):
-    """The finetuned image for ALMA
-    """
-    def __init__(self, image=None, data=None, header=None, beam=None, wcs=None,
-                 mask=None, name=None):
-        """initialize the image
-        """
-        if image is not None:
-            if isinstance(image, Image):
-                super().__init__(data=image.data, header=image.header, beam=image.beam, 
-                                 wcs=image.wcs, mask=image.mask, name=image.name)
-        else:
-            super().__init__(data=data, header=header, beam=beam, wcs=wcs, 
-                             mask=mask, name=name)
-    @property
-    def beamsize(self):
-        # calculate the beamszie in number of pixels
-        # the final unit is pixels/beam, convert the Jy/beam to Jy/pixel need to divive the beam
-        pixel_area = self.pixel_sizes[0].to('arcsec').value * self.pixel_sizes[1].to('arcsec').value
-        return calculate_beamsize(self.beam, scale=1/pixel_area)
-        # return 1/(np.log(2)*4.0) * np.pi * self.beam[0] * self.beam[1] / pixel_area 
-    def pixel_beam(self):
-        # convert the beam size into pixel sizes
-        if self.beam is None:
-            warnings.warn('No beam infomation has been found!')
-            # raise ValueError("No valid beams can be found!")
-            return None
-        try:
-            bmaj, bmin, bpa = self.beam
-            x_scale = 1/self.pixel_sizes[0].to(u.arcsec).value
-            y_scale = 1/self.pixel_sizes[1].to(u.arcsec).value
-            bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
-                                 + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
-            bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
-                                 + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
-            pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
-        except:
-            pixel_beam = None
-        return pixel_beam
     def beam_stats(self, beam=None, mask=None, nsample=100):
         if beam is None:
             beam = self.pixel_beam
@@ -564,65 +632,6 @@ class ALMAImage(Image):
         """
         pbimage = solve_impb(pbfile)
 
-    def subimage(self, s_):
-        return ALMAImage(super().subimage(s_))
-
-    @staticmethod
-    def read_ALMA(fitsimage, extname='primary', name=None, debug=False, 
-                  correct_beam=False, spec_idx=0, stokes_idx=0):
-        """read the fits file
-
-        Args:
-            fitsimage: the filename of the fits file.
-            extname: the extention name of the table to be read.
-            name (optinal): the name of the image.
-            debug: set to true to print the details of the fits file
-            correct_beam: set to True to correct the beams if the beam 
-                          information is available
-            select_data: to select the data if the fitsfile contains 
-                         three dimensional or four dimensional data
-            spec_idx: the index of the third dimension
-            stokes_idx: the selecting idx of the stokes dimension
-        """
-        with fits.open(fitsimage) as image_hdu:
-            if debug:
-                print(image_hdu.info())
-            image_header = image_hdu[extname].header
-            image_data = image_hdu[extname].data[stokes_idx,spec_idx] * u.Unit(image_header['BUNIT'])
-            if 'BMAJ' in image_header.keys():
-                image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
-                              image_header['BPA']]
-            else:
-                try: full_beam = image_hdu['BEAMS'].data
-                except: image_beam = None
-                image_beam = list(full_beam[stokes_idx][:3])
-        if correct_beam:
-            # convert Jy/beam to Jy
-            if image_beam is not None:
-                if '/beam' in image_header['BUNIT']:
-                    pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
-                    pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
-                    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
-                    beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
-                    image_data = image_data / beamsize * u.beam
-        if name is None:
-            name = os.path.basename(fitsimage)
-        return ALMAImage(data=image_data, header=image_header, beam=image_beam, name=name)
-
-class AnalyzeImage(Image):
-    """The image used for various handy analysis
-    """
-    def __init__(self, image=None, data=None, header=None, beam=None, wcs=None, 
-                 mask=None, name=None):
-        """initialize the image
-        """
-        if image is not None:
-            if isinstance(image, Image):
-                super().__init__(data=image.data, header=image.header, beam=image.beam, 
-                                 wcs=image.wcs, mask=image.mask, name=image.name)
-        else:
-            super().__init__(data=data, header=header, beam=beam, wcs=wcsm, 
-                             mask=mask, name=name)
     def fit_2Dgaussian(self, **kwargs):
         return gaussian_2Dfitting(self.image, **kwargs)
 
@@ -708,10 +717,10 @@ class AnalyzeImage(Image):
                         apertures[i] = minimal_aperture
             apercorr = aperture_correction(fwhm=self.pixel_beam, aperture=apertures)
             corr = np.array(apercorr) * corr
-        flux_table = measure_flux(self.image.value, wcs=self.wcs,
-                                  coords=coords, apertures=apertures, method=method, 
-                                   segment_size=segment_scale*np.max(self.pixel_beam[0]),
-                                     **kwargs) 
+        flux_table = measure_flux(self.image.value, wcs=self.wcs, coords=coords, 
+                                  apertures=apertures, method=method, 
+                                  segment_size=segment_scale*np.max(self.pixel_beam[0]),
+                                  **kwargs) 
         flux_table['flux'] = flux_table['flux']*self.unit*corr
         flux_table['flux_err'] = flux_table['flux_err']*self.unit*corr
         return flux_table
@@ -720,6 +729,47 @@ class AnalyzeImage(Image):
 ########################################
 ###### stand alone functions ###########
 ########################################
+
+def read_ALMA(fitsimage, extname='primary', name=None, debug=False, 
+                  correct_beam=False, spec_idx=0, stokes_idx=0):
+    """read the fits file
+
+    Args:
+        fitsimage: the filename of the fits file.
+        extname: the extention name of the table to be read.
+        name (optinal): the name of the image.
+        debug: set to true to print the details of the fits file
+        correct_beam: set to True to correct the beams if the beam 
+                      information is available
+        select_data: to select the data if the fitsfile contains 
+                     three dimensional or four dimensional data
+        spec_idx: the index of the third dimension
+        stokes_idx: the selecting idx of the stokes dimension
+    """
+    with fits.open(fitsimage) as image_hdu:
+        if debug:
+            print(image_hdu.info())
+        image_header = image_hdu[extname].header
+        image_data = image_hdu[extname].data[stokes_idx,spec_idx] * u.Unit(image_header['BUNIT'])
+        if 'BMAJ' in image_header.keys():
+            image_beam = [image_header['BMAJ']*3600., image_header['BMIN']*3600., 
+                          image_header['BPA']]
+        else:
+            try: full_beam = image_hdu['BEAMS'].data
+            except: image_beam = None
+            image_beam = list(full_beam[stokes_idx][:3])
+    if correct_beam:
+        # convert Jy/beam to Jy
+        if image_beam is not None:
+            if '/beam' in image_header['BUNIT']:
+                pixel2arcsec_ra = abs(image_header['CDELT1']*u.Unit(image_header['CUNIT1']).to(u.arcsec)) 
+                pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
+                pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
+                beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
+                image_data = image_data / beamsize * u.beam
+    if name is None:
+        name = os.path.basename(fitsimage)
+    return Image(data=image_data, header=image_header, beam=image_beam, name=name)
 
 def calculate_rms(data, mask=None, masked_invalid=True, sigma_clip=True, sigma=3.0):
     if masked_invalid:
@@ -739,7 +789,7 @@ def beam2aperture(beam, scale=1):
     scale_array = np.array([scale, scale, 1])
     return (scale_array*np.array([beam[1], beam[0], beam[-1]]) * (0.5, 0.5, np.pi/180)).tolist()
 
-def calculate_beamsize(beam, scale=1):
+def calculate_beamarea(beam, scale=1):
     """calculate the beamszie
 
     Example: calculate the beamsize from physical beam to pixel area
@@ -1544,7 +1594,7 @@ def image2noise(image, shape=None, header=None, wcs=None, savefile=None, sigma=5
                 mode='std', overwrite=False,):
     """
     """
-    mean, median, std = stats.igma_clipped_stats(image, sigma=sigma, maxiters=3)
+    mean, median, std = stats.sigma_clipped_stats(image, sigma=sigma, maxiters=3)
     if shape is None:
         shape = image.shape
     if mode == 'median':
