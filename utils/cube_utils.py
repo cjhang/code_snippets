@@ -1,14 +1,14 @@
+#!/usr/bin/env python
+
 # -*- coding: utf-8 -*-
-"""Utilities dealing with fits datacube
+"""A minimalist utilities dealing with fits datacube
 
 Author: Jianhang Chen, cjhastro@gmail.com
-History:
-    2022-02-16: first release to handle the datacube from ALMA
 
 Example:
-        from cube_utils import read_fitscube_ALMA
-        dc = read_fitscube_ALMA('test_data/alma_datacube_AR2623.image.fits')
-        dc.chandata_in('km/s', reffreq=98.5*u.GHz)
+        from cube_utils import read_ALMA_cube
+        dc = read_ALMA_cube('test_data/alma_datacube_AR2623.image.fits')
+        dc.convert_chandata('km/s', reffreq=98.5*u.GHz)
         dc.collapse_cube('10~20')
 
 Requirement:
@@ -19,12 +19,22 @@ Requirement:
 Todo:
     * For module TODOs
 
+History:
+    2022-02-16: first release to handle the datacube from ALMA
+
+
 """
+
+__version__ = '0.0.1'
+
 
 import os
 import sys
 import re
+import argparse
+import textwrap
 import warnings
+import logging
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -48,8 +58,8 @@ warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
 from scipy import ndimage
 from scipy import optimize
 
-from photutils import aperture_photometry, find_peaks, EllipticalAperture, RectangularAperture, SkyEllipticalAperture
-from photutils import PixelAperture, SkyAperture
+from photutils.aperture import aperture_photometry, EllipticalAperture, RectangularAperture, SkyEllipticalAperture, PixelAperture, SkyAperture
+from photutils.detection import find_peaks
 from astropy.modeling import models, fitting
 
 # try to import other utils
@@ -68,11 +78,13 @@ class BaseCube(object):
 class Cube(BaseCube):
     """The base data strcuture to handle 3D astronomy data
     """
-    def __init__(self, data=None, header=None, wcs=None, chandata=None, beams=None, name=None):
+    def __init__(self, data=None, mask=None, name=None,
+                 header=None, wcs=None, beam=None, unit=None,
+                 chandata=None,  reference=None):
         """initialize the cube
 
         Args:
-            data: the 3D data with/without units (equivalent to Jy)
+            data: the 3D data, numpy ndaddray 
             header: the header can be identified by WCS
             wcs: it can be an alternative to the header
             specdata: the data in the third dimension, it can be velocity, frequency, wavelength. 
@@ -81,117 +93,178 @@ class Cube(BaseCube):
                 It can be one dimension or two dimension (for each channel)
         """
         self.data = data
-        self.header = header
-        self.wcs = wcs
-        self.chandata = chandata
-        self.beams = beams
+        self.mask = mask
         self.name = name
-        if self.header is not None:
-            if self.wcs is None:
-                self.update_wcs()
-            if self.chandata is None:
-                self.update_chandata()
-        if self.header is None:
-            if self.wcs is not None:
-                self.header = self.wcs.to_header()
-                if self.chandata is None:
-                    self.update_chandata()
-        if self.wcs.naxis > 3:
-            self.wcs = self.wcs.sub(['longitude','latitude','spectral'])
-
+        self.reference = reference
+        # hide the orinal header and wcs, due to their interchangeability
+        self._header = header
+        self._wcs = wcs
+        # keep the original beam as sometimes it can be access from header
+        self._beam = beam
+        # other optional info 
+        self._chandata = chandata
+        self._unit = unit
     def __getitem__(self, i):
             # return self.data[i]
             return self.subcube(i)
     @property
     def info(self):
         # the shortcut to print basic info
-        print(f"The shape of the data: {self.cube.shape}")
-        if self.beams is not None:
-            print(f"The median beam [arcsec, arcsec, deg]: {np.median(self.beams, axis=0)}")
-        print(f"Pixel size: {self.pixel_sizes}")
-        print(f"Channel width: {np.median(self.dchan)}")
+        print(f"The shape of the data: {self.data.shape}")
+        print(f"The `beam` is: {self.beam} in [arcsec, arcsec, deg]")
+        print(f"The `pixel_sizes` is: {self.pixel_sizes} in [arcsec, arcsec]")
+        print(self.wcs)
+    @property
+    def header(self):
+        if self._header is not None:
+            return self._header
+        elif self.wcs is not None:
+            return self.wcs.to_header()
+        else:
+            return None
+    @header.setter
+    def header(self, header):
+        self._header = header
+    @property
+    def wcs(self):
+        if self._wcs is not None:
+            fullwcs = self._wcs
+        elif self._header is not None:
+            fullwcs = WCS(self._header)
+        else:
+            fullwcs = None
+        if (fullwcs is not None) and (fullwcs.naxis == 4):
+            # drop the stokes axis
+            # return fullwcs.dropaxis(0)
+            # return fullwcs.sub(['longitude','latitude','spectral'])
+            # return fullwcs.sub(['longitude','latitude','cubeface'])
+            return fullwcs.sub([1,2,3])
+        else:
+            raise ValueError('Unsupprted wcs!')
+        return fullwcs
+    @wcs.setter
+    def wcs(self, wcs):
+        self._wcs = wcs
+    @property
+    def unit(self):
+        if self._unit is not None:
+            return self.unit
+        elif self.header is not None:
+            try:
+                return u.Unit(self._header['BUNIT'])
+            except:
+                pass
+        return u.Unit('')
+    @unit.setter
+    def unit(self, unit):
+        self._unit = u.Unit(unit)
+        self._header.update({'BUNIT': self._unit.to_string()})
+    @property
+    def cube(self):
+        return self.data*self.unit
+    @property
+    def chandata(self):
+        if self._chandata is not None:
+            return self._chandata
+        else:
+            # read the chandata from the header
+            # the fits standard start with index 1
+            if 'CD3_3' in self.header.keys():
+                cdelt3 = self.header['CD3_3']
+            else: 
+                cdelt3 = self.header['CDELT3']
+            # because wcs.slice with change the reference channel, the generated ndarray should 
+            # start with 1 
+            chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * cdelt3)
+            if 'CUNIT3' in self.header.keys():
+                chandata = chandata*u.Unit(self.header['CUNIT3'])
+            self._chandata = chandata
+            return chandata
+    @chandata.setter
+    def chandata(self, chandata):
+        if not isinstance(chandata, u.Quantity):
+            raise ValueError("chandata needs to be Quantify")
+        unit_out = chandata.unit
+        if unit_out.is_equivalent('m/s'):
+            ctype3 = 'VELOCITY'
+        elif unit_out.is_equivalent('m'):
+            ctype3 = 'WAVELENGTH'
+        elif unit_out.is_equivalent('Hz'):
+            ctype3 = 'FREQUENCY'
+        else:
+            ctype3 = 'Unknown'
+        cunit3 = unit_out.to_string()
+        # update the header
+        self._header.update(
+                {'CUNIT3':cunit3, 'CTYPE3':ctype3,
+                 'CRVAL3':chandata[1].value, 'CRPIX3':1,
+                 'CDELT3':(chandata[1]-chandata[0]).value})
+        self.wcs = WCS(self._header)
+        self._chandata = chandata
+    @property
+    def beam(self):
+        # return beam shape in [bmaj, bmin, PA] in [arcsec, arcsec, degree]
+        if self._beam is not None:
+            cube_beam = self._beam
+            if np.ndim(cube_beam) == 2:
+                return np.median(cube_beam, axis=0)
+            elif np.ndim(cube_beam) == 1:
+                return cube_beam
+        if self.header is not None:
+            try:
+                header = self.header
+                header_beam = np.array([header['BMAJ'], header['BMIN'], header['BPA']]).T
+                cube_beam = header_beam * np.array([3600.,3600.,1]) # convert deg to arcsec
+                return cube_beam
+            except: pass
+        return None
+    @beam.setter
+    def beam(self, beam):
+        """the beams could 2D array or 1D array like [bmaj, bmin, PA]
+        the units should be [arcsec, arcsec, degree]
+        """
+        self._beam = beam
+        header_beams = self.beam * np.array(1/3600., 1/3600, 1) # convert arcsec to deg
+        self._header.update({'BMAJ':header_beams[0], 'BMIN':header_beams[1], 
+                             'PA':header_beams[2]})
     @property
     def pixel_sizes(self):
         if self.header is not None:
             # Return the pixel size encoded in the header
             # In casa, it is in the units of deg, thus the returned value is pixel to deg
-            pixel2arcsec_ra = (abs(self.header['CDELT1'])*u.Unit(self.header['CUNIT1'])).to(u.arcsec)
-            pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec)
+            pixel2arcsec_ra = (abs(self.header['CDELT1'])*u.Unit(self.header['CUNIT1'])).to(u.arcsec).value
+            pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec).value
         else:
             pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
-        return u.Quantity([pixel2arcsec_ra, pixel2arcsec_dec])
+        return np.array([pixel2arcsec_ra, pixel2arcsec_dec])
     @property
     def shape(self):
-        return self.cube.shape
-    @property
-    def ndim(self):
-        return self.data.ndim
+        return self.data.shape
     @property
     def imagesize(self):
-        # the imagesize is in [ysize, xsize], [nrow, ncol]
-        try: 
-            return self.data.shape[-2:]
-        except: 
-            return None
+        return self.shape[-2:]
+    @property
+    def ndim(self):
+        try: return self.data.ndim
+        except: return None
     @property
     def nchan(self):
         try: return self.data.shape[-3]
         except: return None
     @property
-    def median_beam(self):
-        if self.beam is not None:
-            return np.median(self.beams, axis=0)
-        else:
-            print("Warning: no beam has been found!")
-    @property
     def dchan(self):
-        return calculate_diff(self.chandata)
-    @property
-    def cube(self):
-        # return the 3D cube, with stokes dimension
-        if self.ndim == 4:
-            return self.data[0]
-        else:
-            return self.data
-    @property
-    def wavelength(self):
-        return self.get_wavelength()
-    @property
-    def frequency(self):
-        return self.get_frequency()
-
-    def get_wavelength(self, unit=u.mm):
+        try: return calculate_diff(self.chandata)
+        except: return None
+    def get_wavelength(self, unit='mm', reference=None):
         return convert_spec(self.chandata, unit)
-
-    def get_frequency(self, unit=u.GHz):
+    def get_frequency(self, unit='GHz', reference=None):
         return convert_spec(self.chandata, unit)
-
-    def get_velocity(self, reference=None):
-        return convert_spec(self.chandata, 'km/s', reference=reference)
-
-    def update_wcs(self, wcs=None):
-        if wcs is not None:
-            self.wcs = wcs
-        else: 
-            self.wcs = WCS(self.header)
-
-    def update_chandata(self):
-        # the fits standard start with index 1
-        if 'CD3_3' in self.header.keys():
-            cdelt3 = self.header['CD3_3']
-        else: 
-            cdelt3 = self.header['CDELT3']
-        # because wcs.slice with change the reference channel, the generated ndarray should 
-        # start with 1 
-        self.chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * cdelt3)
-        if 'CUNIT3' in self.header.keys():
-            self.chandata = self.chandata*u.Unit(self.header['CUNIT3'])
-
+    def get_velocity(self, unit='km/s', reference=None):
+        return convert_spec(self.chandata, unit, reference=reference)
     def pixelcoods2sky(self, pixel_coords):
         #covert from pixel to skycoords
         pixel_coords = np.array(pixel_coords).T
         return pixel_to_skycoord(*pixel_coords, self.wcs)
-
     def skycoords2pixels(self, skycoords):
         #covert from pixel to skycoords
         if skycoords.size == 1:
@@ -200,13 +273,12 @@ class Cube(BaseCube):
             return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
         else:
             raise ValueError('Unsupported sky coordinates!')
-
     def convert_chandata(self, unit_out, reference=None):
         """convert the units of the specdata 
         """
         self.reference = reference
-        self.chandata = convert_spec(self.chandata, unit_out, reference=reference)
-
+        chandata = convert_spec(self.chandata, unit_out, reference=reference)
+        self.chandata = chandata
     def extract_spectrum(self, pixel_coord=None, sky_coord=None, pixel_aperture=None, 
                          sky_aperture=None, plot=False, ax=None, **kwargs):
         """extract 1D spectrum from the datacube
@@ -223,7 +295,7 @@ class Cube(BaseCube):
                 pixel_coord = np.round(wcs_utils.skycoord_to_pixel(sky_coord, wcs=self.wcs)).astype(int)
             else:
                 # collapse the whole datacube into one spectrum
-                spectrum = np.sum(np.sum(self.cube, axis=1), axis=1)
+                spectrum = np.sum(np.sum(self.cube, axis=1), axis=1) * self.unit
 
         if pixel_coord is not None:
             if pixel_aperture is not None:
@@ -231,9 +303,9 @@ class Cube(BaseCube):
                 aper_mask = aperture.to_mask().to_image(self.imagesize).astype(bool)
                 aper_mask_3D = np.repeat(aper_mask[None,:,:], self.nchan, axis=0)
                 data_selected = self.cube[aper_mask_3D]
-                spectrum = np.sum(data_selected.reshape((self.nchan, np.sum(aper_mask))), axis=1)
+                spectrum = np.sum(data_selected.reshape((self.nchan, np.sum(aper_mask))), axis=1)*self.unit
             else:
-                spectrum = self.cube[:,pixel_coord[1], pixel_coord[0]]
+                spectrum = self.cube[:,pixel_coord[1], pixel_coord[0]]*self.unit
             
         if plot:
             if ax is None:
@@ -244,10 +316,9 @@ class Cube(BaseCube):
             ax.set_ylabel('Flux [Jy]')
             ax_top = ax.twiny()
             ax_top.step(np.arange(self.nchan), spectrum, where='mid', alpha=0)
-        return Spectrum(specchan=self.chandata, specdata=spectrum, **kwargs)
-
+        return self.chandata, spectrum*self.unit
     def collapse_cube(self, chans='', chanunit=None, return_header=False, 
-                      reffreq=None, refwave=None, moment=0):
+                      reference=None, moment=0, mask=None):
         """collapse the cube to make one channel image
 
         Args:
@@ -259,9 +330,9 @@ class Cube(BaseCube):
         """
         # decoding the chans
         selected_indices = []
-        data = self.cube
+        data = self.data
         if chanunit is not None:
-            self.convert_chandata(chanunit, reffreq=reffreq, refwave=refwave)
+            self.convert_chandata(chanunit, reference=reference)
         if chans == '':
             selected_indices = list(range(self.chandata.size))
         else:
@@ -271,24 +342,23 @@ class Cube(BaseCube):
                 # casa includes the last channel with the chan selection rules
                 selected_indices.append(list(range(chan_range[0], chan_range[1]+1))) 
             selected_indices = [item for sublist in selected_indices for item in sublist]
+        chandata_selected = self.chandata[selected_indices]
         dchan_selected = calculate_diff(self.chandata)[selected_indices]
         chan_selected = self.chandata[selected_indices]
         data_selected = data[selected_indices]
-        M0 = np.sum(data_selected * dchan_selected[:,None,None], axis=0)
-        if moment == 0:
-            collapsed_image = M0
-        if moment > 0:
-            M1 = np.sum(data_selected*chan_selected[:,None,None]*dchan_selected[:,None,None], axis=0)/M0
-            if moment == 1:
-                collapsed_image = M1
-            if moment > 1:
-                collapsed_image = np.sum(data_selected*(chan_selected[:,None,None]-M1[None,:,:])**moment*dchan_selected[:,None,None], axis=0)/M0
-        if self.beams is not None:
-            collapsed_beam = np.median(self.beams[selected_indices], axis=0)
-        else: collapsed_beam = None
+        collapsed_image = make_moments(data_selected, chandata_selected.value, moment=moment, mask=mask)
+        # M0 = np.sum(data_selected * dchan_selected[:,None,None], axis=0)
+        # if moment == 0:
+            # collapsed_image = M0
+        # if moment > 0:
+            # M1 = np.sum(data_selected*chan_selected[:,None,None]*dchan_selected[:,None,None], axis=0)/M0
+            # if moment == 1:
+                # collapsed_image = M1
+            # if moment > 1:
+                # collapsed_image = np.sum(data_selected*(chan_selected[:,None,None]-M1[None,:,:])**moment*dchan_selected[:,None,None], axis=0)/M0
+        collapsed_beam = self.beam
         collapsed_header = self.wcs.sub(['longitude','latitude']).to_header()
         return [collapsed_image, collapsed_header, collapsed_beam]
-
     def subcube(self, s_):
         """extract the subsection of the datacube
 
@@ -298,39 +368,34 @@ class Cube(BaseCube):
         Return:
             Cube
         """
-        cube_sliced = self.cube[s_].copy() # force to use new memory
-        wcs_sliced = self.wcs[s_]
-        shape_sliced = cube_sliced.shape
-        header_sliced = wcs_sliced.to_header()
+        # if not isinstance(s_, slice):
+            # raise ValueError("Please input a numpy slice.")
+        cube_sliced = self.data[s_].copy() # force to use new memory
+        self_wcs = self.wcs
+        if self_wcs is not None:
+            wcs_sliced = self_wcs[s_]
+            shape_sliced = cube_sliced.shape
+            header_sliced = wcs_sliced.to_header()
+        else:
+            header_sliced = fits.Header()
         header_sliced.set('NAXIS',len(shape_sliced))
         header_sliced.set('NAXIS1',shape_sliced[2])
         header_sliced.set('NAXIS2',shape_sliced[1])
         header_sliced.set('NAXIS3',shape_sliced[0])
-        if self.beams is not None:
-            beams_sliced = self.beams[s_[0]]
-        else: 
-            beams_sliced = None
-        return Cube(data=cube_sliced, header=header_sliced, beams=beams_sliced)
-
+        return Cube(data=cube_sliced, header=header_sliced, beam=self.beam)
     def find_3Dstructure(self, **kwargs):
         if isinstance(self.cube, u.Quantity):
             return find_3Dstructure(self.cube.value, **kwargs)
         else:
             return find_3Dstructure(self.cube, **kwargs)
-
     def writefits(self, filename, overwrite=False):
         """write datacube into fitsfile
 
         This function also shifts the reference pixel of the image to the image center
         and the reference pixel of the spectrum to the 1 (the standard starting)
         """
-        header = self.header
-        if header is None:
-            if self.wcs is not None:
-                header = wcs.to_header()
-            else:
-                header = fits.Header()
         # remove the History and comments of the header
+        header = self.header
         try:
             header.remove('HISTORY', remove_all=True)
             header.remove('COMMENT', remove_all=True)
@@ -353,32 +418,23 @@ class Cube(BaseCube):
                 # header['CRPIX3'] = 1
                 # print('Warning: automatically shifted the channel reference.')
         # except: pass
-        if isinstance(self.data, u.Quantity):
-            header.set('BUNIT', self.data.unit.to_string())
-            data = self.data.value
-        else:
-            data = self.data
+        # header.set('BUNIT', self.unit.to_string())
         header.update({'history':'created by cube_utils.Cube',})
         hdu_list = []
-        hdu_list.append(fits.PrimaryHDU(data=data, header=header))
-        if self.beams is not None:
-            beams_T = self.beams.T
-            c1 = fits.Column(name='BMAJ', array=beams_T[0], format='D', unit='arcsec') # double float
-            c2 = fits.Column(name='BMIN', array=beams_T[1], format='D', unit='arcsec') # doubel float
-            c3 = fits.Column(name='BPA', array=beams_T[2], format='D', unit='deg') # double float
-            hdu_list.append(fits.BinTableHDU.from_columns([c1,c2,c3], name='BEAMS'))
+        # write the beams
+        beam = self.beam
+        header.update({'BMAJ':beam[0]/3600., 'BMIN':beam[1]/3600., 
+                       'BPA':self.beam[2]})
+        # if ndim_beam == 2:
+            # beams_T = self._beams.T
+            # c1 = fits.Column(name='BMAJ', array=beams_T[0], format='D', unit='arcsec') # double float
+            # c2 = fits.Column(name='BMIN', array=beams_T[1], format='D', unit='arcsec') # doubel float
+            # c3 = fits.Column(name='BPA', array=beams_T[2], format='D', unit='deg') # double float
+            # hdu_list.append(fits.BinTableHDU.from_columns([c1,c2,c3], name='BEAMS'))
+        hdu_list.append(fits.PrimaryHDU(data=self.data, header=header))
         hdus = fits.HDUList(hdu_list)
         hdus.writeto(filename, overwrite=overwrite)
-
-    def auto_measure(self):
-        """designed for subcube
-
-        With proper cutout, it should be used to extract the spectrum and measure the intensity
-        automatically
-        """
-        pass
-    @staticmethod
-    def read(fitscube, extname='Primary', debug=False):
+    def readfits(self, fitscube, extname='Primary', debug=False):
         """read general fits file
         """
         with fits.open(fitscube) as cube_hdu:
@@ -386,70 +442,49 @@ class Cube(BaseCube):
                 print(cube_hdu.info())
             cube_header = cube_hdu[extname].header
             cube_data = cube_hdu[extname].data 
-            if 'BUNIT' in cube_header.keys():
-                cube_unit = u.Unit(cube_header['BUNIT'])
-                cube_data = cube_data * cube_unit
+            # if 'BUNIT' in cube_header.keys():
+                # cube_unit = u.Unit(cube_header['BUNIT'])
+                # cube_data = cube_data * cube_unit
             try:
-                beams_data = cube_hdu['beams'].data
-                cube_beams = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
-            except: cube_beams = None
-        return Cube(data=cube_data, header=cube_header, beams=cube_beams)
-    @staticmethod
-    def read_ALMA(fitscube, debug=False, stokes=0, name=None):
+                beam_data = cube_hdu['beams'].data
+                cube_beam = np.array([beam_data['BMAJ'], beam_data['BMIN'], beam_data['BPA']]).T
+            except: cube_beam = None
+        self.data=cube_data
+        self.header=cube_header
+        self._beam=cube_beam
+    def read_ALMA(self, fitscube, debug=False, stokes=0, name=None):
         """read the fits file
         """
-        with fits.open(fitscube) as cube_hdu:
-            if debug:
-                print(cube_hdu.info())
-            cube_header = cube_hdu['primary'].header
-            cube_data = cube_hdu['primary'].data * u.Unit(cube_header['BUNIT'])
-            try:
-                beams_data = cube_hdu['beams'].data
-                cube_beams = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
-            except: cube_beams = None
-            if False: # convert the units
-                if '/beam' in cube_header['BUNIT']: # check whether it is beam^-1
-                    pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
-                    pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT2']).to(u.arcsec))       
-                    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec # in arcsec2
-                    beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
-                    cube_data = cube_data / beamsize[None,:,None,None] * u.beam
-        return Cube(data=cube_data[stokes], header=cube_header, beams=cube_beams, name=name)
+        _cube = read_ALMA_cube(fitscube, debug=debug, stokes=stokes, name=name)
+        self.data = _cube.data
+        self._header = _cube._header
+        self._beam = _cube._beam # necessary as header does not have beam info
+        self.name = _cube.name
 
 #################################
 ###   stand alone functions   ###
 #################################
 
-def read_fitscube_ALMA(fitscube, pbcor=False, debug=False,):
-    """read the datacube from the files and return with the Cube
-    
-    Default ALMA Data also have the Stokes dimonsion, which needs special care
+def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None):
+    """read the fits file
     """
     with fits.open(fitscube) as cube_hdu:
         if debug:
             print(cube_hdu.info())
         cube_header = cube_hdu['primary'].header
-        cube_data = cube_hdu['primary'].data * u.Unit(cube_header['BUNIT'])
-        cube_beams = cube_hdu['beams'].data
-    cube_shape = cube_data.shape
-    imagesize = cube_shape[-2:]
-    nchan = cube_shape[-3]
-    cube_wcs = WCS(cube_header)
-    # read from the header
-    pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
-    pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT1']).to(u.arcsec))       
-
-    # handle the beams
-    cube_beams = np.array([cube_beams['BMAJ'], cube_beams['BMIN'], cube_beams['BPA']]).T
-    # In CASA/ALMA, the beams are stored in the units of [arcsec, arcsec, deg]
-    pixel_area = pixel2arcsec_ra * pixel2arcsec_dec # in arcsec2
-    # convert the beamsize into pixel area
-    beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
-
-    # convert the units
-    cube_data = cube_data / beamsize[None,:,None,None] * u.beam
-
-    return Cube(data=cube_data, header=cube_header, beams=cube_beams)
+        cube_data = cube_hdu['primary'].data #* u.Unit(cube_header['BUNIT'])
+        try:
+            beams_data = cube_hdu['beams'].data
+            cube_beam = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
+        except: cube_beam = None
+        if False: # convert the units
+            if '/beam' in cube_header['BUNIT']: # check whether it is beam^-1
+                pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
+                pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT2']).to(u.arcsec))       
+                pixel_area = pixel2arcsec_ra * pixel2arcsec_dec # in arcsec2
+                beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
+                cube_data = cube_data / beamsize[None,:,None,None] * u.beam
+    return Cube(data=cube_data[stokes], header=cube_header, beam=cube_beam, name=name)
 
 def calculate_beamsize(beams, debug=False):
     """quick function to calculate the beams size
@@ -485,7 +520,9 @@ def solve_cubepb(pbfile=None, datafile=None, pbcorfile=None, header=None):
         raise ValueError("No valid primary beam information has been provided!")
     return Cube(data=pbdata, header=header, name='pb')
 
-def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dilation_iters=1, mask=None, plot=False, ax=None, debug=False):
+def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, 
+                     dilation_iters=1, mask=None, label_coords=None,
+                     plot=False, ax=None, debug=False):
     """this function use scipy.ndimage.label to search for continuous structures in the datacube
 
     To use this function, the image should not be oversampled! If so, increase the minsize is recommended
@@ -509,21 +546,36 @@ def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1, dila
     if debug:
         print('nb=', nb)
     # label_new = 1
-    for i in range(nb):
-        struct_select = ndimage.find_objects(labels==i)
+    if label_coords is not None:
+        labels_selected = []
+        for coord in label_coords:
+            _z,_y,_x = coord
+            labels_selected.append(labels[_z,_y,_x])
+            print('labels_selected', labels_selected)
+    else: labels_selected = None
+    if labels_selected is not None:
         if debug:
-            print("structure size: {}".format(sigma_struct[struct_select[0]].size))
-        if sigma_struct[struct_select[0]].size < minsize:
-            sigma_struct[struct_select[0]] = False
-        # else:
-            # sigma_struct[struct_select[0]] = label_new
-            # label_new += 1
+            print("constructing structure based on selected labels")
+        labeled_struct = np.zeros(labels.shape).astype(bool)
+        for i in labels_selected:
+            labeled_struct[labels==i] = True
+    else:
+        # cleaning the small labels
+        for i in range(nb):
+            if debug:
+                print(f"working on label={i}")
+            struct_select = ndimage.find_objects(labels==i)
+            if debug:
+                print("structure size: {}".format(sigma_struct[struct_select[0]].size))
+            if sigma_struct[struct_select[0]].size < minsize:
+                sigma_struct[struct_select[0]] = False
+            labeled_struct = sigma_struct
     if plot:
         if ax is None:
             ax = plt.figure().add_subplot(projection='3d')
-        ax.voxels(sigma_struct)
+        ax.voxels(labeled_struct)
         ax.set(xlabel='channel', ylabel='y', zlabel='x')
-    return sigma_struct
+    return labeled_struct
 
 def make_moments(data, chandata, moment=0, mask=None):
     data = np.ma.array(data, mask=mask)
@@ -705,4 +757,141 @@ def calculate_diff(v):
     v_expanded[2:-2] = 0.5*v_expanded[2:-2]
     return np.abs(np.diff(v_expanded))
 
+#################################
+###      quick functions      ###
+#################################
 
+def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None, 
+            pixel_center=None, pixel_radius=None, bltr=None, chans=None,
+            overwrite=True):
+    """split a subcube from a big cube
+
+    Args:
+     fitscube: the datacube fits file
+     sky_center: the sky coordinate of the center
+    """
+    cube = Cube.read(fitscube)
+    # convert the sky coordinate to pixel coordinate
+    if sky_center is not None:
+        if not isinstance(sky_center, coordinates.SkyCoord):
+            if ':' in sky_center or 'm' in sky_center:
+                sky_center = SkyCoord(sky_center, unit=(u.hourangle, u.deg))
+            else:
+                ra, dec = sky_center.split(" ")
+                sky_center = SkyCoord(float(ra), float(dec), unit='deg')
+            pixel_center = cube.skycoords2pixels(sky_center)
+    if sky_radius is not None:
+        if isinstance(sky_radius, str):
+            sky_radius = u.Quantity(sky_radius)
+        if isinstance(sky_radius, u.Quantity):
+            sky_radius = sky_radius.to(u.arcsec)
+        pixel2arcsec_ra, pixel2arcsec_dec = cube.pixel_sizes
+        # here we only use the pixel scale in ra
+        pixel_radius = sky_radius/pixel2arcsec_ra
+    if isinstance(chans, str):
+        chans = np.array(chans.split('~')).astype(int)
+    # convert the pixel coordinates to bltr
+    if pixel_center is not None:
+        bottom_left = pixel_center - pixel_radius
+        top_right = pixel_center + pixel_radius
+        bltr = [*bottom_left, *top_right]
+
+    # convert bltr to slice
+    xlow, xup = bltr[0], bltr[-2]
+    ylow, yup = bltr[1], bltr[-1]
+    if chans is None:
+        subcube = cube.subcube(np.s_[:,ylow:yup,xlow:xup])
+    else:
+        subcube = cube.subcube(np.s_[chans[0]:chans[1],ylow:yup,xlow:xup])
+    subcube.writefits(outfile, overwrite=overwrite)
+
+
+#################################
+###          testing          ###
+#################################
+
+def test_cube():
+    """a small test suit for `cube_utils`
+    """
+    pass
+    # create a mock cube
+    # cut out a subcube
+    # write to a fits file
+    # read again the fits file
+    # check all the properties
+    # make a spectrum fitting
+    # make moments maps
+
+
+#################################
+###        CMD wrapper        ###
+#################################
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+            usage='%(prog)s [options]',
+            prog='cube_utils.py',
+            description=f"Welcome to Jianhang's cube utilities {__version__}",
+            epilog='Reports bugs and problems to cjhastro@gmail.com')
+    parser.add_argument('--debug', action='store_true',
+                        help='dry run and print out all the input parameters')
+    parser.add_argument('--dry_run', action='store_true',
+                        help='print the commands but does not execute them')
+    parser.add_argument('--logfile', default=None, help='the filename of the log file')
+    parser.add_argument('-v','--version', action='version', version=f'v{__version__}')
+
+    # add subparsers
+    subparsers = parser.add_subparsers(
+            title='Available task', dest='task', 
+            metavar=textwrap.dedent(
+        '''
+          * subcube: get a subcube from a big cube
+
+          To get more details about each task:
+          $ cube_utils.py task_name --help
+        '''))
+
+    # define the tasks
+    subp_subcube = subparsers.add_parser('subcube',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            cut a cube from a big cube
+            --------------------------------------------
+            Examples:
+    
+              cube_utils subcube --
+
+            '''))
+    subp_subcube.add_argument('--fitscube', type=str, help='The input fits datacube')
+    subp_subcube.add_argument('--outfile', type=str, help='The output file name')
+    subp_subcube.add_argument('--bltr', type=int, nargs='+', help='The pixel coordinate of [bottom left, top_right], e.g. 10 10 80 80')
+    subp_subcube.add_argument('--sky_center', type=str, help='The sky coordinate of the center,  e.g. "1:12:43.2 +31:12:43" or "1h12m43.2s +1d12m43s" or "23.5 -34.2"')
+    subp_subcube.add_argument('--sky_radius', type=str, help='The angular distance between the center and the boundaries,  e.g. "3.5*u.arcsec"')
+    subp_subcube.add_argument('--pixel_center', type=int, nargs='+', help='The pixel coordinate of the center,  e.g. "80 80"')
+    subp_subcube.add_argument('--pixel_radius', type=int, help='The pixel distance between the center and the boundaries,  e.g. "10"')
+    subp_subcube.add_argument('--chans', type=str, help='The pixel distance between the center and the boundaries,  e.g. "10~20"')
+
+    args = parser.parse_args()
+    logging.basicConfig(filename=args.logfile, encoding='utf-8', level=logging.INFO,
+                        format='%(asctime)s %(levelname)s:%(message)s')
+    logging.info(f"Welcome to cube_utils.py {__version__}")
+ 
+    if args.debug:
+        logging.debug(args)
+        func_args = list(inspect.signature(locals()[args.task]).parameters.keys())
+        func_str = f"Executing:\n \t{args.task}("
+        for ag in func_args:
+            try: func_str += f"{ag}={args.__dict__[ag]},"
+            except: func_str += f"{ag}=None, "
+        func_str += ')\n'
+        logging.debug(func_str)
+
+    if args.task == 'subcube':
+        subcube(args.fitscube, outfile=args.outfile, 
+                sky_center=args.sky_center, sky_radius=args.sky_radius,
+                pixel_center=args.pixel_center, pixel_radius=args.pixel_radius,
+                bltr=args.bltr,
+                chans=args.chans,
+                )
+
+    logging.info('Finished')
