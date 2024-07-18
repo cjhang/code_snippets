@@ -59,9 +59,13 @@ If you have downloaded all the science data of your project, and the data are or
 
     eris_jhchen_utils.py run_eris_pipeline -d science_raw 
 
+If you want to check the PV diagram of your reduced cubes:
+    
+    eris_jhchen_utils.py quick_pv_diagram -d science_reduced/eris_ifu_jitter_twk_cube_000.fits -z 2.0
+
 For detailed input parameters of the quick tools:
 
-    eris_jhchen_utils.py get_daily_calib -h
+    eris_jhchen_utils.py <quick_tool_name> -h
 
 ## Galphy project
 

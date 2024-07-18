@@ -15,7 +15,7 @@ History:
     - 2024-02-26: support reducing PSF and standard stars, v0.5
     - 2024-04-07: add data quicklook tools, v0.6
 """
-__version__ = '0.6.12'
+__version__ = '0.6.18'
 
 # import the standard libraries
 import os 
@@ -327,7 +327,7 @@ def request_science(prog_id='', metafile='metadata.csv',
                     username=None, password=None, auth=None, 
                     outdir=None, target='', ob_id='', exptime='',
                     start_date='2022-04-01', end_date='2094-10-06', debug=False, 
-                    dp_type='',
+                    dp_type='', band='', spaxel='',
                     dry_run=False, archive=False, uncompress=False,
                     **kwargs):
     """download the science data 
@@ -350,6 +350,8 @@ def request_science(prog_id='', metafile='metadata.csv',
         end_date (str): end date, same format as start_date
         dp_type (str): the type of the calib, set it to "%PSF-CALIBRATOR" 
                        along with the project id to download the PSF star only
+        band (str): the observing band, like 'H_middle', 'K_low'
+        spaxel (str): the spaxel resolution, like '250mas', '100mas', '25mas'
         **kwargs: other keyword filters
     """
     root_calib_url = 'https://dataportal.eso.org/dataportal_new/file/'
@@ -372,6 +374,8 @@ def request_science(prog_id='', metafile='metadata.csv',
                     'exptime': exptime,
                     'etime': end_date,
                     'dp_type': dp_type, 
+                    'ins3_spgw_name': band,
+                    'ins3_spxw_name': spaxel,
                     'obs_targ_name': target,}
     if debug:
         for key, item in column_filters.items():
@@ -982,7 +986,8 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
             try:
                 target = tpl_metadata[tpl_metadata['DPR.CATG']=='CALIB']['OBS.TARG.NAME'][0]
             except:
-                logging.warning(f'Skip OB:{ob_id} on {tpl_time}, faild in finding the target name!')
+                logging.warning(f'> Skip OB:{ob_id} on {tpl_time}')
+                logging.warning(f'>> faild in finding the target name!')
                 continue
         # get all the DPR catagories: SCIENCE, ACQUISITION, CALIB (PSF_CALIBRATOR + STD)
         tpl_cats_unique = np.unique(tpl_metadata['DPR.CATG'])
@@ -993,12 +998,15 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                 continue
             cat_metadata = tpl_metadata[tpl_metadata['DPR.CATG']==cat]
             cat_exptime_list = np.unique(
-                    cat_metadata['DET.SEQ1.DIT']).astype(int).tolist()
-            logging.info(f'{cat} recieve exptime with: {cat_exptime_list}')
+                    cat_metadata['DET.SEQ1.DIT']).astype(float).tolist()
+            logging.info(f'{cat} recieve exptime with: {cat_exptime_list}s')
             for exptime in cat_exptime_list:
                 stdstar_type = ''
                 exp_metadata = cat_metadata[
                         abs((cat_metadata['DET.SEQ1.DIT']-exptime))<1e-6]
+                if len(exp_metadata) < 1:
+                    logging.warning(f'{cat} recieve no real exptime with {exptime:.1f}s! Skip...')
+                    continue
                 first_meta = exp_metadata[0]
                 band  = first_meta['INS3.SPGW.NAME']
                 spaxel = first_meta['INS3.SPXW.NAME']
@@ -1012,20 +1020,24 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
 
                 # check whether the OB has been reduced
                 is_reduced = False
-                tpl_cat_outdir = os.path.join(outdir, f'{target}_{cat}{stdstar_type}_{ob_id}_{tpl_time}_{band}_{spaxel}_{exptime}s')
+                tpl_cat_outdir = os.path.join(outdir, f'{target}_{cat}{stdstar_type}_{ob_id}_{tpl_time}_{band}_{spaxel}_{exptime:.0f}s')
                 # count the OBJ and SKY frames <TODO> to get the expected_output
-                expected_output = ['eris_ifu_jitter_dar_cube_coadd.fits', 
-                                   'eris_ifu_jitter_obj_cube_coadd.fits',
-                                   'eris_ifu_stdstar_obj_cube_000.fits',
-                                   'eris_ifu_stdstar_sky_cube_000.fits',
-                                   'eris_ifu_stdstar_std_cube_000.fits',
-                                   'eris_ifu_stdstar_psf_cube_000.fits',
+                dpr_is_sky = np.array([True if 'SKY' in item else False for item in exp_metadata['DPR.TYPE']])
+                n_sky = np.sum(dpr_is_sky)
+                n_obj = np.sum(~dpr_is_sky)
+                n_total = n_sky + n_obj
+                expected_output = [f'eris_ifu_jitter_obj_cube_{n_total-1:0>3d}.fits', 
+                                   f'eris_ifu_jitter_sky_cube_{n_total-1:0>3d}.fits',
+                                   f'eris_ifu_stdstar_obj_cube_{n_total-1:0>3d}.fits',
+                                   f'eris_ifu_stdstar_sky_cube_{n_total-1:0>3d}.fits',
+                                   f'eris_ifu_stdstar_std_cube_{n_total-1:0>3d}.fits',
+                                   f'eris_ifu_stdstar_psf_cube_{n_total-1:0>3d}.fits',
                                    ]
                 for eo in expected_output:
                     if os.path.isfile(os.path.join(tpl_cat_outdir, eo)):
                         if not overwrite:
                             logging.info(f"> Done: {date}:{target} on {tpl_time})")
-                            logging.info(f">>      with {ob_id}+{cat}+{band}+{spaxel}+{exptime}s")
+                            logging.info(f">>      with {ob_id}+{cat}+{band}+{spaxel}+{exptime:.1f}s")
                             is_reduced = True
                 if is_reduced:
                     continue
@@ -1033,12 +1045,12 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                 if os.path.isfile(os.path.join(tpl_cat_outdir, 'failed')):
                     if not overwrite:
                         logging.info(f"> Skip failure: {target} with TPL.START={tpl_time}")
-                        logging.info(f">> with {ob_id}+{cat}+{band}+{spaxel}+{exptime}s")
+                        logging.info(f">> with {ob_id}+{cat}+{band}+{spaxel}+{exptime:.1f}s")
                         continue
                 
                 ## Step-3
                 # generate the calibPool
-                logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime}s")
+                logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime:.1f}s")
                 if not dry_run:
                     calib_pool_tpl = get_daily_calib(
                             date, band, spaxel, exptime, esorex=esorex, 
@@ -1050,7 +1062,7 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                 ## Step-4
                 # run eris_ifu_gitter on science target and acquisition/psf stars
                 logging.info(f"> getting calibPool on {date}: {target} on {tpl_time}")
-                logging.info(f">> with {ob_id}+{cat}+{band}+{spaxel}+{exptime}s")
+                logging.info(f">> with {ob_id}+{cat}+{band}+{spaxel}+{exptime:.1f}s")
                 if dry_run:
                     continue
                 try:
@@ -1067,13 +1079,13 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                     # subprocess.run(['rm','-rf', daily_ob_outdir])
                     # subprocess.run(['touch', daily_ob_outdir+'/failed'])
                     logging.warning(f"> Error: found in runing {date}: {target} on {tpl_time}")
-                    logging.warning(f">>       with {ob_id}+{band}+{spaxel}+{exptime}s")
+                    logging.warning(f">>       with {ob_id}+{band}+{spaxel}+{exptime:.1f}s")
 
 
 #####################################
 ######### Flux calibration ##########
 
-def gaussian_2d(params, x=None, y=None):
+def gaussian_2d_legacy(params, x=None, y=None):
     """a simple 2D gaussian function
     
     Args:
@@ -1084,6 +1096,22 @@ def gaussian_2d(params, x=None, y=None):
     """
     amp, x0, y0, xsigma, ysigma, beta = params
     return amp*np.exp(-0.5*(x-x0)**2/xsigma**2 - beta*(x-x0)*(y-y0)/(xsigma*ysigma)- 0.5*(y-y0)**2/ysigma**2)
+
+def gaussian_2d(params, x=None, y=None):
+    """a simple 2D gaussian function
+    
+    Args:
+        params: all the free parameters
+                [amplitude, x_center, y_center, x_sigma, y_sigma, theta]
+        x: x grid
+        y: y grid
+    """
+    amp, x0, y0, xsigma, ysigma, theta = params
+    a = np.cos(theta)**2/(2*xsigma**2) + np.sin(theta)**2/(2*ysigma**2)
+    b = np.sin(2*theta)/(2*xsigma**2) - np.sin(2*theta)/(2*ysigma**2)
+    c = np.sin(theta)**2/(2*xsigma**2) + np.cos(theta)**2/(2*ysigma**2)
+    return amp*np.exp(-a*(x-x0)**2 - b*(x-x0)*(y-y0) - c*(y-y0)**2)
+
 
 def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
              extract_spectrum=False, star_type=None, T_star=None,
@@ -1105,27 +1133,34 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     elif data.ndim == 3:
         wavelength = get_wavelength(header=data_header)
         # collapse the cube to make map
-        # data = astro_stats.sigma_clip(data, sigma=10)
+        print('start median filter')
+        data = ndimage.median_filter(data, size=50, axes=0)
+        print('median filter is finished')
+        data = astro_stats.sigma_clip(data, sigma=10, axis=0)
+        print('sigma_clip is finished')
         image = np.nansum(data, axis=0)
 
         # collapse the cube to get the image of the star
         # this is used to find the star and get its shape (by 2d-Gaussian fitting)
-        # data = clean_cube(data, median_filter=True, median_subtract=True)
-        # image = np.ma.median(np.ma.masked_invalid(data), axis=0)
+        # data = clean_cube(data, median_filter=False, median_subtract=False, sigma=10)
+        # image = np.ma.sum(data, axis=0)
     yshape, xshape = image.shape
+    print((yshape, xshape))
     margin_padding = 10
-    norm_scale = 1.5*np.percentile(image[margin_padding:-margin_padding,
-                                         margin_padding:-margin_padding], 90)
-    image_normed = image #/ norm_scale
+    norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
+                                         margin_padding:-margin_padding], 98)
+    image_normed = image / norm_scale
     rms = 1
 
     # start the gaussian fitting for the 2D-image
     # generate the grid
     sigma2FWHM = np.sqrt(8*np.log(2))
-    ygrid, xgrid = np.mgrid[0:yshape,0:xshape]
+    center_ref = np.array([(yshape-1)*0.5, (xshape-1)*0.5])
+    ygrid, xgrid = np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None]
+    rgrid = np.sqrt(xgrid**2 + ygrid**2)
     xsigma, ysigma = pixel_size, pixel_size
-    # ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
-                               # (np.arange(0, xshape)+0.5)*pixel_size)
+    ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
+                               (np.arange(0, xshape)+0.5)*pixel_size)
     vmin = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
                                          margin_padding:-margin_padding], 1)
     vmax = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
@@ -1135,6 +1170,7 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         # get the initial guess from the user
         plt.figure()
         plt.imshow(image_normed, origin='lower', vmin=vmin, vmax=vmax)
+        plt.colorbar()
         plt.ylabel('Y')
         plt.xlabel('X')
         plt.title('Please click on the star')
@@ -1146,17 +1182,21 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         
     # automatically estimate the initial parameters
     else:
-        # amp = np.percentile(image, 0.8)
-        amp = 1
+        amp = np.nanmax(image_normed[10:-10,10:-10])
+        #amp = 1
         # yidx, xidx = np.where(image>0.9*amp)
         # x0, y0 = np.median(xidx), np.median(yidx)
-        x0, y0 = 0.5*xshape, 0.5*yshape
+        y0, x0 = 0., 0.#center_ref[0], center_ref[1]
         p_init = [amp, x0, y0, xsigma, ysigma, 0]
     print(f"p_init: {p_init}")
+    plt.figure()
+    plt.imshow(rgrid)
 
     def _cost(params, xgrid, ygrid):
-        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='BFGS')
+       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+       # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + rms**2))
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
+                        bounds=[[0, 100], [-20,20], [-20,20], [0.1,10], [0.1,10], [0,np.pi]])
 
     amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
     xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
@@ -1192,12 +1232,15 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         fig = plt.figure(figsize=(12, 6))
         gs = gridspec.GridSpec(2, 3)
         ax1 = fig.add_subplot(gs[0,0])
-        ax1.imshow(image, origin='lower', vmax=vmax, vmin=vmin)
+        im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax1)
         ax1.plot([x0], [y0], 'x', color='red')
         ax2 = fig.add_subplot(gs[0,1])
-        ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        im = ax2.imshow(fit_image, origin='lower',)# vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax2)
         ax3 = fig.add_subplot(gs[0,2])
-        ax3.imshow(image - fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax3)
         if extract_spectrum:
             ax4 = fig.add_subplot(gs[1,:])
             ax4.plot(wavelength, output)
@@ -1282,7 +1325,7 @@ def fill_mask(data, mask=None, step=1, debug=False):
     surrounding region (in cubic 3x3 region, total 8 pixels)
     Inspired by van Dokkum+2023 (PASP) and extended to support 3D datacube
    
-    This implementation are pure python code, so it is super
+    This implementation are pure python code, so it is relatively
     slow if the number of masked pixels are large
     <TODO>: rewrite this extension with c
 
@@ -1410,6 +1453,7 @@ def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_su
 
     It supports:
       - sigma clipping
+      - median filter, by default is False as it may remove the signals if it is very spiky
       - background subtraction
       - continue subtraction
     """
@@ -1500,7 +1544,8 @@ def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
                 time_list.append(header['EXPTIME'])
         return np.array(time_list)/total_time
 
-def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
+def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, 
+                      z=None, line_width=1000, wave_range=None,
                       sigma_clip=True, sigma=5.0, median_subtract=True,
                       mask_ext=None, median_filter=False, median_filter_size=(5,3,3),
                       cont_subtract=False, weighting=None, overwrite=False, debug=False):
@@ -1509,6 +1554,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
 
     image_list (list): the list of filenames or ndarray
     offset (list,ndarray): the offset (x, y) of each image
+    wave_range: the wavelength range to combine, in um
     """
     # check existing files
     if savefile is not None:
@@ -1558,16 +1604,25 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
         first_header = fits.getheader(cube_list[0], 'DATA')
         first_wcs = WCS(first_header)
         pad = np.round(np.abs(pixel_shifts).max()).astype(int)
-        padded_cube_size = (first_header['NAXIS3'], 
-                             first_header['NAXIS2'] + 2*pad,
-                             first_header['NAXIS1'] + 2*pad)
-
-        # define the final product
+         # define the final product
         wavelength = get_wavelength(first_header)
+
+        # cut the datacube if the wavelength range is defined
+        if wave_range is not None:
+            wave_unit = u.Unit(first_header['CUNIT3'])
+            wave_convert_scale = wave_unit.to(u.um)
+            wave_range = np.array(wave_range) * wave_convert_scale
+            wave_select = (wavelength > wave_range[0]) & (wavelength < wave_range[1])
+        else:
+            wave_select = np.full_like(wavelength, fill_value=True, dtype=bool)
+
+        wavelength = wavelength[wave_select]
         len_wavelength = len(wavelength)
+        padded_cube_size = (len(wavelength), 
+                            first_header['NAXIS2'] + 2*pad,
+                            first_header['NAXIS1'] + 2*pad)
         data_combined = np.full(padded_cube_size, fill_value=0.)
         coverage_combined = np.full(padded_cube_size, fill_value=0.)
-
         # to avoid numerical issue, scaling is needed to extrapolate 3D datacube
         # we will normalize the wavelength to be roughly the same as values of
         # the pixel coordinates
@@ -1606,12 +1661,17 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
             else:
                 cube_mask = np.full(cube_data.shape, fill_value=False)
             cube_wavelength = get_wavelength(header)
+            # cut the datacube if needed
+            cube_wavelength = cube_wavelength[wave_select]
+            cube_data = cube_data[wave_select]
+            cube_mask = cube_mask[wave_select]
+
             cube_wavelength_norm = (cube_wavelength-wave_min)/wave_max*wave_scale
             cube_nchan, cube_ny, cube_nx = cube_data.shape
         
             if z is not None:
                 # with redshift, we can mask the signals, here are the H-alpha and [N II]
-                wave_mask = mask_spectral_lines(cube_wavelength, redshift=z)
+                wave_mask = mask_spectral_lines(cube_wavelength, redshift=z, line_width=line_width)
                 cube_wave_mask = np.repeat(wave_mask, cube_ny*cube_nx).reshape(
                                            len(cube_wavelength), cube_ny, cube_nx)
             else:
@@ -1697,12 +1757,26 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, z=None,
                 # hdr[key] = first_header[key]
             # except:
                 # pass
+        # fixed the header with pixel shifts
         if pixel_shifts is not None:
             hdr['CRPIX1'] = first_header['CRPIX1'] + pad + pixel_shifts[0][0]
             hdr['CRPIX2'] = first_header['CRPIX2'] + pad + pixel_shifts[0][1]
+        # fixed the header if cutout is performed
+        hdr['CRVAL3'] = wave_min * u.Unit(first_header['CUNIT3']).to(u.Unit(hdr['CUNIT3']))
+        # change the wavelength unit from m to um
+        if hdr['CUNIT3'].strip() == 'm':
+            hdr['PC3_3'] = 1e6 * hdr['PC3_3']
+            hdr['CRVAL3'] = (1e6 * hdr['CRVAL3'], '[um] Coordinate value at reference point') 
+            hdr['CDELT3'] = (1.0, '[um] Coordinate increment at reference point') 
+            hdr['CUNIT3'] = 'um'
+
+        # copy the PC records to CD to support QFitsView
+        hdr['CD1_1'] = hdr['PC1_1']
+        hdr['CD2_2'] = hdr['PC2_2']
+        hdr['CD3_3'] = hdr['PC3_3']
         hdr['BUNIT'] = first_header['BUNIT'].strip() + '/s'
-        hdr['OBSERVER'] = 'galphys'
-        hdr['COMMENT'] = 'MPE/IR'
+        hdr['OBSERVER'] = 'VLT/ERIS'
+        hdr['COMMENT'] = 'Created by the eris_jhchen_utils.py'
         hdr['COMMENT'] = 'Report problems to jhchen@mpe.mpg.de'
         primary_hdu = fits.PrimaryHDU()
         data_combined_hdu = fits.ImageHDU(data_combined, name="DATA", header=hdr)
@@ -1736,7 +1810,7 @@ def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary'
                         ra_offset_header='HIERARCH ESO OCS CUMOFFS RA',
                         dec_offset_header='HIERARCH ESO OCS CUMOFFS DEC',
                         x_drift_colname='x_model', y_drift_colname='y_model',
-                        coord_system='sky', debug=False, outfile=None):
+                        coord_system='sky', debug=False):
     """compute the eris offset based on the telescope pointing
 
     This program will read the cumulative OCS offset from the header of each image,
@@ -1783,10 +1857,6 @@ def compute_eris_offset(image_list, additional_drifts=None, header_ext='Primary'
                 print(additional_drifts)
         for i in range(nimage):
             array_offset[i] += additional_drifts[i]
-    if outfile is not None:
-        with open(outfile, 'w+') as fp:
-            for i in array_offset:
-                fp.write(f"{i[0]:.2f} {i[1]:.2f} \n")
     return array_offset
 
 def search_eris_files(dirname, pattern=''):
@@ -1799,8 +1869,9 @@ def search_eris_files(dirname, pattern=''):
     return matched_files
 
 def search_archive(datadir, target=None, target_type=None, band=None, spaxel=None, 
+                   tpl_start=None,
                    oblist=None, exclude_ob=False, filelist=None, exclude_file=True,
-                   outfile=None, sof_file=None, tag='',):
+                   outfile=None, outdir=None, sof_file=None, tag='',):
     """search file in the archive
 
     outfile: save the archive file in the format of sof, with the arcfile followed by the tag
@@ -1829,6 +1900,8 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
         else:
             logging.warning(f"target_type: {target_type} is not valid")
             target_type_list = []
+    else:
+        target_type_list = ['SCIENCE','CALIBPSF','CALIBSTD']
     dates = os.listdir(datadir)
     image_list = []
     image_exp_list = []
@@ -1855,13 +1928,23 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
                             continue
                 ob_band, ob_spaxel = obs_match['band'], obs_match['spaxel']
                 ob_exptime = obs_match['exptime']
+                ob_tpl_start = obs_match['tpl_start']
             if target is not None:
                 if ob_target not in target_list:
+                    continue
+            if tpl_start is not None:
+                if tpl_start != ob_tpl_start:
                     continue
             if target_type is not None:
                 if ob_target_type not in target_type_list:
                     continue
-            if (ob_band==band) and (ob_spaxel==spaxel):
+            if band is not None:
+                if ob_band != band:
+                    continue
+            if spaxel is not None:
+                if ob_spaxel != spaxel:
+                    continue
+            if ob_target_type in target_type_list:
                 # combine the exposures within each OB
                 if ob_target_type == 'SCIENCE':
                     exp_list = glob.glob(obs_dir+'/eris_ifu_jitter_dar_cube_[0-9]*.fits')
@@ -1888,6 +1971,12 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
         with open(sof_file, 'w+') as fp:
             for img in image_list:
                 fp.write(f"{img} {tag}\n")
+    if outdir is not None:
+        # copy all the select files to the outdir
+        for img in image_list:
+            subprocess.run(['cp', '{img}', outdir])
+
+
     return image_list, image_arcname_list, image_exp_list
 
 def summarise_eso_files(filelist, outfile=None):
@@ -1896,7 +1985,7 @@ def summarise_eso_files(filelist, outfile=None):
     This function is designed to read all the possible useful information from the header
     to calculate the drift
     """
-    colnames_header = ['ARCFILE', 'HIERARCH ESO OBS ID', 'HIERARCH ESO TPL START', 
+    colnames_header = ['ARCFILE', 'DATE-OBS',  'HIERARCH ESO OBS ID', 'HIERARCH ESO TPL START', 
                        'HIERARCH ESO DET SEQ1 EXPTIME',
                        'HIERARCH ESO PRO REC1 RAW1 CATG', 
                        'HIERARCH ESO TEL ALT', 'HIERARCH ESO TEL AZ',
@@ -1904,7 +1993,7 @@ def summarise_eso_files(filelist, outfile=None):
                        'HIERARCH ESO ADA ABSROT START', 'HIERARCH ESO ADA ABSROT END', 
                        'HIERARCH ESO ADA ABSROT PPOS', # can be POS or 
                        ]
-    colnames = ['filename', 'arcfile', 'ob_id', 'tpl_start', 'exptime', 'catg','tel_alt', 'tel_za', 'tel_parang_start', 'tel_parang_end', 'ada_absrot_start', 'ada_absrot_end', 'ada_absrot_ppos']
+    colnames = ['filename', 'arcfile', 'date_obs', 'ob_id', 'tpl_start', 'exptime', 'catg','tel_alt', 'tel_za', 'tel_parang_start', 'tel_parang_end', 'ada_absrot_start', 'ada_absrot_end', 'ada_absrot_ppos']
     summary_tab = table.Table(names=colnames, dtype=['U32']*len(colnames))
     for ff in filelist:
         with fits.open(ff) as hdu:
@@ -1919,53 +2008,164 @@ def summarise_eso_files(filelist, outfile=None):
     else:
         return summary_tab
 
-def fit_star_position(fitsfile):
-    """fit the star observation to get it position in the map
+def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
+             interactive=False, outfile=None):
+    """two dimentional Gaussian fit
+
     """
-    with fits.open(fitsfile) as hdu:
-        header = hdu[0].header
-        data = hdu[1].header
-    if data.ndim == 2:
+    # read the fits file
+    with fits.open(starfits) as hdu:
+        header = hdu['PRIMARY'].header
+        data_header = hdu['DATA'].header
+        data = hdu['DATA'].data
+        ndim = data.ndim
+        exptime = header['EXPTIME']
+        arcfile = header['ARCFILE']
+    if ndim == 2:
         # it is already a map
         image = data
     elif data.ndim == 3:
+        wavelength = get_wavelength(header=data_header)
         # collapse the cube to make map
-        image = np.sum(data, axis=0)
-        # image = np.ma.median(np.ma.masked_invalid(data), axis=0)
+        print('start median filter')
+        data = ndimage.median_filter(data, size=20, axes=0)
+        print('median filter is finished')
+        data = astro_stats.sigma_clip(data, sigma=10, axis=0)
+        print('sigma_clip is finished')
+        image = np.nansum(data, axis=0)
 
-    return xfit, yfit
+        # collapse the cube to get the image of the star
+        # this is used to find the star and get its shape (by 2d-Gaussian fitting)
+        # data = clean_cube(data, median_filter=False, median_subtract=False, sigma=10)
+        # image = np.ma.sum(data, axis=0)
+    yshape, xshape = image.shape
+    print((yshape, xshape))
+    margin_padding = 10
+    norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
+                                       margin_padding:-margin_padding], 98)
+    image_normed = image / norm_scale
+    rms = 1
 
-def interpolate_drifts(summary_tab):
+    # start the gaussian fitting for the 2D-image
+    # generate the grid
+    sigma2FWHM = np.sqrt(8*np.log(2))
+    center_ref = np.array([(yshape-1)*0.5, (xshape-1)*0.5])
+    # ygrid, xgrid = (np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None])
+    xsigma, ysigma = pixel_size, pixel_size
+    ygrid, xgrid = np.meshgrid((np.arange(0, yshape) - center_ref[0])*pixel_size,
+                               (np.arange(0, xshape) - center_ref[1])*pixel_size)
+    rgrid = np.sqrt(xgrid**2 + ygrid**2)
+    # vmin = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
+                                         # margin_padding:-margin_padding], 1)
+    # vmax = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
+                                         # margin_padding:-margin_padding], 99)
+    vmax = np.nanpercentile(image_normed[10:-10, 10:-10], 99)
+    # vmax = 6
+    vmin = -0.5*vmax
+    if interactive:
+        # get the initial guess from the user
+        plt.figure()
+        plt.imshow(image_normed, origin='lower', vmin=vmin, vmax=vmax)
+        plt.ylabel('Y')
+        plt.xlabel('X')
+        plt.title('Please click on the star')
+        plt.colorbar()
+        plt.show(block=False)
+        xclick, yclick = plt.ginput(1)[0]#, timeout=5
+        plt.close()
+        p_init = [image_normed[int(yclick), int(xclick)], 
+                  xclick-center_ref[0], yclick-center_ref[1], xsigma, ysigma, 0]
+        
+    # automatically estimate the initial parameters
+    else:
+        amp = np.nanmax(image_normed[10:-10,10:-10])
+        #amp = 1
+        # yidx, xidx = np.where(image>0.9*amp)
+        # x0, y0 = np.median(xidx), np.median(yidx)
+        y0, x0 = 0., 0.#center_ref[0], center_ref[1]
+        p_init = [amp, x0, y0, xsigma, ysigma, 0]
+    print(f"p_init: {p_init}")
+
+    def _cost(params, xgrid, ygrid):
+       # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + (10+rms)**2))
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
+                        bounds=[[0, 100], [-20,20], [-20,20], [0.1,5], [0.1,5], 
+                                [-np.pi*0.5,np.pi*0.5]])
+
+    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+    # print(xfwhm_fit, yfwhm_fit)
+   
+    if plot:
+        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 3)
+        ax1 = fig.add_subplot(gs[0,0])
+        im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax1)
+        #ax1.plot([x0], [y0], 'x', color='red')
+        ax2 = fig.add_subplot(gs[0,1])
+        im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax2)
+        ax3 = fig.add_subplot(gs[0,2])
+        im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax3)
+        plt.show()
+
+    print([amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit])
+    return [amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit]
+
+def interpolate_drifts(tpl_start_list, datadir, ):
     """ derive the drift of the science exposures 
     """
-    star_positions = np.zeros((len(summary_tab), 2))
-    for i,item in enumerate(summary_tab):
-        if item['catg'] == 'PSF_CALIBRATOR':
-            xpix, ypix = fit_star_position(item[filename])
-            star_positions[i] = [xpix, ypix]
+    tpl_start_list = np.unique(tpl_start_list).tolist()
+    ref_positions = table.Table(names=['is_star','Xref','Yref'], dtype=['bool','f8','f8'])
+    for tpl_start in tpl_start_list:
+        print('tpl_start + ob_id', tpl_start, )
+        # get all the observations within each tpl_start_list
+        fits_list, arcname_list, exptime_list = search_archive(datadir, tpl_start=tpl_start)
+        print('fits_list', fits_list, exptime_list)
+        # get the summaries of the all the observations
+        summary_tab = summarise_eso_files(fits_list)
+        summary_tab.sort(['date_obs'])
+        # create columns to store the center of the offsets
+        center_positions = np.zeros((len(summary_tab), 3)) #['is_star', 'Xref', 'Yref']
+        for i,item in enumerate(summary_tab):
+            print('item[catg]', item['catg'])
+            if item['catg'] == 'PSF_CALIBRATOR':
+                print('filename', item['filename'])
+                _amp, xpix, ypix, _xsigma, _ysigma, _theta = fit_star_position(item['filename'], plot=True)
+                center_positions[i] = [True, xpix, ypix]
+            else: 
+                #TODO: add another prediction method
+                center_positions[i] = [False, 32, 32]
 
-    tab_star_positions = table.Table(names=['Xref','Yref'], dtype=['f8','f8'])
-    master_tab = no.vstack([summary_tab, tab_star_positions])
-    # extrapolate the science scans with the two PSF stars
-    ob_list = np.unique(summary_tab['ob_id'])
-    for ob in ob_list:
-        ob_tab = master_tab[master_tab['ob_id'] == ob]
-        ob_tab.sort(['tpl_start'])
-        # calculate the time difference
-        # always find the two closest PSF to get the interpolation
-        # the time interval should also less than 6000s (a whole OB)
-        # otherwise the OB maybe executed multiple times, which should be avioded
-        # to calculate the offsets
-        for item in ob_tab:
-            if item['catg'] == '':
-                pass
+        # extrapolate the science scans with the two PSF stars
+        is_star = center_positions[:,0]
+        print(is_star)
+        print(center_positions)
+        if np.sum(is_star) > 1:
+            print('Extrapolate offsets for tpl_start={}'.format(tpl_start))
+            obs_time_array = np.array(summary_tab['date_obs'], dtype='datetime64[s]')
+            obs_delta_time = (obs_time_array - obs_time_array[0]) # in units of second
+            center_positions[:,1] = np.interp(obs_delta_time, 
+                                              obs_delta_time[is_star], center_positions[:,1][is_star])
+            center_positions[:,2] = np.interp(obs_delta_time, 
+                                              obs_delta_time[is_star], center_positions[:,2][is_star])
+        else:
+            print('No stars for position extrapolation, skip')
+        extrapolated_positions = table.Table(center_positions, names=['is_star','Xref','Yref'],
+                                             dtype=['bool','f8','f8'])
+        ref_positions = table.vstack([ref_positions, extrapolated_positions])
+    return ref_positions
 
 
 #####################################
 ######### DATA Quicklook ############
 
 def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
-               vmin=-400, vmax=400,
+               vmin=-1000, vmax=1000,
                length=1, width=1, theta=0, debug=False, plot=True, pixel_size=1):
     """generate the PV diagram of the cube
 
@@ -1974,9 +2174,10 @@ def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
         pixel_center: the center of aperture
         lengthth: the length of the aperture, in x axis when theta=0
         width: the width of the aperture, in y axis when theta=0
-        theta: the angle in degree, from positive x to positive y axis
+        theta: the angle in radian, from positive x to positive y axis
     """
     # nchan, ny, nx = datacube.shape
+    width = np.round(width).astype(int)
     if isinstance(datacube, str):
         if z is not None:
             velocity, datacube, header = read_eris_cube(datacube, z=z)
@@ -1988,30 +2189,37 @@ def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
         datacube = datacube[vel_selection]
         velocity = velocity[vel_selection]
     cubeshape = datacube.shape
-    aper = RectangularAperture(pixel_center, length, width, theta=theta/180*np.pi)
+    aper = RectangularAperture(pixel_center, length, width, theta=theta)
     s1,s2 = aper.to_mask().get_overlap_slices(cubeshape[1:])
     # cutout the image
-    sliced_cube = datacube[:,s1[0],s1[1]]
-    # rotate the cube to make the aperture with theta=0
-    sliced_cube_rotated = ndimage.rotate(sliced_cube, aper.theta/np.pi*180, axes=[1,2], reshape=True, prefilter=False, order=0, cval=np.nan)
-    # sum up the central plain (x axis) within the height
-    nchan, nynew, nxnew = sliced_cube_rotated.shape
-    # define the new aperture on the rotated sub-cube
-    aper_rotated = RectangularAperture([0.5*(nxnew-1), 0.5*(nynew-1)], length, width, theta=0)
+    try:
+        sliced_cube = datacube[:,s1[0],s1[1]]
+    except:
+        sliced_cube = None
+        sliced_pvmap = None
 
-    hi_start = np.round(nynew/2.-width/2.).astype(int)
-    width_slice = np.s_[hi_start:hi_start+width]
-    sliced_pvmap = np.nansum(sliced_cube_rotated[:,width_slice,:], axis=1)
+    if sliced_cube is not None:
+        # rotate the cube to make the aperture with theta=0
+        sliced_cube_rotated = ndimage.rotate(sliced_cube, aper.theta/np.pi*180, axes=[1,2], reshape=True, prefilter=False, order=0, cval=np.nan)
+        # sum up the central plain (x axis) within the height
+        nchan, nynew, nxnew = sliced_cube_rotated.shape
+        # define the new aperture on the rotated sub-cube
+        aper_rotated = RectangularAperture([0.5*(nxnew-1), 0.5*(nynew-1)], length, width, theta=0)
+
+        hi_start = np.round(nynew/2.-width/2.).astype(int)
+        width_slice = np.s_[hi_start:hi_start+width]
+        sliced_pvmap = np.nansum(sliced_cube_rotated[:,width_slice,:], axis=1)
     if debug: # debug plot 
         fig = plt.figure(figsize=(12,5))
         ax1 = plt.subplot2grid((2, 4), (0, 0), rowspan=2, colspan=2)
         ax2 = plt.subplot2grid((2, 4), (0, 2), colspan=2)
         ax3 = plt.subplot2grid((2, 4), (1, 2), colspan=2)
-        ax1.imshow(np.sum(datacube,axis=0),origin='lower')
+        ax1.imshow(np.nansum(datacube,axis=0),origin='lower')
         aper.plot(ax=ax1)
-        ax2.imshow(np.sum(sliced_cube_rotated, axis=0), origin='lower')
-        aper_rotated.plot(ax=ax2)
-        ax3.imshow(sliced_pvmap.T, origin='lower')
+        if sliced_cube is not None:
+            ax2.imshow(np.nansum(sliced_cube_rotated, axis=0), origin='lower')
+            aper_rotated.plot(ax=ax2)
+            ax3.imshow(sliced_pvmap.T, origin='lower')
     if plot:
         fig = plt.figure(figsize=(12,5))
         # ax = fig.subplots(1,2)
@@ -2021,20 +2229,21 @@ def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
         vmin, vmax = -1*np.nanstd(sliced_cube), 4*np.nanmax(sliced_cube)
         ax1.imshow(np.sum(datacube, axis=0), origin='lower', vmin=vmin, vmax=vmax, cmap='magma')
         aper.plot(ax=ax1, color='white', linewidth=4)
-        # show the pv-diagram
-        # ax[1].imshow(sliced_pvmap, origin='lower', cmap='magma', extent=extent)
-        positions = np.linspace(-0.5*length, 0.5*length, nxnew)
-        if velocity is None:
-            velocity = np.linspace(-1,1,nchan)
-        vmesh, pmesh = np.meshgrid(velocity,positions)
-        ax2.pcolormesh(vmesh, pmesh, sliced_pvmap.T, cmap='magma')
-        gauss_kernel = Gaussian2DKernel(1)
-        smoothed_pvmap = convolve(sliced_pvmap, gauss_kernel)
-        ax3.pcolormesh(vmesh, pmesh, smoothed_pvmap.T, cmap='magma')
-        ax2.set_ylabel('Position')
-        ax3.set_ylabel('Position')
-        ax3.set_xlabel('Velocity')
-    return 
+        if sliced_cube is not None:
+            # show the pv-diagram
+            # ax[1].imshow(sliced_pvmap, origin='lower', cmap='magma', extent=extent)
+            positions = np.linspace(-0.5*length, 0.5*length, nxnew)
+            if velocity is None:
+                velocity = np.linspace(-1,1,nchan)
+            vmesh, pmesh = np.meshgrid(velocity,positions)
+            ax2.pcolormesh(vmesh, pmesh, sliced_pvmap.T, cmap='magma')
+            gauss_kernel = Gaussian2DKernel(1)
+            smoothed_pvmap = convolve(sliced_pvmap, gauss_kernel)
+            ax3.pcolormesh(vmesh, pmesh, smoothed_pvmap.T, cmap='magma')
+            ax2.set_ylabel('Position')
+            ax3.set_ylabel('Position')
+            ax3.set_xlabel('Velocity')
+    return sliced_pvmap
 
 def gaussian_1d(params, velocity=None):
     """a simple 1D gaussian function
@@ -2349,6 +2558,7 @@ def run_eris_pipeline(datadir='science_raw', outdir='science_reduced',
                     calib_raw=daily_calib_raw, categories=categories,
                     esorex=esorex, overwrite=overwrite, debug=debug, 
                     dry_run=dry_run)
+        logging.info(f"<")
 
 def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None, band=None,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
@@ -2443,10 +2653,13 @@ def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None,
                       sigma_clip=False, median_subtract=False, overwrite=overwrite,
                       mask_ext=None, savefile=savefile)
 
-def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None, band=None,
+def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None, 
+                  band=None,
                   oblist=None, exclude_ob=False, filelist=None, exclude_file=True,
-                  spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
-                  savefile=None, recipe='combine_eris_cube', suffix='combined', overwrite=False):
+                  spaxel=None, drifts=None, outdir='./', esorex='esorex', 
+                  z=None, wave_range=None,
+                  savefile=None, recipe='combine_eris_cube', suffix='combined', 
+                  overwrite=False):
     """A wrapper of combine_data
 
     This quick tool search the all the available and valid observations
@@ -2488,7 +2701,7 @@ def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None
     obs_offset = compute_eris_offset(image_list, additional_drifts=drifts)
     if recipe == 'combine_eris_cube':
         combine_eris_cube(cube_list=image_list, pixel_shifts=obs_offset, 
-                          z=z, overwrite=overwrite,
+                          z=z, wave_range=wave_range, overwrite=overwrite,
                           savefile=savefile)
     elif recipe == 'eris_ifu_combine':
         # create the combine.sof
@@ -2511,6 +2724,146 @@ def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None
                         f'--name_o={savefile}', combine_sof])
     logging.info(f'Found the combined cube: {savefile}')
 
+def quick_pv_diagram(datacube, z=None, mode='horizontal', cmap='magma',
+                     step=5, nslits=16, length=80, signal_vmin=-500, signal_vmax=500, 
+                     vmin=-2000, vmax=2000, smooth=None, name=None,
+                     xcenter=None, ycenter=None,
+                     comments=None, additional_theta=0, 
+                     savefig=None, savefile=None, overwrite=True, debug=False):
+    """a wrapper of pv_diagram to generate a overview of the slits based pv_diagrams
+    """
+    # nchan, ny, nx = datacube.shape
+    if name is None: 
+        name = os.path.basename(datacube)
+    if isinstance(datacube, str):
+        if z is not None:
+            velocity, datacube, header = read_eris_cube(datacube, z=z)
+        else:
+            wavelength, datacube, header = read_eris_cube(datacube)
+    if header is not None:
+        if 'CD1_1' in header: pixel_size = header['CD1_1']
+        elif 'CDELT1' in header: pixel_size = header['CDELT1']
+        else: pixel_size = None
+    # extract data within the velocity range 
+    if velocity is not None:
+        vel_selection = (velocity > vmin) & (velocity < vmax)
+        datacube = datacube[vel_selection]
+        velocity = velocity[vel_selection]
+    if debug:
+        print('shape of datacube:', datacube.shape)
+        print('velocity:', velocity.shape, velocity)
+    nz, ny, nx = datacube.shape
+    if xcenter is None: xcenter = nx*0.5
+    if ycenter is None: ycenter = ny*0.5
+    
+    # get some statistics of the map
+    signal_vmask = (velocity < signal_vmax) & (velocity > signal_vmin)
+    datacube = clean_cube(datacube, signal_mask=np.tile(signal_vmask, (nx, ny,1)).T)
+    std = np.nanstd(datacube[:,10:ny-10,10:nx-10])
+    # _mean, _median, std = astro_stats.sigma_clipped_stats(datacube[:,10:ny-10,10:nx-10], sigma=5, maxiters=3)
+
+    # caculate the pixel_centers along the slit
+    if mode == 'horizontal':
+        y_centers = np.arange(ycenter-step*nslits*0.5, ycenter+step*nslits*0.5, step) + 0.5*step
+        x_centers = np.full_like(y_centers, fill_value=nx*0.5)
+        theta = 0
+    if mode == 'vertical':
+        x_centers = np.arange(xcenter-step*nslits*0.5, xcenter+step*nslits*0.5, step) + 0.5*step
+        y_centers = np.full_like(x_centers, fill_value=ny*0.5)
+        theta = np.pi/2
+    apertures = RectangularAperture(list(zip(x_centers, y_centers)), length, step, 
+                                    theta=theta+additional_theta)
+    signal_collapsed = np.nansum(datacube[signal_vmask], axis=0)
+    if True:
+        try: hdr = WCS(header).sub(['longitude','latitude']).to_header()
+        except: hdr = fits.Header()
+        hdr['OBSERVER'] = name
+        hdr['COMMENT'] = "PV diagrams generated by eris_jhchen_utils.py"
+        primary_hdu = fits.PrimaryHDU(header=header)
+        image_hdu = fits.ImageHDU(signal_collapsed.filled(np.nan), name="image")
+        hdu_list = [primary_hdu, image_hdu,]
+    if True:
+        fig = plt.figure(figsize=(16,6))
+        nrow = np.ceil(nslits / 4).astype(int)
+        ax1 = plt.subplot2grid((nrow, 6), (0, 0), rowspan=3, colspan=2)
+        ax1.set_title(name, fontsize=10)
+        ax1.imshow(signal_collapsed, origin='lower', vmin=-10*std, vmax=40*std, cmap=cmap)
+        info_string = 'z={}'.format(z)
+        if pixel_size is not None: 
+            info_string += ',  pixel={:.3f}"'.format(abs(pixel_size)*3600.)
+        if smooth is not None:
+            info_string += ',  smooth={:.2f} pixels'.format(smooth)
+        ax1.text(0.0, -0.1,'INFO: {}'.format(info_string), transform=ax1.transAxes, 
+                 ha='left', va='center')
+        if comments is not None:
+            ax1.text(0.0, -0.18, 'Comments: {}'.format(comments), transform=ax1.transAxes, 
+                     ha='left', va='center')
+        # add a fake axis for the labels
+        ax2 = plt.subplot2grid((nrow, 6), (0, 2), rowspan=nrow, colspan=4)
+        ax2.set_xticklabels([])
+        ax2.set_yticklabels([])
+        ax2.axes.get_xaxis().set_ticks([])
+        ax2.axes.get_yaxis().set_ticks([])
+        ax2.set(frame_on=False)
+        ax2.set_xlabel('Velocity: [{}~{} km/s]'.format(vmin, vmax), fontsize=12)
+        ax2.yaxis.set_label_position("right")
+        ax2.set_ylabel('Positions: width={} pixels'.format(step), fontsize=12)
+        for i,aper in enumerate(apertures):
+            aper.plot(ax=ax1, color='grey', linewidth=1, alpha=0.5)
+            i_row = i//4 
+            i_col = i%4
+            sliced_pvmap = pv_diagram(datacube, velocity, pixel_center=aper.positions, 
+                                      length=aper.w, width=aper.h, theta=aper.theta,
+                                      vmin=vmin, vmax=vmax,
+                                      plot=False)
+            if sliced_pvmap is None:
+                continue
+            nynew, nxnew = sliced_pvmap.shape
+
+            # save each pvmap
+            pvmap_header = fits.Header()
+            pvmap_header['CD1_1'] = pixel_size
+            pvmap_header['CD2_2'] = velocity[1]-velocity[0]
+            pvmap_header['CRPIX1'] = aper.w*0.5; pvmap_header['CRVAL1'] = aper.positions[0]
+            pvmap_header['CRPIX2'] = 0; pvmap_header['CRVAL2'] = vmin
+            pvmap_hdu = fits.ImageHDU(sliced_pvmap.T, name="slit-{}".format(i), header=pvmap_header)
+            hdu_list.append(pvmap_hdu)
+            
+            # make the plot
+            if mode == 'horizontal':
+                ax1.text(0, aper.positions[1], i, horizontalalignment='left', 
+                         verticalalignment='center', fontsize=6,
+                         bbox=dict(facecolor='white', alpha=0.8,  edgecolor='none', boxstyle="circle"))
+            if mode == 'vertical':
+                ax1.text(aper.positions[0], 0, i, horizontalalignment='center',
+                         verticalalignment='bottom', fontsize=6,
+                         bbox=dict(facecolor='white', alpha=0.8,  edgecolor='none', boxstyle="circle"))
+
+
+            ax = plt.subplot2grid((nrow,6), (i_row,i_col+2))
+            positions = np.linspace(-0.5*aper.w, 0.5*aper.h, nxnew)
+            if velocity is None:
+                velocity = np.linspace(-1,1,nchan)
+            vmesh, pmesh = np.meshgrid(velocity, positions)
+            if smooth is not None:
+                gauss_kernel = Gaussian2DKernel(smooth)
+                smoothed_pvmap = convolve(sliced_pvmap, gauss_kernel)
+                ax.pcolormesh(vmesh, pmesh, smoothed_pvmap.T, cmap=cmap, vmin=-1*std, vmax=5*std)
+            else:
+                ax.pcolormesh(vmesh, pmesh, sliced_pvmap.T, cmap=cmap, vmin=-1*std, vmax=5*std)
+            ax.text(0.03,0.9, i, horizontalalignment='center', transform=ax.transAxes, fontsize=6,
+                    bbox=dict(facecolor='white', alpha=0.8,  edgecolor='none', boxstyle="circle"))
+            ax.axis('off')
+        fig.subplots_adjust(hspace=0.1, wspace=0.1)
+        # fig.tight_layout()
+    if savefig is not None:
+        hdus = fits.HDUList(hdu_list)
+        hdus.writeto(savefile, overwrite=overwrite)
+    if savefig is not None:
+        fig.savefig(savefig, bbox_inches='tight', dpi=200)
+    else:
+        plt.show()
+     
 
 #####################################
 ######## helper functions ###########
@@ -2605,7 +2958,8 @@ if __name__ == '__main__':
 
           * get_daily_calib: quick way to get dalily calibration files
           * run_eris_pipeline: quickly reduce science data with raw files
-          * quick_combine: quick combine reduced science data
+          * quick_combine: quickly combine reduced science data
+          * quick_pv_diagram: quickly get the pv diagram of the datacube
 
           To get more details about each task:
           $ eris_jhchen_utils.py task_name --help
@@ -2855,6 +3209,7 @@ if __name__ == '__main__':
     subp_quick_combine.add_argument('--band', help='Observing band')
     subp_quick_combine.add_argument('--spaxel', help='Observing spaxel scale')
     subp_quick_combine.add_argument('--z', type=float, help='The redshift of the target')
+    subp_quick_combine.add_argument('--wave_range', nargs='+', type=float, help='The wavelength range in um')
     subp_quick_combine.add_argument('--drifts', help='Additional drifts')
     subp_quick_combine.add_argument('--outdir', help='Output dierectory')
     subp_quick_combine.add_argument('--suffix', default='combined', 
@@ -2863,6 +3218,46 @@ if __name__ == '__main__':
                                     help='The combine recipe to be used, set to "eris_ifu_combine" to use the pipeline\'s default combine recipe')
     subp_quick_combine.add_argument('--overwrite', action='store_true', help='Overwrite exiting fits file')
 
+
+    ################################################
+    # quick pv diagram
+    subp_quick_pv_diagram = subparsers.add_parser('quick_pv_diagram',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            quickly get the pv diagram 
+            -------------------------------
+            example:
+
+                eris_jhchen_utils quick_pv_diagram -d bx482nmfs_k025_hr_21h05.fits -z 2.2571 --smooth 1 --mode vertical --savefig bx482_pv.png --savefile bx482_pv.fits --comments "this is a test"
+
+                                        '''))
+    subp_quick_pv_diagram.add_argument('-d', '--datacube', help='The fits datafile')
+    subp_quick_pv_diagram.add_argument('-z', '--redshift', type=float, help='The redshift')
+    subp_quick_pv_diagram.add_argument('--mode', default='horizontal', 
+                                       help='The mode: vertical or horizontal')
+    subp_quick_pv_diagram.add_argument('--step', type=float, default=5, 
+                                       help='The step or width of the slit in pixel, default=5')
+    subp_quick_pv_diagram.add_argument('--nslits', type=int, default=16, 
+                                       help='The number of slits, default=16')
+    subp_quick_pv_diagram.add_argument('--length', type=float, default=80, 
+                                       help='The length of each slit, default=64')
+    subp_quick_pv_diagram.add_argument('--cmap', default='magma', help='The color map of the plot')
+    subp_quick_pv_diagram.add_argument('-f', '--savefig', help='The filename to save the plot')
+    subp_quick_pv_diagram.add_argument('--savefile', help='The filename to save the pv diagrams in each slit')
+    subp_quick_pv_diagram.add_argument('--xcenter', type=float, help='The x coordinate center of slits')
+    subp_quick_pv_diagram.add_argument('--ycenter', type=float, help='The y coordinate center of slits')
+    subp_quick_pv_diagram.add_argument('--vmin', type=float, default=-2000, 
+                                       help='The minimal velocty, default=-2000 km/s')
+    subp_quick_pv_diagram.add_argument('--vmax', type=float, default=2000, 
+                                       help='The maximal velocty, default=2000 km/s')
+    subp_quick_pv_diagram.add_argument('--signal_vmin', type=float, default=-500, 
+                                       help='The minimal velocty, default=-500 km/s')
+    subp_quick_pv_diagram.add_argument('--signal_vmax', type=float, default=500, 
+                                       help='The maximal velocty default=500 km/s')
+    subp_quick_pv_diagram.add_argument('--smooth', type=float, default=None, 
+                                       help='The kernel size for the smooth')
+    subp_quick_pv_diagram.add_argument('--name', help='The name of the plot')
+    subp_quick_pv_diagram.add_argument('--comments', help="comments to be added to the plot") 
 
     ################################################
     # start the parser
@@ -2946,8 +3341,18 @@ if __name__ == '__main__':
                       oblist=args.oblist, exclude_ob=args.exclude_ob,
                       filelist=args.filelist, exclude_file=args.exclude_file,
                       band=args.band, spaxel=args.spaxel,
-                      z=args.z, overwrite=args.overwrite, recipe=args.recipe,
+                      z=args.z, wave_range=args.wave_range,
+                      overwrite=args.overwrite, recipe=args.recipe,
                       outdir=args.outdir, drifts=args.drifts, suffix=args.suffix)
+    elif args.task == 'quick_pv_diagram':
+        quick_pv_diagram(datacube=args.datacube, z=args.redshift, mode=args.mode, 
+                         step=args.step, nslits=args.nslits, length=args.length, cmap=args.cmap,
+                         signal_vmin=args.signal_vmin, signal_vmax=args.signal_vmax,
+                         xcenter=args.xcenter, ycenter=args.ycenter,
+                         savefig=args.savefig, savefile=args.savefile,
+                         name=args.name, comments=args.comments, debug=args.debug,
+                         vmin=args.vmin, vmax=args.vmax, smooth=args.smooth,
+                         )
     else:
         pass
     if args.debug:
