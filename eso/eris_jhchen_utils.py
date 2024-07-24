@@ -15,7 +15,7 @@ History:
     - 2024-02-26: support reducing PSF and standard stars, v0.5
     - 2024-04-07: add data quicklook tools, v0.6
 """
-__version__ = '0.6.18'
+__version__ = '0.6.25'
 
 # import the standard libraries
 import os 
@@ -35,7 +35,7 @@ import argparse
 # external but required libraries
 import numpy as np
 import scipy
-from scipy import ndimage, optimize
+from scipy import ndimage, optimize, stats
 import astropy.table as table
 import astropy.units as units
 import astropy.units as u
@@ -57,6 +57,7 @@ import matplotlib.gridspec as gridspec
 # filtering the warnings
 from astropy.wcs import FITSFixedWarning
 warnings.filterwarnings('ignore', category=FITSFixedWarning, append=True)
+from astropy.utils.exceptions import AstropyWarning
 
 #####################################
 ######### DATA Retrieval ############
@@ -155,6 +156,28 @@ def download_eris(eris_query_tab, outdir='raw', metafile=None, username=None, au
         download_file(file_url, outdir=outdir, auth=auth)
     if metafile is not None:
         save_metadata(eris_query_tab, metafile=metafile)
+
+def eris_quary(ob_id='', prog_id='',
+               start_date='2022-04-01', end_date='2094-10-06', 
+               exptime='', dp_type='', band='', spaxel='', target='',
+               debug=False):
+    root_calib_url = 'https://dataportal.eso.org/dataportal_new/file/'
+    eso = Eso()
+    eso.ROW_LIMIT = -1
+    column_filters={'ob_id': ob_id,
+                    'prog_id':prog_id,
+                    'stime': start_date,
+                    'exptime': exptime,
+                    'etime': end_date,
+                    'dp_type': dp_type, 
+                    'ins3_spgw_name': band,
+                    'ins3_spxw_name': spaxel,
+                    'obs_targ_name': target,}
+    if debug:
+        for key, item in column_filters.items():
+            print(f"{key}: {item}")
+    eris_query_tab = eso.query_instrument('eris', column_filters=column_filters)
+    return eris_query_tab
 
 def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_days=60, 
                     column_filters={}, dry_run=False, debug=False, **kwargs):
@@ -438,7 +461,7 @@ def generate_metadata(data_dir=None, header_dir=None, metafile='metadata.csv',
     """
     # colnames
     colnames = ['Release Date', 'Object', 'RA', 'DEC','Program ID', 'DP.ID', 'EXPTIME', 
-                'OB.ID', 'OBS.TARG.NAME', 'DPR.CATG', 'DPR.TYPE', 'DPR.TECH', 'TPL.START', 
+                'OB ID', 'OBS TARG NAME', 'DPR.CATG', 'DPR.TYPE', 'DPR.TECH', 'TPL.START', 
                 'SEQ.ARM', 'DET.SEQ1.DIT', 'INS3.SPGW.NAME', 'INS3.SPXW.NAME','ARCFILE']
     colnames_header = ['DATE', 'OBJECT', 'RA', 'DEC', 'HIERARCH ESO OBS PROG ID', 
                        'ARCFILE', 'EXPTIME',
@@ -806,7 +829,7 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
         
         # apply the selections
         if ob_id is not None:
-            meta_tab = meta_tab[meta_tab['OB.ID'].astype(type(ob_id)) == ob_id]
+            meta_tab = meta_tab[meta_tab['OB ID'].astype(type(ob_id)) == ob_id]
         if objname is not None:
             meta_tab = meta_tab[meta_tab['Object'] == objname]
         if band is not None:
@@ -977,14 +1000,18 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
         date = tpl_time[:10]
         tpl_metadata = metadata[metadata['TPL.START'] == tpl_time]
         # get the ob id
-        ob_id = tpl_metadata['OB.ID'][0]
+        if 'OB.ID' in tpl_metadata.colnames:
+            ob_id = tpl_metadata['OB.ID'][0]
+        elif 'OB ID' in tpl_metadata.colnames:
+            ob_id = tpl_metadata['OB ID'][0]
+
         # get the name of the science target, here we assume each ob has only one target
         target = None
         try:
-            target = tpl_metadata[tpl_metadata['DPR.CATG']=='SCIENCE']['OBS.TARG.NAME'][0]
+            target = tpl_metadata[tpl_metadata['DPR.CATG']=='SCIENCE']['OBS TARG NAME'][0]
         except:
             try:
-                target = tpl_metadata[tpl_metadata['DPR.CATG']=='CALIB']['OBS.TARG.NAME'][0]
+                target = tpl_metadata[tpl_metadata['DPR.CATG']=='CALIB']['OBS TARG NAME'][0]
             except:
                 logging.warning(f'> Skip OB:{ob_id} on {tpl_time}')
                 logging.warning(f'>> faild in finding the target name!')
@@ -1112,8 +1139,8 @@ def gaussian_2d(params, x=None, y=None):
     c = np.sin(theta)**2/(2*xsigma**2) + np.cos(theta)**2/(2*ysigma**2)
     return amp*np.exp(-a*(x-x0)**2 - b*(x-x0)*(y-y0) - c*(y-y0)**2)
 
-
-def fit_star(starfits, x0=None, y0=None, pixel_size=1, plot=False,
+def fit_star(starfits, x0=None, y0=None, pixel_size=1, 
+             plot=False, plotfile=None,
              extract_spectrum=False, star_type=None, T_star=None,
              interactive=False, outfile=None):
     """two dimentional Gaussian fit
@@ -1446,10 +1473,17 @@ def mask_spectral_lines(wavelength, redshift=0, line_width=1000,):
         wave_masked = np.logical_or(wave_masked, line_mask)
     return wave_masked
 
-def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_subtract=True,
-               cont_subtract=False, median_filter=False, median_filter_size=(5,3,3),
-               channel_chunk=None, sigma=5.0):
+def clean_cube(datacube, mask=None, signal_mask=None, 
+               sigma_clip=True, sigma=3.0,
+               median_filter=False, median_filter_size=(5,3,3),
+               median_subtract=True, median_subtract_row=False, median_subtract_col=False,
+               channel_chunk=None):
     """clean the datacubes
+
+    Args:
+    datacube: the 3D datacube
+    mask: the mask of the 3D datacube
+    signal_mask: the mask of possible signals
 
     It supports:
       - sigma clipping
@@ -1457,28 +1491,39 @@ def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_su
       - background subtraction
       - continue subtraction
     """
+    # with warnings.catch_warnings():
+        # warnings.filterwarnings('ignore', category=AstropyUserWarning)
+    datacube_masked = np.ma.masked_invalid(datacube)
     if mask is not None:
         if datacube.shape != mask.shape:
             raise ValueError("Mask does not match with data!")
-        mask = mask | np.ma.masked_invalid(datacube).mask
-    else:
-        mask = np.ma.masked_invalid(datacube).mask
+        datacube_masked.mask = mask | np.ma.masked_invalid(datacube).mask
     
     nchan, ny, nx = datacube.shape
 
     if median_filter:
         # apply the median filter to filter out the outliers caused by sky lines
         # choose the filter size to preserve weak science data
-        datacube = ndimage.median_filter(datacube, size=median_filter_size)
+        datacube_filtered = ndimage.median_filter(datacube_masked, size=median_filter_size)
+        # note that ndimage.median_filter will ignore the mask
+        datacube_masked = np.ma.array(datacube_filtered, mask=mask)
 
     # prepare the masked data
     datacube_masked = np.ma.array(datacube, mask=mask)
+    datacube_signal_masked = np.ma.array(datacube_masked, mask=signal_mask)
 
     if sigma_clip:
-        # it is only safe to apply the sigma_clip if the signal is weak,
-        # and the single exposure is dominated by noise and sky line (residuals)
-        datacube_masked = astro_stats.sigma_clip(datacube_masked, sigma=sigma, 
-                                                 maxiters=2, masked=True) 
+        # apply sigma_clip along the spectral axis
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            # first apply a global masking, masking outliers with S/N of 10*sigma
+            # with a single exposure, it is very unlikely that the signal will have
+            # such large S/N
+            datacube_masked = astro_stats.sigma_clip(datacube_masked, sigma=10*sigma, 
+                                                     maxiters=5, masked=True)
+            # then apply a strick clipping on the channels without signals.
+            sigma_clip_masked = astro_stats.sigma_clip(datacube_signal_masked, sigma=sigma, 
+                                                       maxiters=5, axis=0, masked=True)
         if channel_chunk is not None:
             # apply chunk based sigma clip, it could be useful if different 
             # spectral window show different noise level
@@ -1487,45 +1532,49 @@ def clean_cube(datacube, mask=None, signal_mask=None, sigma_clip=True, median_su
             chunk_steps = np.hstack((np.arange(0, nchan, channel_chunk)[:-1], 
                                    (np.arange(nchan, 0, -channel_chunk)-channel_chunk)[:-1]))
             for chan in chunk_steps:
-                chunk_masked = astro_stats.sigma_clip(datacube_masked[chan:chan+channel_chunk], 
+                chunk_masked = astro_stats.sigma_clip(datacube_signal_masked[chan:chan+channel_chunk], 
                                                       maxiters=2, sigma=sigma, masked=True)
-                cube_chunk_mask[chan:chan+channel_chunk] = chunk_masked.mask
-            datacube_masked = np.ma.array(datacube_masked, mask=cube_chunk_mask)
+                cube_chunk_mask[chan:chan+channel_chunk] = np.logical_xor(chunk_masked.mask, signal_mask[chan:chan+channel_chunk]) | datacube_masked.mask[chan:chan+channel_chunk]
+            sigma_clip_masked = np.ma.array(datacube_masked, mask=cube_chunk_mask)
 
         # apply channel-wise sigma_clip (deprecated, too dangerous)
         # datacube_masked = astro_stats.sigma_clip(datacube_masked, maxiters=2, sigma=sigma,
                                                  # axis=(1,2), masked=True)
         
-        # apply sigma_clip along the spectral axis
-        # make sure to mask signals (through signal_mask) before applying this
-        # datacube_masked = astro_stats.sigma_clip(datacube_masked, maxiters=2, sigma=sigma,
-                                                 # axis=0, masked=True)
+        datacube_signal_masked.mask = sigma_clip_masked.mask
+        datacube_masked.mask = (np.logical_xor(sigma_clip_masked.mask, signal_mask) 
+                                | datacube_masked.mask)
 
     if median_subtract:
-        #
-        datacube_signal_masked = np.ma.array(datacube_masked, mask=signal_mask)
+        # print('median subtraction')
 
-        # apply a global median subtraction
-        datacube_masked -= np.ma.median(datacube_signal_masked, axis=0).data[np.newaxis,:,:]
+        # median subtraction along the spectral axis
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
+            spec_median = np.nanmedian(datacube_signal_masked, axis=0)
+        datacube_masked -= spec_median[None,:,:]
 
-        # row and column based median subtraction
-        # by y-axis
-        datacube_masked -= np.ma.median(datacube_signal_masked, axis=1).data[:,np.newaxis,:]
-        # by x-axis
-        datacube_masked -= np.ma.median(datacube_signal_masked, axis=2).data[:,:,np.newaxis]
+        if median_subtract_row or median_subtract_col:
+            # prepre a cube for col and row subtraction
+            spec_median_cube = np.repeat(spec_median[None,:,:], nchan, axis=0)
+            spec_median_cube[~signal_mask] = datacube_masked.data[~signal_mask]
+            datacube_signal_replaced = np.ma.array(spec_median_cube, 
+                                                   mask=datacube_masked.mask)
         
-        datacube_signal_masked = np.ma.array(datacube_masked, mask=signal_mask)
+            # row and column based median subtraction
+            datacube_masked -= np.ma.median(datacube_signal_replaced, axis=1).data[:,np.newaxis,:]
+            # by x-axis
+            datacube_masked -= np.ma.median(datacube_signal_replaced, axis=2).data[:,:,np.newaxis]
+
         # median subtraction image by image
-        spec_median =  np.ma.median(datacube_signal_masked, axis=(1,2))
-        spec_median_filled = fill_mask(spec_median, step=5)
-        datacube_masked -= spec_median_filled[:,np.newaxis, np.newaxis]
+        # spec_median =  np.ma.median(datacube_signal_masked, axis=(1,2))
+        # spec_median_filled = fill_mask(spec_median, step=5)
+        # datacube_masked -= spec_median_filled[:,np.newaxis, np.newaxis]
 
-    if cont_subtract: # this will take a very long time
-        # apply a very large median filter to cature large scale continue variation
-        cont_datacube = ndimage.median_filter(datacube_signal_masked, size=(200, 10, 10))
-        # set the science masked region as the median value of the final median subtracted median
-        datacube_masked = datacube_masked - cont_datacube
-        
+    # apply global median subtraction by default
+    datacube_masked -= np.median(stats.sigmaclip(datacube_signal_masked.compressed(), low=sigma, high=sigma)[0])
+
+      
     return datacube_masked
 
 def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
@@ -1546,15 +1595,21 @@ def compute_weighting_eris(image_list, mode='exptime', header_ext='DATA'):
 
 def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None, 
                       z=None, line_width=1000, wave_range=None,
-                      sigma_clip=True, sigma=5.0, median_subtract=True,
+                      sigma_clip=True, sigma=5.0, median_subtract=False,
                       mask_ext=None, median_filter=False, median_filter_size=(5,3,3),
-                      cont_subtract=False, weighting=None, overwrite=False, debug=False):
+                      weighting=None, overwrite=False, debug=False):
     """combining data directly in pixel space
     this function combine the image/datacube in the pixel space
 
     image_list (list): the list of filenames or ndarray
     offset (list,ndarray): the offset (x, y) of each image
-    wave_range: the wavelength range to combine, in um
+    wave_range (list, ndarray): the wavelength range to combine, in um
+    savefile: the filename to keep the combined cube
+    z (float): the redshift of the target, use to protect signal during sigma clipping
+    sigma_clip (bool): by default it is on
+    sigma (float): the sigma value of the sigma_clip
+    median_subtract (bool): by default the median subtraction is off
+    weighting (deprecated): not been used any more
     """
     # check existing files
     if savefile is not None:
@@ -1601,18 +1656,24 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
         # read the first image to get the image size
         # <TODO>: read all the header and compute the best size and wavelength
         # such as: wcs_combined = find_combined_wcs(image_list, offsets=offsets)
+        # here we just use the header from the first cube
         first_header = fits.getheader(cube_list[0], 'DATA')
         first_wcs = WCS(first_header)
         pad = np.round(np.abs(pixel_shifts).max()).astype(int)
-         # define the final product
+
+        # get the wavelength of the cube
+        # all the following cube have different wavelength will be interpolated
+        # to this wavelength
         wavelength = get_wavelength(first_header)
 
         # cut the datacube if the wavelength range is defined
         if wave_range is not None:
             wave_unit = u.Unit(first_header['CUNIT3'])
             wave_convert_scale = wave_unit.to(u.um)
-            wave_range = np.array(wave_range) * wave_convert_scale
+            print('wave_convert_scale', wave_convert_scale)
+            wave_range = np.array(wave_range) / wave_convert_scale
             wave_select = (wavelength > wave_range[0]) & (wavelength < wave_range[1])
+            print('channel selected', np.sum(wave_select))
         else:
             wave_select = np.full_like(wavelength, fill_value=True, dtype=bool)
 
@@ -1621,6 +1682,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
         padded_cube_size = (len(wavelength), 
                             first_header['NAXIS2'] + 2*pad,
                             first_header['NAXIS1'] + 2*pad)
+        # define the final product
         data_combined = np.full(padded_cube_size, fill_value=0.)
         coverage_combined = np.full(padded_cube_size, fill_value=0.)
         # to avoid numerical issue, scaling is needed to extrapolate 3D datacube
@@ -1642,7 +1704,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
                 # weighting = np.full(ncubes, fill_value=1./ncubes)
  
         for i in range(ncubes):
-            # ge the offset, we need to multiply -1 to inverse the shifts
+            # get the offset, we need to multiply -1 to inverse the shifts
             # as the calculation of pixel shifts is the (x0-xi, y0-yi) 
             # later we can them directly use "+"
             offset = -1 * pixel_shifts[i]
@@ -1661,10 +1723,38 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
             else:
                 cube_mask = np.full(cube_data.shape, fill_value=False)
             cube_wavelength = get_wavelength(header)
-            # cut the datacube if needed
-            cube_wavelength = cube_wavelength[wave_select]
-            cube_data = cube_data[wave_select]
-            cube_mask = cube_mask[wave_select]
+            if wave_range is not None:
+                cube_wave_unit = u.Unit(cube_header['CUNIT3'])
+                cube_wave_convert_scale = wave_unit.to(u.um)
+                cube_wave_range = np.array(wave_range) / wave_convert_scale
+                cube_wave_select = (cube_wavelength > cube_wave_range[0]) & (
+                                    cube_wavelength < cube_wave_range[1])
+            else:
+                cube_wave_select = np.full_like(cube_wavelength, fill_value=True, dtype=bool)
+
+            # if False: #if (len(cube_wavelength) != len(wavelength)) or ((
+                #np.diff([wavelength, cube_wavelength], axis=0) > 1e-4).any())
+                # the interpolation is needed for the spectral axis
+
+            # # cut the datacube if needed, temperary solution
+            # if len(cube_wavelength) > len(wave_select):
+                # n_diff = len(cube_wavelength) - len(wave_select)
+                # print('Inconsistent wavelength length, datacube has {} larger channel(s)'.format(n_diff))
+                # cube_data = cube_data[:-n_diff]
+                # cube_mask = cube_mask[:-n_diff]
+                # cube_wavelength = cube_wavelength[:-n_diff]
+            # if len(cube_wavelength) < len(wave_select):
+                # print('Inconsistent wavelength length, bool selection has a larger size')
+                # n_diff = len(wave_select) - len(cube_wavelength)
+                # cube_data2 = np.zeros(np.array(cube_data.shape)+np.array([n_diff,0,0]))
+                # cube_data2[:-n_diff] = cube_data
+                # cube_data = cube_data2
+                # cube_wavelength2 = np.zeros(len(cube_wavelength) + n_diff)
+                # cube_wavelength2[:-n_diff] = cube_wavelength
+                # cube_wavelength = cube_wavelength2
+            cube_wavelength = cube_wavelength[cube_wave_select]
+            cube_data = cube_data[cube_wave_select]
+            cube_mask = cube_mask[cube_wave_select]
 
             cube_wavelength_norm = (cube_wavelength-wave_min)/wave_max*wave_scale
             cube_nchan, cube_ny, cube_nx = cube_data.shape
@@ -1680,8 +1770,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
             # mask the outliers and subtract median noise, see clean_cube for details
             # needs to be cautious in preveting removing possible signal 
             cube_data_masked = clean_cube(cube_data, mask=cube_mask, signal_mask=cube_wave_mask, 
-                                          sigma_clip=sigma_clip, median_subtract=median_subtract,
-                                          median_filter=median_filter, cont_subtract=cont_subtract)
+                                          sigma_clip=sigma_clip, median_subtract=False)
             # simple alternative is:
             # cube_data_masked = astro_stats.sigma_clip(cube_data, sigma=5)
 
@@ -1745,6 +1834,17 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
     with np.errstate(divide='ignore', invalid='ignore'):
         data_combined = data_combined / (coverage_combined) 
 
+    if z is not None:
+        wave_mask = mask_spectral_lines(wavelength, redshift=z, line_width=line_width)
+        wave_mask = np.repeat(wave_mask, padded_cube_size[1]*padded_cube_size[2]).reshape(
+                              *padded_cube_size)
+        print('final wave_mask shape',wave_mask.shape)
+    else:
+        wave_mask = None
+    print('Final datacube shape:', data_combined.shape)
+    data_combined = clean_cube(data_combined, signal_mask=wave_mask, sigma_clip=sigma_clip,
+                               median_subtract=median_subtract)
+    data_combined = data_combined.filled(np.nan)
     if savefile is not None:
         # save the combined data
         hdr = first_wcs.to_header()
@@ -2009,11 +2109,14 @@ def summarise_eso_files(filelist, outfile=None):
         return summary_tab
 
 def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
-             interactive=False, outfile=None):
+                      interactive=False, basename=None, outfile=None, plotfile=None,
+                      ):
     """two dimentional Gaussian fit
 
     """
     # read the fits file
+    if basename is None:
+        basename = starfits
     with fits.open(starfits) as hdu:
         header = hdu['PRIMARY'].header
         data_header = hdu['DATA'].header
@@ -2027,11 +2130,10 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     elif data.ndim == 3:
         wavelength = get_wavelength(header=data_header)
         # collapse the cube to make map
-        print('start median filter')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
         data = ndimage.median_filter(data, size=20, axes=0)
-        print('median filter is finished')
-        data = astro_stats.sigma_clip(data, sigma=10, axis=0)
-        print('sigma_clip is finished')
         image = np.nansum(data, axis=0)
 
         # collapse the cube to get the image of the star
@@ -2039,7 +2141,6 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         # data = clean_cube(data, median_filter=False, median_subtract=False, sigma=10)
         # image = np.ma.sum(data, axis=0)
     yshape, xshape = image.shape
-    print((yshape, xshape))
     margin_padding = 10
     norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
                                        margin_padding:-margin_padding], 98)
@@ -2049,7 +2150,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     # start the gaussian fitting for the 2D-image
     # generate the grid
     sigma2FWHM = np.sqrt(8*np.log(2))
-    center_ref = np.array([(yshape-1)*0.5, (xshape-1)*0.5])
+    center_ref = np.array([yshape*0.5, xshape*0.5])
     # ygrid, xgrid = (np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None])
     xsigma, ysigma = pixel_size, pixel_size
     ygrid, xgrid = np.meshgrid((np.arange(0, yshape) - center_ref[0])*pixel_size,
@@ -2059,7 +2160,11 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                                          # margin_padding:-margin_padding], 1)
     # vmax = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
                                          # margin_padding:-margin_padding], 99)
-    vmax = np.nanpercentile(image_normed[10:-10, 10:-10], 99)
+    vmax = np.nanpercentile(image_normed[20:-20, 20:-20], 99)
+    vmin = np.nanpercentile(image_normed[20:-20, 20:-20], 1)
+    if abs(vmax) < abs(vmin):
+        vmax, vmin = vmin, vmax
+        image_normed = -1.*image_normed
     # vmax = 6
     vmin = -0.5*vmax
     if interactive:
@@ -2078,26 +2183,28 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         
     # automatically estimate the initial parameters
     else:
-        amp = np.nanmax(image_normed[10:-10,10:-10])
-        #amp = 1
-        # yidx, xidx = np.where(image>0.9*amp)
+        amp = 1.2*vmax #np.nanmax(image_normed[10:-10,10:-10])
+        amp_select = image_normed > vmax
+        yidx, xidx = ygrid[amp_select], xgrid[amp_select]
         # x0, y0 = np.median(xidx), np.median(yidx)
-        y0, x0 = 0., 0.#center_ref[0], center_ref[1]
+        # if abs(x0)>20 or abs(y0)>20:
+            # y0, x0 = 0, 0
+        y0, x0 = 0, 0
         p_init = [amp, x0, y0, xsigma, ysigma, 0]
     print(f"p_init: {p_init}")
 
     def _cost(params, xgrid, ygrid):
        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + (10+rms)**2))
+       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + (15+rms)**2))
     res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
-                        bounds=[[0, 100], [-20,20], [-20,20], [0.1,5], [0.1,5], 
-                                [-np.pi*0.5,np.pi*0.5]])
+                        bounds = [[0, 100], [-30,30], [-30,30], [0.1,5], [0.1,5],
+                                  [-np.pi*0.5,np.pi*0.5]])
 
     amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
     xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
     # print(xfwhm_fit, yfwhm_fit)
    
-    if plot:
+    if True:
         fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
         fig = plt.figure(figsize=(12, 6))
         gs = gridspec.GridSpec(2, 3)
@@ -2106,60 +2213,183 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         cbar = plt.colorbar(im, ax=ax1)
         #ax1.plot([x0], [y0], 'x', color='red')
         ax2 = fig.add_subplot(gs[0,1])
+        ax2.set_title(basename, fontsize=8)
         im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
         cbar = plt.colorbar(im, ax=ax2)
         ax3 = fig.add_subplot(gs[0,2])
         im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
         cbar = plt.colorbar(im, ax=ax3)
-        plt.show()
+        if plotfile is not None:
+            plotfile.savefig(fig, bbox_inches='tight')
+            plt.close()
+        if plot:
+            plt.show()
+        else:
+            plt.close()
 
-    print([amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit])
+    # print([amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit])
     return [amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit]
 
-def interpolate_drifts(tpl_start_list, datadir, ):
-    """ derive the drift of the science exposures 
+def construct_drift_file(tpl_start_list, datadir, plot=False, plotfile=None, savefile=None, 
+                        interactive=False, debug=False):
+    """ construct the drift file of the science exposures
+
+    1. the program take the tpl_start as the unique identity of the science observation,
+    2. then, it searches back the OB ID to check the closest PSF stars
+    3. it uses the position of the two closest PSF stars to derive the drifts
     """
+    if plotfile is not None:
+        from matplotlib.backends.backend_pdf import PdfPages
+        pdf_file = PdfPages(plotfile)
+    else:
+        pdf_file = None
+
     tpl_start_list = np.unique(tpl_start_list).tolist()
-    ref_positions = table.Table(names=['is_star','Xref','Yref'], dtype=['bool','f8','f8'])
+    summary_all = []
+    group_id = 0
     for tpl_start in tpl_start_list:
         print('tpl_start + ob_id', tpl_start, )
         # get all the observations within each tpl_start_list
-        fits_list, arcname_list, exptime_list = search_archive(datadir, tpl_start=tpl_start)
-        print('fits_list', fits_list, exptime_list)
+        fits_objs, arcname_objs, exptime_objs = search_archive(datadir, tpl_start=tpl_start)
         # get the summaries of the all the observations
-        summary_tab = summarise_eso_files(fits_list)
-        summary_tab.sort(['date_obs'])
+        summary_tab_objs = summarise_eso_files(fits_objs)
+        summary_tab_objs.sort(['date_obs'])
+        time_array_objs = np.array(summary_tab_objs['date_obs'], dtype='datetime64[s]')
+        # get the PSF stars with the same OB ID
+        ob_id = summary_tab_objs['ob_id'][0]
+        print('tpl_start + ob_id', ob_id, )
+        fits_stars, arcname_stars, exptime_stars = search_archive(datadir, oblist=[ob_id,], target_type='CALIBPSF')
+        summary_tab_stars = summarise_eso_files(fits_stars)
+        if len(summary_tab_stars) < 1:
+            print("No PSF stars found!")
+            continue
+        elif len(summary_tab_stars) == 1:
+            print("Only one PSF star found")
+            summary_tab = table.vstack([summary_tab_stars, summary_tab_objs])
+        elif len(summary_tab_stars) > 2:
+            time_array_stars = np.array(summary_tab_stars['date_obs'], dtype='datetime64[s]') 
+            time_array_stars_delta1 = np.abs(time_array_stars-time_array_objs[0]).astype(float)
+            time_array_stars_delta2 = np.abs(time_array_stars-time_array_objs[-1]).astype(float)
+            summary_tab_stars = summary_tab_stars[(time_array_stars_delta1<300) | 
+                                                  (time_array_stars_delta2<300)]
+            if len(summary_tab_stars) < 2:
+                print("Only {} valid PSF stars".format(len(summary_tab_stars)))
+                if len(summary_tab_stars) == 1:
+                    summary_tab = table.vstack([summary_tab_stars, summary_tab_objs])
+            else:
+                psf_star_start = summary_tab_stars[np.argmin(np.abs(time_array_stars-time_array_objs[0]))]
+                psf_star_end = summary_tab_stars[np.argmin(np.abs(time_array_stars-time_array_objs[-1]))]
+                summary_tab = table.vstack([psf_star_start, summary_tab_objs, psf_star_end])
+
         # create columns to store the center of the offsets
-        center_positions = np.zeros((len(summary_tab), 3)) #['is_star', 'Xref', 'Yref']
+        center_positions = np.zeros((len(summary_tab), 4)) #['Xref', 'Yref','is_star','group_id']
         for i,item in enumerate(summary_tab):
-            print('item[catg]', item['catg'])
             if item['catg'] == 'PSF_CALIBRATOR':
-                print('filename', item['filename'])
-                _amp, xpix, ypix, _xsigma, _ysigma, _theta = fit_star_position(item['filename'], plot=True)
-                center_positions[i] = [True, xpix, ypix]
+                _amp, xpix, ypix, _xsigma, _ysigma, _theta = fit_star_position(item['filename'], 
+                                                                               interactive=interactive,
+                                                                               plot=True, 
+                                                                               plotfile=pdf_file)
+                center_positions[i] = [xpix+32, ypix+32, True, group_id]
             else: 
                 #TODO: add another prediction method
-                center_positions[i] = [False, 32, 32]
+                center_positions[i] = [32, 32, False, group_id]
 
+        # # extrapolate the science scans with the two PSF stars
+        # is_star = center_positions[:,0].astype(bool)
+        # if np.sum(is_star) > 1:
+            # print('Extrapolate offsets for tpl_start={}'.format(tpl_start))
+            # print('is_star', is_star)
+            # obs_time_array = np.array(summary_tab['date_obs'], dtype='datetime64[s]')
+            # obs_delta_time = (obs_time_array - obs_time_array[0]).astype(float) # in units of second
+            # center_positions[:,0] = np.interp(obs_delta_time, 
+                                              # obs_delta_time[is_star], center_positions[:,0][is_star])
+            # center_positions[:,1] = np.interp(obs_delta_time, 
+                                              # obs_delta_time[is_star], center_positions[:,1][is_star])
+        # else:
+            # print('No stars for position extrapolation, skip')
+        extrapolated_positions = table.Table(center_positions, 
+                                             names=['Xref','Yref','is_star','group_id'],
+                                             dtype=['f8','f8','bool','i8'])
+        summary_all.append(table.hstack([summary_tab, extrapolated_positions]))
+        group_id += 1
+
+    table_all = table.vstack(summary_all)
+    # merge the continuous OBs without break into a single group 
+    if True:
+        # sort the summary table again just in case some of the PSF star were not at the right time
+        table_all.sort(['date_obs'])
+        gid_list = np.unique(table_all['group_id'])
+        print('gid_list', gid_list)
+        for i in range(1, len(gid_list)):
+            obs_ip = table_all[table_all['group_id'] == gid_list[i-1]][-1]
+            obs_i = table_all[table_all['group_id'] == gid_list[i]][0]
+            print('checking', obs_ip['ob_id'], obs_i['ob_id'])
+            t_ip = np.array(obs_ip['date_obs'], dtype='datetime64[s]')
+            t_i = np.array(obs_i['date_obs'], dtype='datetime64[s]')
+            print('time difference:', (t_i - t_ip).astype(float))
+            if abs((t_i - t_ip).astype(float)) < 600: # within 10 minutes
+                # check whether the second observation has recieved acquisition
+                eris_quary_tab = eris_quary(ob_id=obs_i['ob_id'])
+                print("checking acquisition for", obs_i['ob_id'])
+                if 'ACQUISITION' not in eris_quary_tab['DPR.CATG']:
+                    print('No acquisition, changing the group_id')
+                    print(table_all['group_id'])
+                    table_all['group_id'][table_all['group_id'] == obs_i['group_id']] = obs_ip['group_id']
+                    gid_list[i] = obs_ip['group_id'] # change the group_id list
+                    print(table_all['group_id'])
+
+    if plotfile is not None:
+        pdf_file.close()
+    if len(summary_all) > 0: 
+        if savefile is not None:
+            table_all.write(savefile, format='csv', overwrite=True)
+        else:
+            return table_all
+    else:
+        print("Nothing to return")
+
+def interpolate_drifts(summary_table, extrapolate=False, overwrite=True):
+    """ derive the drift of the science exposures 
+
+    """
+    # read the summary table
+    if isinstance(summary_table, str):
+        writefile = summary_table
+        summary_table = Table.read(summary_table, format='csv')
+    else:
+        writefile = None
+    # loop throught the observation share the same OB and group number
+    # a same group meanes the observation were continuous without break
+    group_id_list = np.unique(summary_table['group_id'])
+    for group_id in group_id_list:
         # extrapolate the science scans with the two PSF stars
-        is_star = center_positions[:,0]
-        print(is_star)
-        print(center_positions)
-        if np.sum(is_star) > 1:
-            print('Extrapolate offsets for tpl_start={}'.format(tpl_start))
-            obs_time_array = np.array(summary_tab['date_obs'], dtype='datetime64[s]')
-            obs_delta_time = (obs_time_array - obs_time_array[0]) # in units of second
-            center_positions[:,1] = np.interp(obs_delta_time, 
-                                              obs_delta_time[is_star], center_positions[:,1][is_star])
-            center_positions[:,2] = np.interp(obs_delta_time, 
-                                              obs_delta_time[is_star], center_positions[:,2][is_star])
+        group_select = summary_table['group_id'] == group_id
+        group_obs = summary_table[group_select]
+        group_is_star = group_obs['is_star'].astype(bool)
+        if np.sum(group_is_star) > 1:
+            print('Extrapolate offsets for group={}'.format(group_id))
+            obs_time_array = np.array(summary_table[group_select]['date_obs'], dtype='datetime64[s]')
+            obs_delta_time = (obs_time_array - obs_time_array[0]).astype(float) # in units of second
+            if not extrapolate:
+                summary_table['Xref'][group_select] = np.interp(obs_delta_time, 
+                                                            obs_delta_time[group_is_star], 
+                                                            group_obs['Xref'][group_is_star],
+                                                            right=32)
+                summary_table['Yref'][group_select] = np.interp(obs_delta_time, 
+                                                            obs_delta_time[group_is_star], 
+                                                            group_obs['Yref'][group_is_star],
+                                                            right=32)
+            else:
+                pass
         else:
             print('No stars for position extrapolation, skip')
-        extrapolated_positions = table.Table(center_positions, names=['is_star','Xref','Yref'],
-                                             dtype=['bool','f8','f8'])
-        ref_positions = table.vstack([ref_positions, extrapolated_positions])
-    return ref_positions
-
+    if writefile is not None:
+        if overwrite:
+            summary_table.write(writefile, format='csv', overwrite=True)
+        else:
+            summary_table.write(writefile[:-4]+'.updated.csv', format='csv')
+    else:
+        return summary_table
 
 #####################################
 ######### DATA Quicklook ############
@@ -2313,7 +2543,7 @@ def fit_spec(vel, spec, std, plot=False, ax=None,
     return bestfit_params
 
 def fit_eris_cube(cube, velocity=None, SNR_limit=2, plot=False, fit_cont=True,
-                  z=None, rest_wave=0.656279*u.um, smooth_width=None, 
+                  z=None, rest_wave=0.65646*u.um, smooth_width=None, 
                   minaper=1, maxaper=4, box=None, 
                   vel_low=-400, vel_up=400, savefile=None):
     """fit gaussian line through the cube
@@ -2329,8 +2559,11 @@ def fit_eris_cube(cube, velocity=None, SNR_limit=2, plot=False, fit_cont=True,
     if box is not None:
         box_idx = box.split(',')
         box_idx = np.array(box.split(',')).astype(int)
-        cube = cube[box_idx[0]:box_idx[1], box_idx[2]:box_idx[3], box_idx[4]:box_idx[5]]
-        vel = vel[box_idx[0]:box_idx[1]]
+        if len(box_idx) == 6:
+            cube = cube[box_idx[0]:box_idx[1], box_idx[2]:box_idx[3], box_idx[4]:box_idx[5]]
+            vel = vel[box_idx[0]:box_idx[1]]
+        elif len(box_idx) == 4:
+            cube = cube[:, box_idx[0]:box_idx[1], box_idx[2]:box_idx[3]]
     # if smooth_width is not None:
         # gauss_kernel = Gaussian2DKernel(smooth_width)
         # cube = convolve(cube, gauss_kernel)
@@ -2422,14 +2655,14 @@ def fit_eris_cube(cube, velocity=None, SNR_limit=2, plot=False, fit_cont=True,
         # keep files into fits file
         pass
 
-def plot_fitcube(fitmaps):
+def plot_fitcube(fitmaps, vmin=-300, vmax=300):
     fig = plt.figure(figsize=(12, 3))
     ax1 = fig.add_subplot(131)
     ax1.imshow(fitmaps[0], origin='lower')
     ax1.set_title("Intensity")
 
     ax2 = fig.add_subplot(132)
-    ax2.imshow(fitmaps[1], origin='lower', cmap='RdBu_r')
+    ax2.imshow(fitmaps[1], vmin=vmin, vmax=vmax, origin='lower', cmap='RdBu_r')
     ax2.set_title("Velocity")
     
     ax3 = fig.add_subplot(133)
@@ -2657,7 +2890,7 @@ def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None
                   band=None,
                   oblist=None, exclude_ob=False, filelist=None, exclude_file=True,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', 
-                  z=None, wave_range=None,
+                  z=None, wave_range=None, median_subtract=None,
                   savefile=None, recipe='combine_eris_cube', suffix='combined', 
                   overwrite=False):
     """A wrapper of combine_data
@@ -2700,9 +2933,12 @@ def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None
                     f'{target}_{band}_{spaxel}_{total_exp/3600:.1f}h_{suffix}.fits')
     obs_offset = compute_eris_offset(image_list, additional_drifts=drifts)
     if recipe == 'combine_eris_cube':
+        if median_subtract is None:
+            if wave_range is not None: median_subtract = True
+            else: median_subtract = False
         combine_eris_cube(cube_list=image_list, pixel_shifts=obs_offset, 
-                          z=z, wave_range=wave_range, overwrite=overwrite,
-                          savefile=savefile)
+                          z=z, wave_range=wave_range, median_subtract=median_subtract,
+                          overwrite=overwrite, savefile=savefile)
     elif recipe == 'eris_ifu_combine':
         # create the combine.sof
         combine_sof = os.path.join(outdir, 
@@ -2727,7 +2963,8 @@ def quick_combine(datadir=None, target=None, target_type='SCIENCE', offsets=None
 def quick_pv_diagram(datacube, z=None, mode='horizontal', cmap='magma',
                      step=5, nslits=16, length=80, signal_vmin=-500, signal_vmax=500, 
                      vmin=-2000, vmax=2000, smooth=None, name=None,
-                     xcenter=None, ycenter=None,
+                     xcenter=None, ycenter=None, sigma_clip=True, sigma=3.0,
+                     median_subtract=True,
                      comments=None, additional_theta=0, 
                      savefig=None, savefile=None, overwrite=True, debug=False):
     """a wrapper of pv_diagram to generate a overview of the slits based pv_diagrams
@@ -2758,7 +2995,9 @@ def quick_pv_diagram(datacube, z=None, mode='horizontal', cmap='magma',
     
     # get some statistics of the map
     signal_vmask = (velocity < signal_vmax) & (velocity > signal_vmin)
-    datacube = clean_cube(datacube, signal_mask=np.tile(signal_vmask, (nx, ny,1)).T)
+    datacube = clean_cube(datacube, signal_mask=np.tile(signal_vmask, (nx, ny,1)).T, 
+                          sigma_clip=sigma_clip, median_subtract=median_subtract,
+                          median_subtract_row=False, median_subtract_col=False)
     std = np.nanstd(datacube[:,10:ny-10,10:nx-10])
     # _mean, _median, std = astro_stats.sigma_clipped_stats(datacube[:,10:ny-10,10:nx-10], sigma=5, maxiters=3)
 
@@ -2856,7 +3095,7 @@ def quick_pv_diagram(datacube, z=None, mode='horizontal', cmap='magma',
             ax.axis('off')
         fig.subplots_adjust(hspace=0.1, wspace=0.1)
         # fig.tight_layout()
-    if savefig is not None:
+    if savefile is not None:
         hdus = fits.HDUList(hdu_list)
         hdus.writeto(savefile, overwrite=overwrite)
     if savefig is not None:
@@ -3256,6 +3495,11 @@ if __name__ == '__main__':
                                        help='The maximal velocty default=500 km/s')
     subp_quick_pv_diagram.add_argument('--smooth', type=float, default=None, 
                                        help='The kernel size for the smooth')
+    subp_quick_pv_diagram.add_argument('--sigma_clip', type=float, default=3.0, 
+                                       help='the sigma limit for sigma_clip')
+    subp_quick_pv_diagram.add_argument('--median_subtract', default=True, 
+                                       type=lambda x: (str(x).lower() == 'true'),
+                                       help='skip median subtraction to the datacube')
     subp_quick_pv_diagram.add_argument('--name', help='The name of the plot')
     subp_quick_pv_diagram.add_argument('--comments', help="comments to be added to the plot") 
 
@@ -3345,12 +3589,18 @@ if __name__ == '__main__':
                       overwrite=args.overwrite, recipe=args.recipe,
                       outdir=args.outdir, drifts=args.drifts, suffix=args.suffix)
     elif args.task == 'quick_pv_diagram':
+        if args.sigma_clip == 0:
+            sigma_clip = False
+        else:
+            sigma_clip = True
         quick_pv_diagram(datacube=args.datacube, z=args.redshift, mode=args.mode, 
                          step=args.step, nslits=args.nslits, length=args.length, cmap=args.cmap,
                          signal_vmin=args.signal_vmin, signal_vmax=args.signal_vmax,
                          xcenter=args.xcenter, ycenter=args.ycenter,
                          savefig=args.savefig, savefile=args.savefile,
                          name=args.name, comments=args.comments, debug=args.debug,
+                         sigma_clip=sigma_clip, sigma=args.sigma_clip, 
+                         median_subtract=args.median_subtract,
                          vmin=args.vmin, vmax=args.vmax, smooth=args.smooth,
                          )
     else:
