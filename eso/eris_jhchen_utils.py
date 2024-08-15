@@ -14,8 +14,9 @@ History:
     - 2024-01-30: add customized combining task, v0.4
     - 2024-02-26: support reducing PSF and standard stars, v0.5
     - 2024-04-07: add data quicklook tools, v0.6
+    - 2024-08-15: add support for drift correction, v0.7
 """
-__version__ = '0.6.25'
+__version__ = '0.7.0'
 
 # import the standard libraries
 import os 
@@ -1112,6 +1113,13 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
 #####################################
 ######### Flux calibration ##########
 
+def query_star_VizieR(name, band=None):
+    """get the star info from VizieR database
+
+    """
+    # return Tstar, magnetude, type
+    pass
+
 def gaussian_2d_legacy(params, x=None, y=None):
     """a simple 2D gaussian function
     
@@ -1139,11 +1147,34 @@ def gaussian_2d(params, x=None, y=None):
     c = np.sin(theta)**2/(2*xsigma**2) + np.cos(theta)**2/(2*ysigma**2)
     return amp*np.exp(-a*(x-x0)**2 - b*(x-x0)*(y-y0) - c*(y-y0)**2)
 
+def moffat_2d(params, x=None, y=None):
+    """a simple 2d moffat function, used for std star fitting
+    
+    Args:
+        params: [amplitude, x_center, y_center, gamma, alpha]
+        x: x grid
+        y: y grid
+    """
+    amp, x0, y0, gamma, alpha = params
+    return amp*(1+((x-x0)**2+(y-y0)**2)/gamma**2)**(-alpha)
+
+def read_eris_star(starfits):
+    with fits.open(starfits) as hdu:
+        header = hdu['PRIMARY'].header
+        data_header = hdu['DATA'].header
+        data = hdu['DATA'].data
+        ndim = data.ndim
+        exptime = header['EXPTIME']
+        arcfile = header['ARCFILE']
+    wavelength = get_wavelength(header=data_header)
+    return wavelength, data
+
 def fit_star(starfits, x0=None, y0=None, pixel_size=1, 
-             plot=False, plotfile=None,
+             plot=False, plotfile=None, model='gaussian_2d',
              extract_spectrum=False, star_type=None, T_star=None,
+             band_2mass=None, magnetude_2mass=None,
              interactive=False, outfile=None):
-    """two dimentional Gaussian fit
+    """two dimentional Moffat/Gaussian fit
 
     """
     # read the fits file
@@ -1159,20 +1190,20 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         image = data
     elif data.ndim == 3:
         wavelength = get_wavelength(header=data_header)
+        nchan = len(data)
         # collapse the cube to make map
-        print('start median filter')
-        data = ndimage.median_filter(data, size=50, axes=0)
-        print('median filter is finished')
-        data = astro_stats.sigma_clip(data, sigma=10, axis=0)
-        print('sigma_clip is finished')
-        image = np.nansum(data, axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
+        # collapse the cube to make map
+        data_median_filtered = ndimage.median_filter(data, size=20, axes=0)
+        image = np.nansum(data_median_filtered, axis=0)
 
         # collapse the cube to get the image of the star
         # this is used to find the star and get its shape (by 2d-Gaussian fitting)
         # data = clean_cube(data, median_filter=False, median_subtract=False, sigma=10)
         # image = np.ma.sum(data, axis=0)
     yshape, xshape = image.shape
-    print((yshape, xshape))
     margin_padding = 10
     norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
                                          margin_padding:-margin_padding], 98)
@@ -1182,17 +1213,26 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
     # start the gaussian fitting for the 2D-image
     # generate the grid
     sigma2FWHM = np.sqrt(8*np.log(2))
-    center_ref = np.array([(yshape-1)*0.5, (xshape-1)*0.5])
-    ygrid, xgrid = np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None]
+    center_ref = np.array([yshape*0.5, xshape*0.5])
+    ygrid, xgrid = np.meshgrid((np.arange(0, yshape) - center_ref[0])*pixel_size,
+                               (np.arange(0, xshape) - center_ref[1])*pixel_size)
     rgrid = np.sqrt(xgrid**2 + ygrid**2)
-    xsigma, ysigma = pixel_size, pixel_size
-    ygrid, xgrid = np.meshgrid((np.arange(0, yshape)+0.5)*pixel_size,
-                               (np.arange(0, xshape)+0.5)*pixel_size)
-    vmin = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
-                                         margin_padding:-margin_padding], 1)
-    vmax = np.nanpercentile(image_normed[margin_padding:-margin_padding, 
-                                         margin_padding:-margin_padding], 99)
-    # vmax = np.nanpercentile(image_normed[10:-10, 10:-10], 99)
+    vmax = np.nanpercentile(image_normed[20:-20, 20:-20], 99)
+    vmin = np.nanpercentile(image_normed[20:-20, 20:-20], 1)
+    if abs(vmax) < abs(vmin):
+        vmax, vmin = vmin, vmax
+        image_normed = -1.*image_normed
+    # vmax = 6
+    vmin = -0.5*vmax
+
+    if model == 'moffat_2d':
+        model_func = moffat_2d
+        gamma0 = pixel_size
+        alpha0 = 1
+    elif model == 'gaussian_2d':
+        model_func = gaussian_2d
+        xsigma, ysigma = pixel_size, pixel_size
+
     if interactive:
         # get the initial guess from the user
         plt.figure()
@@ -1205,63 +1245,73 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         plt.show(block=False)
         xclick, yclick = plt.ginput(1)[0]#, timeout=5
         plt.close()
-        p_init = [image_normed[int(yclick), int(xclick)], xclick, yclick, xsigma, ysigma, 0]
+        if model == 'gaussian_2d':
+            p_init = [image_normed[int(yclick), int(xclick)], 
+                      xclick-center_ref[1], yclick-center_ref[0], xsigma, ysigma, 0]
+        elif mode == 'moffat_2d':
+            p_init = [image_normed[int(yclick), int(xclick)], xclick-center_ref[1], 
+                      yclick-center_ref[0], gamma0, alpha0]
         
     # automatically estimate the initial parameters
     else:
-        amp = np.nanmax(image_normed[10:-10,10:-10])
+        amp = 1.2*vmax #np.nanmax(image_normed[10:-10,10:-10])
         #amp = 1
         # yidx, xidx = np.where(image>0.9*amp)
         # x0, y0 = np.median(xidx), np.median(yidx)
         y0, x0 = 0., 0.#center_ref[0], center_ref[1]
-        p_init = [amp, x0, y0, xsigma, ysigma, 0]
+        if model == 'gaussian_2d':
+            p_init = [amp, x0, y0, xsigma, ysigma, 0]
+        elif model == 'moffat_2d':
+            p_init = [amp, x0, y0, gamma0, alpha0]
     print(f"p_init: {p_init}")
-    plt.figure()
-    plt.imshow(rgrid)
+    # plt.figure()
+    # plt.imshow(rgrid)
+    
+    if model == 'gaussian_2d':
+        bounds = [[0, 100], [-30,30], [-30,30], [0.1,5], [0.1,5],
+                  [-np.pi*0.5,np.pi*0.5]]
+    elif model == 'moffat_2d':
+        bounds=[[0, 10], [-30,30], [-30,30], [0.001,100], [0.01,100]]
+    
 
     def _cost(params, xgrid, ygrid):
-       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+            # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+        return np.sum((image_normed - model_func(params, xgrid, ygrid))**2/(rgrid**2 + (15+rms)**2))
        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + rms**2))
     res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
-                        bounds=[[0, 100], [-20,20], [-20,20], [0.1,10], [0.1,10], [0,np.pi]])
+                        bounds=bounds)
 
-    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
-    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
-    # print(xfwhm_fit, yfwhm_fit)
+    if model == 'moffat_2d':
+        amp_fit, x0_fit, y0_fit, gamma_fit, alpha_fit = res_minimize.x
+    elif model == 'gaussian_2d':
+        amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+        xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+    bestfit_params = res_minimize.x
    
     if extract_spectrum and (ndim == 3):
         # get all the best fit value
         aperture_size = np.mean([xfwhm_fit, yfwhm_fit])
         aperture_correction = 1.0667
-        aperture = EllipticalAperture([x0_fit, y0_fit], aperture_size, aperture_size, theta=0)
+        aperture = EllipticalAperture([x0_fit+center_ref[1], y0_fit+center_ref[0]], 
+                                      aperture_size, aperture_size, theta=0)
         aper_mask = aperture.to_mask().to_image([xshape, yshape]).astype(bool)
         aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
-        data_selected = cube[aper_mask_3D]
+        data_selected = data[aper_mask_3D]
         spectrum = aperture_correction*np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
         spectrum = spectrum / exptime # units in adu/second
         output = spectrum
         output_unit = 'adu/s'
-
-        if T_star is not None:
-            blackbody_star = models.BlackBody(temperature=T_star*u.K, 
-                                              scale=1.0*u.erg/u.s/u.cm**2/u.um/u.sr)
-
-            transmission = spectrum/blackbody_star(wavelength)
-            dwavelength = wavelength[1] - wavelength[0]
-            # TODO: mask the possible spectral obsorption lines
-            norm = np.nansum(transmission * dwavelength) / (dwavelength * np.nansum(np.ones_like(transmission)))
-            transmission_norm = transmission/norm
-            output = transmission_norm.value
-            output_unit = transmission_norm.unit.to_string()
-
+    else: aperture = None
     if plot:
-        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fit_image = model_func(res_minimize.x, xgrid, ygrid)
         fig = plt.figure(figsize=(12, 6))
         gs = gridspec.GridSpec(2, 3)
         ax1 = fig.add_subplot(gs[0,0])
         im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
         cbar = plt.colorbar(im, ax=ax1)
-        ax1.plot([x0], [y0], 'x', color='red')
+        ax1.plot([x0]+center_ref[1], [y0]+center_ref[0], 'x', color='red')
+        if aperture is not None:
+            aperture.plot(ax=ax1, color='cyan')
         ax2 = fig.add_subplot(gs[0,1])
         im = ax2.imshow(fit_image, origin='lower',)# vmax=vmax, vmin=vmin)
         cbar = plt.colorbar(im, ax=ax2)
@@ -1270,22 +1320,76 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         cbar = plt.colorbar(im, ax=ax3)
         if extract_spectrum:
             ax4 = fig.add_subplot(gs[1,:])
-            ax4.plot(wavelength, output)
             if T_star is not None:
-                pass
-                #ax4.plot(wavelength, blackbody_star(wavelength))
+                ax4.plot(wavelength, output)
+            else:
+                ax4.plot(wavelength, output)
+            ax4.set_xlabel('wavelength [um]')
+            ax4.set_ylabel(output_unit)
+        if plotfile is not None:
+            plotfile.savefig(fig, bbox_inches='tight')
+            plt.close()
+        if plot:
+            plt.show()
+        else:
+            plt.close()
+
     if extract_spectrum:
         if outfile is not None:
-            np.savetxt(outfile, np.vstack([wavelength.value, output]).T, delimiter=',',
-                       header=wavelength.unit.to_string()+','+output_unit)
-        else:
-            return wavelength.value, output
+            np.savetxt(outfile, np.vstack([wavelength, output]).T, delimiter=',')
+                       #header=wavelength.unit.to_string()+','+output_unit)
+        return wavelength, spectrum
     else:
-        return [amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit]
+        return bestfit_params
 
-def apply_filter(spectrum, filter_profile, filter_name=None):
+def get_transmission(wavelength, spectrum, T_star, band_2mass=None, magnetude_2mass=None):
+    blackbody_star = models.BlackBody(temperature=T_star*u.K, 
+                                      scale=1.0*u.erg/u.s/u.cm**2/u.um/u.sr)
+    if (band_2mass is not None) and (magnetude_2mass is not None):
+        bb_zero_point = scale_blackbody(blackbody_star, band_2mass, magnetude_2mass)
+    else:
+        bb_zero_point = 1*u.sr
+    # print(bb_zero_point)
+    # spectrum in unit of adu/s, blackbody_star in unit of u.erg/u.s/u.cm2/u.um/u.sr
+    # bb_zero_point in unit of 1/u.sr
+    # the final transmission should in unit of adu/u.s/(u.erg/u.s/u.cm2/u.um)
+    # the observed spectrum should devided by the transmission curve
+    transmission = spectrum/(blackbody_star(wavelength*u.um) * bb_zero_point)
+
+    # if False:
+        # the following code return the normalised transmission curve
+        # dwavelength = wavelength[1] - wavelength[0]
+        # TODO: mask the possible spectral obsorption lines
+        # norm = np.nansum(transmission * dwavelength) / (dwavelength * np.nansum(np.ones_like(transmission)))
+        # transmission_norm = transmission/norm
+        # calculate the zero point
+        # zp = np.sum(spectrum/transmission_norm*dwavelength)
+    output_unit = transmission.unit.to_string() + 'ads/u'
+    # calculate the zero point for the target, if needed
+    # zero_point = np.nanmedian((spectrum/transmission/bb_zero_point))
+    # print(zero_point)
+    return transmission
+
+def scale_blackbody(blackbody_func, band, magnitude):
+    """scale the blackbody function to the correct flux values
+    """
+    filter_file = f'2MASS_2MASS.{band}.dat'
+    wave_filter, transmission_filter = read_filter(filter_file)
+    dwave = np.mean(np.diff(wave_filter))
+    flux_bb = np.sum(blackbody_func(wave_filter)*transmission_filter*dwave)/np.sum(
+                     transmission_filter*dwave)
+    flux_2mass = magnitude2flux_2mass(magnitude, band)
+    bb_zero_point = flux_2mass / flux_bb # in unit of 1/sr
+    return bb_zero_point
+
+def read_filter(filter_file):
+    filter_data = np.loadtxt(filter_file)
+    wave, transmission = filter_data[:,0], filter_data[:,1]
+    return wave, transmission
+
+def filter_photometry(spectrum, filter_profile, filter_name=None):
     wave_spec, data = spectrum
-    wave_filter, transmission = filter_profile
+    wave_filter, transmission_filter = filter_profile
     dwave = np.min([wave_spec[1]-wave_spec[0], wave_filter[1]-wave_filter[0]])
     # check if the spectrum covered the whole filter
     max_wave_filter = np.max(wave_filter)
@@ -1331,13 +1435,16 @@ def correct_cube(fitscube, transmission=None, zp=None, suffix='.corrected'):
 
     correction = 1.0
     if transmission is not None:
-        transmission_corr = np.loadtxt(transmission, delimiter=',')
-        correction = correction/transmission_corr[:,1]
+        if isinstance(transmission, str):
+            transmission_corr = np.loadtxt(transmission, delimiter=',')
+            transmission = transmission[:,1]
+        correction = correction/transmission
     if zp is not None:
         cube_header['BUNIT'] = 'erg/s/cm^2/um'
         correction = correction * zp
     primary_hdu = fits.PrimaryHDU(header=header)
-    modified_hdu = fits.ImageHDU(cube*correction[:,np.newaxis, np.newaxis], name="DATA", header=cube_header)
+    modified_hdu = fits.ImageHDU(cube*correction[:,np.newaxis, np.newaxis].value, 
+                                 name="DATA", header=cube_header)
     # error_combined_hdu = fits.ImageHDU(error_combined, name="ERROR", header=hdr)
     hdus = fits.HDUList([primary_hdu, modified_hdu])
     hdus.writeto(fitscube[:-5]+f'{suffix}.fits', overwrite=True)
@@ -1551,7 +1658,7 @@ def clean_cube(datacube, mask=None, signal_mask=None,
         # median subtraction along the spectral axis
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
-            spec_median = np.nanmedian(datacube_signal_masked, axis=0)
+            spec_median = np.ma.median(datacube_signal_masked, axis=0)
         datacube_masked -= spec_median[None,:,:]
 
         if median_subtract_row or median_subtract_col:
@@ -1714,15 +1821,15 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
             logging.info(f'{i+1}/{ncubes} working on: {cube}')
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', AstropyWarning)
-                header_primary = fits.getheader(cube, 0)
-                cube_exptime = float(header_primary['EXPTIME'])
-                header = fits.getheader(cube, 'DATA')
+                cube_header_primary = fits.getheader(cube, 0)
+                cube_exptime = float(cube_header_primary['EXPTIME'])
+                cube_header = fits.getheader(cube, 'DATA')
                 cube_data = fits.getdata(cube, 'DATA')
             if mask_ext is not None:
                 cube_mask = fits.getdata(cube, mask_ext)
             else:
                 cube_mask = np.full(cube_data.shape, fill_value=False)
-            cube_wavelength = get_wavelength(header)
+            cube_wavelength = get_wavelength(cube_header)
             if wave_range is not None:
                 cube_wave_unit = u.Unit(cube_header['CUNIT3'])
                 cube_wave_convert_scale = wave_unit.to(u.um)
@@ -1969,7 +2076,7 @@ def search_eris_files(dirname, pattern=''):
     return matched_files
 
 def search_archive(datadir, target=None, target_type=None, band=None, spaxel=None, 
-                   tpl_start=None,
+                   tpl_start=None, exptime=None,
                    oblist=None, exclude_ob=False, filelist=None, exclude_file=True,
                    outfile=None, outdir=None, sof_file=None, tag='',):
     """search file in the archive
@@ -2044,6 +2151,9 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
             if spaxel is not None:
                 if ob_spaxel != spaxel:
                     continue
+            if exptime is not None:
+                if ob_exptime != str(exptime):
+                    continue
             if ob_target_type in target_type_list:
                 # combine the exposures within each OB
                 if ob_target_type == 'SCIENCE':
@@ -2091,9 +2201,8 @@ def summarise_eso_files(filelist, outfile=None):
                        'HIERARCH ESO TEL ALT', 'HIERARCH ESO TEL AZ',
                        'HIERARCH ESO TEL PARANG START', 'HIERARCH ESO TEL PARANG END',
                        'HIERARCH ESO ADA ABSROT START', 'HIERARCH ESO ADA ABSROT END', 
-                       'HIERARCH ESO ADA ABSROT PPOS', # can be POS or 
                        ]
-    colnames = ['filename', 'arcfile', 'date_obs', 'ob_id', 'tpl_start', 'exptime', 'catg','tel_alt', 'tel_za', 'tel_parang_start', 'tel_parang_end', 'ada_absrot_start', 'ada_absrot_end', 'ada_absrot_ppos']
+    colnames = ['filename', 'arcfile', 'date_obs', 'ob_id', 'tpl_start', 'exptime', 'catg','tel_alt', 'tel_za', 'tel_parang_start', 'tel_parang_end', 'ada_absrot_start', 'ada_absrot_end']
     summary_tab = table.Table(names=colnames, dtype=['U32']*len(colnames))
     for ff in filelist:
         with fits.open(ff) as hdu:
@@ -2109,6 +2218,231 @@ def summarise_eso_files(filelist, outfile=None):
         return summary_tab
 
 def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
+                      interactive=False, basename=None, outfile=None, plotfile=None,
+                      ):
+    """two dimentional Gaussian fit
+
+    """
+    if basename is None:
+        basename = starfits
+    # image_func = lambda data: np.sum(data, axis=0)
+    def image_func(data, channel_range=[0,-1], **kwargs):
+        chan_low, chan_up = channel_range
+        image = np.sum(data[int(chan_low):int(chan_up)], axis=0)
+        # row by row, median subtraction
+        image = image - np.nanmedian(image, axis=1)[:,None]
+        return image 
+    # read the fits file
+    if basename is None:
+        basename = starfits
+    with fits.open(starfits) as hdu:
+        header = hdu['PRIMARY'].header
+        data_header = hdu['DATA'].header
+        data = hdu['DATA'].data
+        ndim = data.ndim
+        exptime = header['EXPTIME']
+        arcfile = header['ARCFILE']
+    if True:
+        wavelength = get_wavelength(header=data_header)
+        # collapse the cube to make map
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
+        data = ndimage.median_filter(data, size=20, axes=0)
+        nchan, ny, nx = data.shape
+
+        # get the initial image
+        image = image_func(data)
+        vmax = np.nanpercentile(image[25:-25, 25:-25], 99)
+        vmin = np.nanpercentile(image[25:-25, 25:-25], 1)
+        if abs(vmax) < abs(vmin):
+            vmax, vmin = -1.*vmin, vmax
+            data = -1.*data
+            image = -1.*image
+
+        fit_image = fit_gaussian_2d(image, return_fitimage=True)
+        residual_image = image - fit_image
+    if True: # make a interative fit
+        # prepare the ajustable parameters for the interactive window
+        from matplotlib.widgets import Slider, RangeSlider, Button
+        image_kwargs = {}
+        slider_height=0.1
+        slider_kwargs = {
+                'channel_range':{'default':[0,nchan], 'range':[0, nchan]},
+                'color_range':{'default':[1,99], 'range':[0, 100]},
+                'x': {'default':32, 'range':[0, 64]},
+                'y': {'default':32, 'range':[0, 64]}
+                }
+
+        fig = plt.figure(figsize=(12, 7))
+        
+        # set the height of the sliders
+        if slider_height == 'auto':
+            nparam = len(slider_args)
+            slider_height = np.min([0.5/nparam, 0.1])
+        bottom_pad = 0.87
+        
+        # generate the slider the for the keywords args of input function
+        args_default = {}
+        args_slider = {}
+        for i,item in enumerate(slider_kwargs.items()):
+            key, value = item
+            ax_param = fig.add_axes([0.65, bottom_pad-i*0.5*slider_height, 0.25, 0.5*slider_height])
+            arg_default = value['default']
+            arg_range = value['range']
+            if isinstance(arg_default, (list,tuple)):
+                ax_slider = RangeSlider(ax=ax_param, label=key, valmin=arg_range[0], 
+                                        valmax=arg_range[1], valinit=arg_default, 
+                                        orientation='horizontal')
+            else:
+                ax_slider = Slider(ax=ax_param, label=key, valmin=arg_range[0], 
+                                   valmax=arg_range[1], valinit=arg_default, 
+                                   orientation='horizontal')
+            args_default[key] = arg_default
+            args_slider[key] = ax_slider
+       
+        # plot the main figure
+        ax_main = fig.add_axes([0.08, 0.1, 0.45, 0.85])
+        line1, = ax_main.plot(args_default['x'], args_default['y'], 'x', color='red')
+        image_ax = ax_main.imshow(image, vmax=vmax, vmin=vmin, origin='lower',
+                                  **image_kwargs, )
+        ax_main.set_xlabel('x')
+        ax_main.set_ylabel('y')
+
+        # plot the tow subimages for the fitting
+        ax_sub1 = fig.add_axes([0.56, 0.1, 0.2, 0.4])
+        ax_sub2 = fig.add_axes([0.78, 0.1, 0.2, 0.4])
+        #ax_sub2.axes.set_yticklabels([])
+        subimage_ax1 = ax_sub1.imshow(fit_image, origin='lower')
+        subimage_ax2 = ax_sub2.imshow(residual_image, vmin=vmin, vmax=vmax, origin='lower')
+
+        # instantly update the canvas
+        def update(val):
+            kwargs = {}
+            for a in slider_kwargs.keys():
+                kwargs[a] = args_slider[a].val
+            image = image_func(data, **kwargs)
+            vmin = np.nanpercentile(image[20:-20, 20:-20], kwargs['color_range'][0])
+            vmax = np.nanpercentile(image[20:-20, 20:-20], kwargs['color_range'][1])
+            image_ax.set(data=image, clim=(vmin, vmax))
+            subimage_ax1.set(clim=(vmin, vmax))
+            subimage_ax2.set(clim=(vmin, vmax))
+            line1.set(data=[[kwargs['x']],[kwargs['y']]])
+            fig.canvas.draw_idle()
+
+        for slid in args_slider.values():
+            slid.on_changed(update)
+
+        # add the fit botton
+        fit_botton = fig.add_axes([0.85, 0.025, 0.05, 0.04])
+        button_fit = Button(fit_botton, 'Fit', hovercolor='0.975')
+        # accept_botton = fig.add_axes([0.9, 0.025, 0.05, 0.04])
+        # button_accept = Button(accept_botton, 'Accept', hovercolor='0.975')
+        def fit_position(event):
+            kwargs = {}
+            for a in slider_kwargs.keys():
+                kwargs[a] = args_slider[a].val
+            image = image_func(data, **kwargs)
+            fit_image = fit_gaussian_2d(image, x0=kwargs['x'], y0=kwargs['y'],
+                                                    return_fitimage=True)
+            residual_image = image - fit_image
+            subimage_ax1.set(data=fit_image)
+            ax_sub1.imshow(fit_image, origin='lower')
+            subimage_ax2.set(data=residual_image)
+            fig.canvas.draw_idle()
+        button_fit.on_clicked(fit_position)
+        # set block=True to hold the plot
+        plt.show(block=True)
+        # print the final slider keyword values
+        final_kwargs = {}
+        for a in slider_kwargs.keys():
+            final_kwargs[a] = args_slider[a].val
+        image = image_func(data, **final_kwargs)
+        best_fit = fit_gaussian_2d(image, x0=final_kwargs['x'], y0=final_kwargs['y'], 
+                                   basename=basename, plot=plot, plotfile=plotfile)
+        print("best_fit", best_fit)
+        return best_fit
+
+def fit_gaussian_2d(image, amp=None, x0=None, y0=None, xsigma=None, ysigma=None,
+                    theta=None, bounds=None, return_fitimage=False,
+                    basename='', plot=False, plotfile=None):
+    """costumized 2d gaussian fitting
+    
+    Args:
+        image: 2d image
+        p_init: the initial guess of the gaussian: [amp, x0, y0, xsigma, ysigma, theta]
+                x0, y0 xsigma, ysigma: in the unit of pixel
+                theta in unit of radian
+        bounds: the boundaries of all the parameters
+    """
+    yshape, xshape = image.shape
+    margin_padding = int(0.05*(yshape+xshape))
+    norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
+                                   margin_padding:-margin_padding], 98)
+    sigma2FWHM = np.sqrt(8*np.log(2))
+    image_median = np.nanmedian(image)
+    image_normed = (image - image_median) / norm_scale 
+    center_ref = np.array([xshape*0.5, yshape*0.5])
+    # make initial guess
+    if amp is None: amp = 1.
+    if x0 is None: x0 = center_ref[0]
+    if y0 is None: y0 = center_ref[1]
+    if xsigma is None: xsigma = 1
+    if ysigma is None: ysigma = 1
+    if theta is None: theta = 0
+    # prepare for fitting
+    p_init = [amp/norm_scale, x0-center_ref[0], y0-center_ref[1], xsigma, ysigma, theta]
+    if bounds == None:
+        bounds = [[-10, 10], [-0.5*xshape,0.5*xshape], [-0.5*yshape,0.5*yshape], 
+                  [1/sigma2FWHM,0.5*xshape/sigma2FWHM], 
+                  [1/sigma2FWHM,0.5*yshape/sigma2FWHM],
+                  [-np.pi*0.5,np.pi*0.5]]
+    # ygrid, xgrid = (np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None])
+    xgrid, ygrid = np.meshgrid((np.arange(0, xshape) - center_ref[0]),
+                               (np.arange(0, yshape) - center_ref[1]))
+    rgrid = np.sqrt(xgrid**2 + ygrid**2)
+    rms = 1
+
+    def _cost(params, xgrid, ygrid):
+        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2+(5+rms)**2))
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
+                                     bounds=bounds)
+    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+    best_fit = [amp_fit*norm_scale, x0_fit+center_ref[0], y0_fit+center_ref[1], 
+                xsigma_fit, ysigma_fit, beta_fit]
+    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+   
+    if plot:
+        vmax = np.nanpercentile(image_normed[20:-20, 20:-20], 99)
+        vmin = np.nanpercentile(image_normed[20:-20, 20:-20], 1)
+        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 3)
+        ax1 = fig.add_subplot(gs[0,0])
+        im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax1)
+        ax1.plot(x0_fit, y0_fit, 'x', color='red')
+        ax2 = fig.add_subplot(gs[0,1])
+        ax2.set_title(basename, fontsize=8)
+        im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax2)
+        ax3 = fig.add_subplot(gs[0,2])
+        im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax3)
+        if plotfile is not None:
+            plotfile.savefig(fig, bbox_inches='tight')
+            plt.close()
+        if plot:
+            plt.show()
+        else:
+            plt.close()
+    if return_fitimage:
+        return gaussian_2d(res_minimize.x, xgrid, ygrid) * norm_scale
+    else:
+        return best_fit
+ 
+def fit_star_position_legacy(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                       interactive=False, basename=None, outfile=None, plotfile=None,
                       ):
     """two dimentional Gaussian fit
@@ -2133,7 +2467,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', AstropyWarning)
             data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
-        data = ndimage.median_filter(data, size=20, axes=0)
+        data = ndimage.median_filter(data, size=40, axes=0)
         image = np.nansum(data, axis=0)
 
         # collapse the cube to get the image of the star
@@ -2144,7 +2478,9 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     margin_padding = 10
     norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
                                        margin_padding:-margin_padding], 98)
-    image_normed = image / norm_scale
+
+    image_median = np.nanmedian(image)
+    image_normed = (image - image_median) / norm_scale 
     rms = 1
 
     # start the gaussian fitting for the 2D-image
@@ -2179,10 +2515,10 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         xclick, yclick = plt.ginput(1)[0]#, timeout=5
         plt.close()
         p_init = [image_normed[int(yclick), int(xclick)], 
-                  xclick-center_ref[0], yclick-center_ref[1], xsigma, ysigma, 0]
+                  xclick-center_ref[1], yclick-center_ref[0], xsigma, ysigma, 0]
         
-    # automatically estimate the initial parameters
     else:
+        # automatically estimate the initial parameters
         amp = 1.2*vmax #np.nanmax(image_normed[10:-10,10:-10])
         amp_select = image_normed > vmax
         yidx, xidx = ygrid[amp_select], xgrid[amp_select]
@@ -2194,8 +2530,8 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     print(f"p_init: {p_init}")
 
     def _cost(params, xgrid, ygrid):
-       # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-       return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + (15+rms)**2))
+        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2 + (15+rms)**2))
     res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
                         bounds = [[0, 100], [-30,30], [-30,30], [0.1,5], [0.1,5],
                                   [-np.pi*0.5,np.pi*0.5]])
@@ -2211,7 +2547,6 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         ax1 = fig.add_subplot(gs[0,0])
         im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
         cbar = plt.colorbar(im, ax=ax1)
-        #ax1.plot([x0], [y0], 'x', color='red')
         ax2 = fig.add_subplot(gs[0,1])
         ax2.set_title(basename, fontsize=8)
         im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
@@ -2230,7 +2565,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     # print([amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit])
     return [amp_fit, x0_fit, y0_fit, xfwhm_fit, yfwhm_fit, beta_fit]
 
-def construct_drift_file(tpl_start_list, datadir, plot=False, plotfile=None, savefile=None, 
+def construct_drift_file(tpl_start_list, datadir, plot=False, savefile=None, 
                         interactive=False, debug=False):
     """ construct the drift file of the science exposures
 
@@ -2238,17 +2573,11 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, plotfile=None, sav
     2. then, it searches back the OB ID to check the closest PSF stars
     3. it uses the position of the two closest PSF stars to derive the drifts
     """
-    if plotfile is not None:
-        from matplotlib.backends.backend_pdf import PdfPages
-        pdf_file = PdfPages(plotfile)
-    else:
-        pdf_file = None
-
     tpl_start_list = np.unique(tpl_start_list).tolist()
+    tpl_start_list.sort()
     summary_all = []
     group_id = 0
     for tpl_start in tpl_start_list:
-        print('tpl_start + ob_id', tpl_start, )
         # get all the observations within each tpl_start_list
         fits_objs, arcname_objs, exptime_objs = search_archive(datadir, tpl_start=tpl_start)
         # get the summaries of the all the observations
@@ -2257,89 +2586,74 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, plotfile=None, sav
         time_array_objs = np.array(summary_tab_objs['date_obs'], dtype='datetime64[s]')
         # get the PSF stars with the same OB ID
         ob_id = summary_tab_objs['ob_id'][0]
-        print('tpl_start + ob_id', ob_id, )
         fits_stars, arcname_stars, exptime_stars = search_archive(datadir, oblist=[ob_id,], target_type='CALIBPSF')
         summary_tab_stars = summarise_eso_files(fits_stars)
         if len(summary_tab_stars) < 1:
-            print("No PSF stars found!")
-            continue
+            logging.warning(f'{tpl_start}:{ob_id}: No valid PSF stars!')
+            summary_tab = summary_tab_objs
         elif len(summary_tab_stars) == 1:
-            print("Only one PSF star found")
-            summary_tab = table.vstack([summary_tab_stars, summary_tab_objs])
-        elif len(summary_tab_stars) > 2:
+            logging.info(f'{tpl_start}:{ob_id}: Only found one valid PSF stars!')
+            summary_tab = table.vstack([summary_tab_objs, summary_tab_stars])
+        elif len(summary_tab_stars) > 1:
+            logging.info(f'{tpl_start}:{ob_id}: Found {len(summary_tab_stars)} PSF stars!')
             time_array_stars = np.array(summary_tab_stars['date_obs'], dtype='datetime64[s]') 
             time_array_stars_delta1 = np.abs(time_array_stars-time_array_objs[0]).astype(float)
             time_array_stars_delta2 = np.abs(time_array_stars-time_array_objs[-1]).astype(float)
-            summary_tab_stars = summary_tab_stars[(time_array_stars_delta1<300) | 
-                                                  (time_array_stars_delta2<300)]
-            if len(summary_tab_stars) < 2:
-                print("Only {} valid PSF stars".format(len(summary_tab_stars)))
-                if len(summary_tab_stars) == 1:
-                    summary_tab = table.vstack([summary_tab_stars, summary_tab_objs])
-            else:
+            summary_tab_stars_valid = summary_tab_stars[(time_array_stars_delta1<300) | 
+                                                        (time_array_stars_delta2<900)]
+            n_valid_star = len(summary_tab_stars_valid)
+            if n_valid_star > 1:
                 psf_star_start = summary_tab_stars[np.argmin(np.abs(time_array_stars-time_array_objs[0]))]
                 psf_star_end = summary_tab_stars[np.argmin(np.abs(time_array_stars-time_array_objs[-1]))]
                 summary_tab = table.vstack([psf_star_start, summary_tab_objs, psf_star_end])
+            elif n_valid_star == 1:
+                time_array_stars_valid = np.array(summary_tab_stars_valid['date_obs'], 
+                                                  dtype='datetime64[s]') 
+                if (time_array_stars_valid - time_array_objs[0]).astype(float) < 0:
+                    summary_tab = table.vstack([summary_tab_stars_valid, summary_tab_objs])
+                else:
+                    summary_tab = table.vstack([summary_tab_objs, summary_tab_stars_valid])
+            else:
+                logging.warning(f'{tpl_start}:{ob_id}: all {len(summary_tab_stars)} stars are not valid!')
+                summary_tab = summary_tab_objs
 
         # create columns to store the center of the offsets
-        center_positions = np.zeros((len(summary_tab), 4)) #['Xref', 'Yref','is_star','group_id']
+        n_summary_tab = len(summary_tab)
+        #['Xref','Yref','is_star','fitted','group_id']
+        added_info = np.zeros((n_summary_tab, 5)) 
         for i,item in enumerate(summary_tab):
             if item['catg'] == 'PSF_CALIBRATOR':
-                _amp, xpix, ypix, _xsigma, _ysigma, _theta = fit_star_position(item['filename'], 
-                                                                               interactive=interactive,
-                                                                               plot=True, 
-                                                                               plotfile=pdf_file)
-                center_positions[i] = [xpix+32, ypix+32, True, group_id]
-            else: 
-                #TODO: add another prediction method
-                center_positions[i] = [32, 32, False, group_id]
-
-        # # extrapolate the science scans with the two PSF stars
-        # is_star = center_positions[:,0].astype(bool)
-        # if np.sum(is_star) > 1:
-            # print('Extrapolate offsets for tpl_start={}'.format(tpl_start))
-            # print('is_star', is_star)
-            # obs_time_array = np.array(summary_tab['date_obs'], dtype='datetime64[s]')
-            # obs_delta_time = (obs_time_array - obs_time_array[0]).astype(float) # in units of second
-            # center_positions[:,0] = np.interp(obs_delta_time, 
-                                              # obs_delta_time[is_star], center_positions[:,0][is_star])
-            # center_positions[:,1] = np.interp(obs_delta_time, 
-                                              # obs_delta_time[is_star], center_positions[:,1][is_star])
-        # else:
-            # print('No stars for position extrapolation, skip')
-        extrapolated_positions = table.Table(center_positions, 
-                                             names=['Xref','Yref','is_star','group_id'],
-                                             dtype=['f8','f8','bool','i8'])
-        summary_all.append(table.hstack([summary_tab, extrapolated_positions]))
+                added_info[i] = [32, 32, True, 0, group_id]
+            else:
+                added_info[i] = [32, 32, False, 0, group_id]
+        added_info_tab = table.Table(added_info, 
+                                     names=['Xref','Yref','is_star','fitted','group_id'],
+                                     dtype=['f8','f8','bool','i4','i8'])
+        summary_all.append(table.hstack([summary_tab, added_info_tab]))
+        tmp_tab = table.hstack([summary_tab, added_info_tab])
+                               
         group_id += 1
 
     table_all = table.vstack(summary_all)
     # merge the continuous OBs without break into a single group 
     if True:
-        # sort the summary table again just in case some of the PSF star were not at the right time
         table_all.sort(['date_obs'])
         gid_list = np.unique(table_all['group_id'])
-        print('gid_list', gid_list)
         for i in range(1, len(gid_list)):
             obs_ip = table_all[table_all['group_id'] == gid_list[i-1]][-1]
             obs_i = table_all[table_all['group_id'] == gid_list[i]][0]
-            print('checking', obs_ip['ob_id'], obs_i['ob_id'])
             t_ip = np.array(obs_ip['date_obs'], dtype='datetime64[s]')
             t_i = np.array(obs_i['date_obs'], dtype='datetime64[s]')
-            print('time difference:', (t_i - t_ip).astype(float))
             if abs((t_i - t_ip).astype(float)) < 600: # within 10 minutes
                 # check whether the second observation has recieved acquisition
                 eris_quary_tab = eris_quary(ob_id=obs_i['ob_id'])
-                print("checking acquisition for", obs_i['ob_id'])
+                # print("checking acquisition for", obs_i['ob_id'])
                 if 'ACQUISITION' not in eris_quary_tab['DPR.CATG']:
-                    print('No acquisition, changing the group_id')
-                    print(table_all['group_id'])
+                    # print('No acquisition, changing the group_id')
+                    # print(table_all['group_id'])
                     table_all['group_id'][table_all['group_id'] == obs_i['group_id']] = obs_ip['group_id']
                     gid_list[i] = obs_ip['group_id'] # change the group_id list
-                    print(table_all['group_id'])
 
-    if plotfile is not None:
-        pdf_file.close()
     if len(summary_all) > 0: 
         if savefile is not None:
             table_all.write(savefile, format='csv', overwrite=True)
@@ -2348,6 +2662,47 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, plotfile=None, sav
     else:
         print("Nothing to return")
 
+def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite=True):
+    # fit the PSF stars in the summary table
+    if isinstance(summary_table, str):
+        writefile = summary_table
+        summary_table = table.Table.read(summary_table, format='csv')
+    else:
+        writefile = None
+
+    if plotfile is not None:
+        from matplotlib.backends.backend_pdf import PdfPages
+        pdf_file = PdfPages(plotfile)
+    else:
+        pdf_file = None
+
+    for i,item in enumerate(summary_table):
+        if item['catg'] == 'PSF_CALIBRATOR':
+            print(f'Working on psf star: {item["ob_id"]}+{item["tpl_start"]}...')
+            if not item['fitted']:
+                # logging.info('Fitting star {}'.format(item[]))
+                if interactive:
+                    _amp, xpix, ypix, _xsigma, _ysigma, _theta = \
+                            fit_star_position(item['filename'],
+                                              plot=True, plotfile=pdf_file)
+                else:
+                    _amp, xpix, ypix, _xsigma, _ysigma, _theta = \
+                            fit_star_position_legacy(item['filename'], interactive=False,
+                                              plot=True, plotfile=pdf_file)
+                item['Xref'] = xpix + 32
+                item['Yref'] = ypix + 32
+                item['fitted'] = True
+    if plotfile is not None:
+        pdf_file.close()
+
+    if writefile is not None:
+        if overwrite:
+            summary_table.write(writefile, format='csv', overwrite=True)
+        else:
+            summary_table.write(writefile[:-4]+'.updated.csv', format='csv')
+    else:
+        return summary_table
+
 def interpolate_drifts(summary_table, extrapolate=False, overwrite=True):
     """ derive the drift of the science exposures 
 
@@ -2355,7 +2710,7 @@ def interpolate_drifts(summary_table, extrapolate=False, overwrite=True):
     # read the summary table
     if isinstance(summary_table, str):
         writefile = summary_table
-        summary_table = Table.read(summary_table, format='csv')
+        summary_table = table.Table.read(summary_table, format='csv')
     else:
         writefile = None
     # loop throught the observation share the same OB and group number
@@ -3191,7 +3546,7 @@ if __name__ == '__main__':
           * generate_metadata: generate metadata from downloaded data
           * generate_calib: generate the calibration files
           * auto_jitter: run jitter recipe automatically
-          * combine_data: combine the reduced data
+          * search_archive: search files based on the existing naming scheme
 
           Quick tools:
 
@@ -3364,6 +3719,35 @@ if __name__ == '__main__':
     subp_reduce_eris.add_argument('--categories', type=str, nargs='+', 
         help="Selected targets types, can be combination of: SCIENCE, CALIB, ACQUISITION",
                                      default=['SCIENCE','CALIB'])
+
+    ################################################
+    # search_archive
+    subp_search_archive = subparsers.add_parser('search_archive',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            search the archive files
+            ------------------------
+            Examples:
+
+            eris_jhchen_utils search_archive --data science_reduced --target BX482 --band K_low
+                                        '''))
+    subp_search_archive.add_argument('--datadir', help='The archive directory')
+    subp_search_archive.add_argument('--target', help='The name of the target')
+    subp_search_archive.add_argument('--target_type', help='The type of the target observation: SCIENCE,CALIBPSF,CALIBSTD')
+    subp_search_archive.add_argument('--band', help='The band of the observation')
+    subp_search_archive.add_argument('--spaxel', help='The size of the spatial pixels')
+    subp_search_archive.add_argument('--exptime', help='The exposure time')
+    subp_search_archive.add_argument('--tpl_start', help='The tpl_start of the observation')
+    subp_search_archive.add_argument('--oblist', type=str, nargs='+', help='The ob names of the observation')
+    subp_search_archive.add_argument('--exclude_ob', action='store_true', help='Use along with --ob_list, control the program to include or exclude the given list of OBs')
+    subp_search_archive.add_argument('--filelist', type=str, nargs='+', 
+                                     help='The arcname list of the observation')
+    subp_search_archive.add_argument('--exclude_file', action='store_true', help='Use along with --filelist, control the program to include or exclude the given list of filenames(arcname)')
+    subp_search_archive.add_argument('--outfile', help='The output file to save the searching results')
+    subp_search_archive.add_argument('--outdir', help='Copy the files into output directory')
+    subp_search_archive.add_argument('--sof_file', help='Write the output as a sof file')
+    subp_search_archive.add_argument('--tag', help='Use along with --sof_file, append the tag at each line')
+    
 
     ################################################
     # get_daily_calib
@@ -3566,6 +3950,16 @@ if __name__ == '__main__':
                     static_pool=args.static_pool, calib_raw=args.calib_raw,
                     catagories=args.categories, overwrite=args.overwrite,
                     esorex=esorex, debug=args.debug)
+    elif args.task == 'search_archive':
+        image_list, _,_ = search_archive(datadir=args.datadir, target=args.target, target_type=args.target_type,
+                       band=args.band, spaxel=args.spaxel, exptime=args.exptime, tpl_start=args.tpl_start,
+                       oblist=args.oblist, exclude_ob=args.exclude_ob, 
+                       filelist=args.filelist, exclude_file=args.exclude_file,
+                       outfile=args.outfile, outdir=args.outdir, sof_file=args.sof_file,
+                       tag=args.tag,
+                       )
+        print(image_list)
+
     # the quick tools
     elif args.task == 'get_daily_calib':
         get_daily_calib(args.date, args.band, args.spaxel, args.exptime, 
