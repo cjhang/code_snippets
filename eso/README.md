@@ -55,6 +55,11 @@ For instance, if you are keen to reduce the date of a specific day, you can get 
 
     eris_jhchen_utils.py get_daily_calib -d 2023-04-09 -b K_low -s 100mas -e 600
 
+If you want to prepare the daily calibration files for an on-going observation, which can be later re-used by the `run_eris_pipeline`:
+
+    obsdate="2024-08-25"
+    eris_jhchen_utils get_daily_calib -d "$obsdate" -b K_low -s 100mas -e 600 --outdir calibPool/"$obsdate" --calib_raw calib_raw/"$obsdate"
+
 If you have downloaded all the science data of your project, and the data are organised in the folder with their observing dates. Then, all the data can be reduced quickly by the `run_eris_pipeline`. Assuming all the raw data are in "science_raw":
 
     eris_jhchen_utils.py run_eris_pipeline -d science_raw 
