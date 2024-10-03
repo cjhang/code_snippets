@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.6'
+__version__ = '0.8.7'
 
 # import the standard libraries
 import os 
@@ -1377,10 +1377,9 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
     else:
         return bestfit_params
 
-def scale_blackbody(blackbody_func, band, magnitude):
+def scale_blackbody(blackbody_func, band, magnitude, filter_file):
     """scale the blackbody function to the correct flux values
     """
-    filter_file = f'2MASS_2MASS.{band}.dat'
     wave_filter, transmission_filter = read_filter(filter_file)
     dwave = np.zeros_like(wave_filter)
     dwave[:-1] = np.diff(wave_filter)
@@ -1429,7 +1428,7 @@ def magnitude2flux_2mass(magnitude, band):
     return 10**f * u.erg / (u.cm * u.cm * u.s * u.um)
 
 def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2mass=None,
-                   outfile=None, plot=False, plotfile=None):
+                   outfile=None, plot=False, plotfile=None, static_datadir=None):
     """this is the combined function for get_transmission and get_zero_point 
     Args:
         wavelength: the wavelength of the stdstar
@@ -1475,7 +1474,8 @@ def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2ma
     transmission = spec_corrected/blackbody_star(wavelength*u.um) #* bb_zero_point)
     transmission_norm = np.sum(transmission*dwave)/np.sum(dwave)
     transmission_normed = transmission/transmission_norm
-    bb_zero_point = scale_blackbody(blackbody_star, band_2mass, magnitude_2mass,)
+    filter_file = os.path.join(static_datadir, f'2MASS_2MASS.{band_2mass}.dat')
+    bb_zero_point = scale_blackbody(blackbody_star, band_2mass, magnitude_2mass, filter_file)
     zero_point = bb_zero_point / transmission_norm
     with np.errstate(divide='ignore', invalid='ignore'):
         correction = zero_point.value / transmission_normed.value
@@ -1541,6 +1541,7 @@ def get_zero_point(wavelength, spectrum, T_star, band_2mass=None, magnetude_2mas
 def get_telluric_calibration(star_list=None, star_catalogue=None,
                              datadir='science_reduced', outdir='spectral_corrections', 
                              target_types=['CALIBSTD'],# also 'CALIBPSF'
+                             static_datadir=None,
                              plot=True,
                              esorex='esorex', overwrite=False, 
                              debug=False, dry_run=False):
@@ -1617,6 +1618,9 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
             star_order = starfile[-8:-5]
 
         star_info = star_catalogue[star_catalogue['name']==target_star]
+        if len(star_info) < 1:
+            logging.warning(f'No info found for star {target_star}')
+            continue
         star_basenname = f'{target_star}_{tpl_start}_{band}_{spaxel}_airmass{star_airmass:.2f}'
         star_plotfile = os.path.join(outdir, star_basenname+'_qa.pdf')
         star_pdf_plotfile = PdfPages(star_plotfile)
@@ -1628,8 +1632,8 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
         try:
             zero_point, transmission_normed, correction = get_corrections(
                     wave_extract, spec_extract, T_star=star_info['T'], band_2mass=band_2mass, 
-                    magnitude_2mass=star_info[band_2mass][0], plot=True, 
-                    plotfile=star_pdf_plotfile)
+                    magnitude_2mass=star_info[band_2mass][0], static_datadir=static_datadir,
+                    plot=True, plotfile=star_pdf_plotfile)
         except:
             print(f"Errors in getting the correction for star {target_star}")
             continue
@@ -2178,7 +2182,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
     if sigma_clip is True:
         logging.info(f'sigma_clip is {sigma_clip} with sigma={sigma}, use this with cautions if the signal is bright!')
     if median_subtract is True:
-        logging.info('median_subtract is {median_subtract}, use this with cautions if the signal is extended!')
+        logging.info(f'median_subtract is {median_subtract}, use this with cautions if the signal is extended!')
     # check existing files
     if savefile is not None:
         if os.path.isfile(savefile):
@@ -3473,9 +3477,9 @@ def fit_eris_cube(cube, velocity=None, SNR_limit=2, plot=False, fit_cont=True,
             vel = vel[box_idx[0]:box_idx[1]]
         elif len(box_idx) == 4:
             cube = cube[:, box_idx[0]:box_idx[1], box_idx[2]:box_idx[3]]
-    # if smooth_width is not None:
-        # gauss_kernel = Gaussian2DKernel(smooth_width)
-        # cube = convolve(cube, gauss_kernel)
+    if smooth_width is not None:
+        gauss_kernel = Gaussian2DKernel(smooth_width)
+        cube = convolve(cube, gauss_kernel)
 
     cube_shape = cube.shape
     fitcube = np.zeros_like(cube)
@@ -4184,6 +4188,12 @@ if __name__ == '__main__':
                         help='print the commands but does not execute them')
     parser.add_argument('--logfile', help='the logging output file')
     parser.add_argument('-v','--version', action='version', version=f'v{__version__}')
+    try:
+        static_datadir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'static_data')
+        print('Default static data directory:', static_datadir)
+    except:
+        static_datadir = None
+        print('Faild in determing the static_data directory!')
 
     # add subparsers
     subparsers = parser.add_subparsers(title='Available task', dest='task', 
@@ -4408,10 +4418,10 @@ if __name__ == '__main__':
             example:
             
               # get calibration files from the folder
-              eris_jhchen_utils get_telluric_calibration --datadir science_reduced --outdir cube_corrections --star_catalogue star_catalogue.csv --plotfile star_fitting.pdf
+              eris_jhchen_utils get_telluric_calibration --datadir science_reduced --outdir cube_corrections --star_catalogue star_catalogue.csv
 
               # get calibration files from a list of stars
-              eris_jhchen_utils get_telluric_calibration --star_list file1 file2 --outdir cube_corrections --star_catalogue star_catalogue.csv --plotfile star_fitting.pdf
+              eris_jhchen_utils get_telluric_calibration --star_list file1 file2 --outdir cube_corrections --star_catalogue star_catalogue.csv
 
                                         '''))
     subp_get_flux_calibration.add_argument('--star_list', type=str, nargs='+', 
@@ -4422,6 +4432,8 @@ if __name__ == '__main__':
     subp_get_flux_calibration.add_argument('--outdir', help='output directory')
     subp_get_flux_calibration.add_argument('--star_catalogue', help='the catalogue file of stars')
     subp_get_flux_calibration.add_argument('--plotfile', help='the plotfile for quick check')
+    subp_get_flux_calibration.add_argument('--static_datadir', default=static_datadir,
+                                           help='the directory for some static data (such as filters)')
 
     ################################################
     # get_daily_calib
@@ -4659,7 +4671,7 @@ if __name__ == '__main__':
         get_telluric_calibration(star_list=star_list, 
                                  datadir=args.datadir,
                                  star_catalogue=args.star_catalogue, 
-                                 outdir=args.outdir,)
+                                 outdir=args.outdir, static_datadir=static_datadir)
 
     # the quick tools
     elif args.task == 'get_daily_calib':
