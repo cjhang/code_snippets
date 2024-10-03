@@ -19,17 +19,18 @@ Requirement:
 
 History:
     2022-01-11: first release to handle fits images from CASA, v0.1, Garching
-    2024-02-16: seperate the Image class for different tasks, v0.2, IRAM30, Granada
+    2024-02-16: divide into BasicImage and Image class, v0.2, IRAM30, Granada
     2024-06-14: add test, v0.3, MPE, Garching
 
 """
 
-__version__ = '0.3.0'
+__version__ = '0.3.1'
 
 import os
 import sys
 import numpy as np
 import scipy.ndimage as ndimage
+import scipy.interpolate as interpolate
 from scipy import optimize
 import warnings
 from astropy.io import fits
@@ -54,8 +55,11 @@ from photutils.aperture import (aperture_photometry, EllipticalAperture,
                                 RectangularAperture, SkyEllipticalAperture)
 from photutils.detection import find_peaks
 
-try: import reproject
-except: pass
+try: import reproject; has_repoject=True
+except: has_repoject = False
+
+try: import vorbin; has_vorbin=True
+except: has_vorbin = False
 
 ##############################
 ######### Image ##############
@@ -84,11 +88,17 @@ class BaseImage(object):
         else:
             self.data = data
             self._unit = unit
+        self.mask = None
         if mask is not None:
+            print('mask',mask)
             if mask.shape != self.data.shape:
-                raise ValueError("unmatched mask and data!")
-            self.mask = mask
+                #raise ValueError("unmatched mask and data!")
+                print("Warning: unmatched mask and data! Drop mask.")
+                self.mask = None
+            else:
+                self.mask = mask
         self.name = name 
+        self._unit = unit
         # hide the orinal header and wcs, due to their interchangeability
         self._header = header
         self._wcs = wcs
@@ -101,6 +111,13 @@ class BaseImage(object):
             self._header = self.header
     # def __getitem__(self, i):
             # return self.data[i]
+    @property
+    def info(self):
+        # shortcut for print all the basic info
+        print(f"Shape: {self.shape}")
+        print(f"Units: {self.image.unit}")
+        print(f"Pixel size {self.pixel_sizes}")
+        print(f"Beam {self.beam}")
     @property
     def header(self):
         if self._header is not None:
@@ -130,7 +147,7 @@ class BaseImage(object):
     @property
     def unit(self):
         if self._unit is not None:
-            return u.Unit(self.unit)
+            return u.Unit(self._unit)
         elif self.header is not None:
             try:
                 return u.Unit(self._header['BUNIT'])
@@ -143,7 +160,10 @@ class BaseImage(object):
         self._header.update({'BUNIT': self._unit.to_string()})
     @property
     def image(self):
-        # always return the Quantify
+        """always return the 2D image with units
+
+        Using self.data to access the original data
+        """
         return self.data*self.unit
     @property
     def beam(self):
@@ -201,13 +221,6 @@ class BaseImage(object):
     def shape(self):
         return self.data.shape
     @property
-    def info(self):
-        # shortcut for print all the basic info
-        print(f"Shape: {self.shape}")
-        print(f"Units: {self.image.unit}")
-        print(f"Pixel size {self.pixel_sizes}")
-        print(f"Beam {self.beam}")
-    @property
     def beamarea(self):
         # calculate the beamszie in number of pixels
         # the final unit is pixels/beam, convert the Jy/beam to Jy/pixel need to divive the beam
@@ -216,7 +229,7 @@ class BaseImage(object):
         pixel_area = pixel_sizes[0].to('arcsec').value * pixel_sizes[1].to('arcsec').value
         return 1/(np.log(2)*4.0) * np.pi * beam[0] * beam[1] / pixel_area 
         # return calculate_beamarea(self.beam, scale=1/pixel_area)
-
+    @property
     def pixel_beam(self):
         # convert the beam size into pixel sizes
         if self.beam is None:
@@ -252,7 +265,7 @@ class BaseImage(object):
         else:
             return np.array(list(zip(*skycoord_to_pixel(skycoords, self.wcs))))
 
-    def subimage(self, s_):
+    def subimage(self, s_, shift_reference=False, compatible_mode=False):
         """extract subimage from the orginal image
 
         Args:
@@ -264,11 +277,19 @@ class BaseImage(object):
         image_sliced = self.data[s_].copy()
         shape_sliced = image_sliced.shape
         wcs_sliced = self.wcs[s_].deepcopy()
-        # TODO: temperary solution, more general solution needs to consider the 
-        # shift the reference center, 
-        wcs_sliced.wcs.crpix[0] = (s_[-1].start + s_[-1].stop)//2
-        wcs_sliced.wcs.crpix[1] = (s_[-2].start + s_[-2].stop)//2
-        wcs_sliced.wcs.crval = (self.wcs.wcs.crval + self.wcs.wcs.pc.dot(wcs_sliced.wcs.crpix - self.wcs.wcs.crpix) * self.wcs.wcs.cdelt)
+        if shift_reference:
+            # TODO: temperary solution, more general solution needs to consider the 
+            # shift the reference center, 
+            wcs_sliced.wcs.crpix[0] = (s_[-1].start + s_[-1].stop)//2
+            wcs_sliced.wcs.crpix[1] = (s_[-2].start + s_[-2].stop)//2
+            try:
+                wcs_sliced.wcs.crval = (self.wcs.wcs.crval + self.wcs.wcs.pc.dot(wcs_sliced.wcs.crpix - self.wcs.wcs.crpix))# * self.wcs.wcs.cdelt)
+            except:
+                pass
+            try:
+                wcs_sliced.wcs.crval = (self.wcs.wcs.crval + self.wcs.wcs.cd.dot(wcs_sliced.wcs.crpix - self.wcs.wcs.crpix))# * self.wcs.wcs.cdelt))
+            except:
+                raise ValueError("Invalid coordinate shifts system (defined either by CD and PC)")
         wcs_sliced.wcs.crpix[0] -= s_[-1].start 
         wcs_sliced.wcs.crpix[1] -= s_[-2].start
         header_sliced = wcs_sliced.to_header()
@@ -276,7 +297,15 @@ class BaseImage(object):
         header_sliced.set('NAXIS',naxis)
         header_sliced.set('NAXIS1',shape_sliced[-1])
         header_sliced.set('NAXIS2',shape_sliced[-2])
-        return BaseImage(image_sliced, header_sliced, self.beam)
+        if compatible_mode:
+            # make it compatible for older fits imager 
+            header_keys = list(header_sliced.keys())
+            if 'PC1_1' in header_keys:
+                header_sliced.set('CD1_1', header_sliced['PC1_1'])
+                header_sliced.set('CD2_2', header_sliced['PC2_2'])
+            # header_sliced.set('CDELT1', header_sliced['CD1_1'])
+            # header_sliced.set('CDELT2', header_sliced['CD2_2'])
+        return BaseImage(data=image_sliced, header=header_sliced, beam=self.beam)
 
     def writefits(self, filename, overwrite=False, shift_reference=False):
         """write to fits file
@@ -373,15 +402,21 @@ class Image(BaseImage):
                 super().__init__(data=data.data, name=data.name, mask=data.mask, 
                                  header=data.header, beam=data.beam, 
                                  wcs=data.wcs)
-            else:
-                super().__init__(data=data, header=header, beam=beam, wcs=wcs, 
-                                 mask=mask, name=name)
+        else:
+            super().__init__(data=data, header=header, beam=beam, wcs=wcs, 
+                             mask=mask, name=name)
 
-    def readfits(self, fitsimage, **kwargs):
-        Image(super().readfits(fitsimage, **kwargs))
-
-    def imstats(self, sigma=5.0, maxiters=2):
-        return stats.sigma_clipped_stats(self.image, sigma=sigma, maxiters=maxiters)
+    def imstats(self, sigma=5.0, maxiters=2, sigma_clip=False):
+        """this function first mask the 4-sigma signal and expand the mask with
+        scipy.ndimage.binary_dilation
+        """
+        if sigma_clip:
+            return stats.sigma_clipped_stats(self.image, sigma=sigma, maxiters=maxiters)
+        else:
+            signal_mask = self.find_structure(sigma=4.0, dilation_iters=3)
+            return (np.nanmean(self.image[~signal_mask]), 
+                    np.nanmedian(self.image[~signal_mask]),
+                    np.nanstd(self.image[~signal_mask]))
 
     def update_mask(self, mask=None, mask_invalid=True):
         newmask = np.zeros(self.imagesize, dtype=bool)
@@ -398,8 +433,7 @@ class Image(BaseImage):
              contour_kwargs={'colors':'white'},
              sky_center=None, pixel_center=None, fov=0, 
              vmax=None, vmin=None, vmax_scale=10, vmin_scale=-3,
-             show_center=False, show_axis=True, show_fwhm=True, 
-             show_fov=False,
+             show_axis=True, show_fwhm=True, 
              show_rms=False, show_flux=False, show_sky_sources=[], 
              show_pixel_sources=[],
              show_detections=False, detections=None, aperture_scale=1.0, 
@@ -448,7 +482,7 @@ class Image(BaseImage):
             y_index = y_index[yselection]
             image = image[yselection,:]
         extent = [np.max(x_index), np.min(x_index), np.min(y_index), np.max(y_index)]
-        mean, median, std = self.imstats
+        mean, median, std = self.imstats()
         if vmax is None:
             if std is not None:
                 if self.unit is not None:
@@ -469,11 +503,10 @@ class Image(BaseImage):
         # ax.invert_xaxis()
         if show_colorbar:
             cbar=plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.formatter.set_powerlimits((0, 0))
+            cbar.set_label(self.image.unit.to_string(), fontsize=14)
         else:
             cbar = None
-        if show_center:
-            ax.text(0, 0, '+', color='r', fontsize=24, fontweight=100, horizontalalignment='center',
-                    verticalalignment='center')
         if not show_axis:
             ax.axis('off')
         if show_fwhm:
@@ -484,7 +517,7 @@ class Image(BaseImage):
                 ellipse = patches.Ellipse((0.8*np.max(x_index), 0.8*np.min(y_index)), 
                                       width=self.beam[1], height=self.beam[0], 
                                       angle=-self.beam[-1],
-                                      facecolor='orange', edgecolor=None, alpha=0.8)
+                                      facecolor='tomato', edgecolor='none', alpha=0.8)
                 ax.add_patch(ellipse)
                 # another way to show the beam size with photutils EllipticalAperture
                 #aper = EllipticalAperture((0.8*np.max(x_index), 0.8*np.min(y_index)), 
@@ -492,11 +525,6 @@ class Image(BaseImage):
                 #                          theta=-self.beam[-1]/180*np.pi)
                 #aper.plot(color='white', lw=2)
 
-        if show_fov:    
-            ellipse_fov = patches.Ellipse((0, 0), width=fov, height=fov, 
-                                    angle=0, fill=False, facecolor=None, edgecolor='gray', 
-                                    alpha=0.8)
-            ax.add_patch(ellipse_fov)
         if show_rms:
             ax.text(0.6*np.max(x_index), 0.8*np.min(y_index), 'rms={:.2f}'.format(self.std.to(u.uJy/u.beam)), 
                     fontsize=0.8*fontsize, horizontalalignment='center', verticalalignment='top', color='white')
@@ -561,11 +589,14 @@ class Image(BaseImage):
                     continue
                 ax.text(xp, yp, 'x', fontsize=24, fontweight=100, horizontalalignment='center',
                     verticalalignment='center', color='white', alpha=0.5)
+        if True:
+            ax.set_xlabel('arcsec', fontsize=16)
+            ax.set_ylabel('arcsec', fontsize=16)
         if figname is not None:
             fig.savefig(figname, bbox_inches='tight', dpi=200)
             plt.close(fig)
         else:
-            return im,cbar
+            return fig, ax
     
     def reproject(self, wcs_out=None, header_out=None, shape_out=None, **kwargs):
         """reproject the data into another wcs system
@@ -614,23 +645,19 @@ class Image(BaseImage):
         if self.beam is not None:
             if inverse:
                 if 'beam' not in self.unit.to_string():
-                    self.data = self.data*self.beamsize/u.beam
+                    self.data = self.data*self.beamarea/u.beam
                     self.unit = u.Unit(self.unit.to_string()+'/beam')
                 else:
                     pass
             else:
                 if 'beam' in self.unit.to_string():
-                    self.data = self.data/self.beamsize*u.beam
+                    self.data = self.data/self.beamarea
+                    self.unit = self.unit*u.beam.to_string()
 
     def correct_reponse(self, corr):
         """apply correction for the whole map
         """
         self.data = self.data * corr
-    
-    def correct_pb(self, coords, pbfile=None, pbcorfile=None):
-        """read the primary beam correction from the primary beam profile
-        """
-        pbimage = solve_impb(pbfile)
 
     def fit_2Dgaussian(self, **kwargs):
         return gaussian_2Dfitting(self.image, **kwargs)
@@ -676,7 +703,7 @@ class Image(BaseImage):
     def source_finder(self, **kwargs):
         """class wrapper for source_finder
         """
-        mean, median, std = self.imstats
+        mean, median, std = self.imstats()
         return source_finder(self.image.value, wcs=self.wcs, std=std.value, name=self.name, 
                              **kwargs)
 
@@ -725,7 +752,6 @@ class Image(BaseImage):
         flux_table['flux_err'] = flux_table['flux_err']*self.unit*corr
         return flux_table
 
-
 ########################################
 ###### stand alone functions ###########
 ########################################
@@ -767,6 +793,7 @@ def read_ALMA(fitsimage, extname='primary', name=None, debug=False,
                 pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
                 beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
                 image_data = image_data / beamsize * u.beam
+                image_header['BUNIT'] = image_data.unit.to_string()
     if name is None:
         name = os.path.basename(fitsimage)
     return Image(data=image_data, header=image_header, beam=image_beam, name=name)
@@ -818,7 +845,7 @@ def aperture_stats(image, aperture=(1.4,1.4,0), mask=None, nsample=100):
         sigma: the sigma for sigma clipping
         niter: the iteration of the sigma clipping
 
-    Return: [mean, median, std]
+    Return: [mean, median, std, rms]
     """
     imagesize = image.shape
     # automatically mask the invalid values
@@ -1247,6 +1274,8 @@ def measure_flux(image, coords=None, wcs=None,
         coords = [coords,]
     detections_mask = mask_coordinates(image, apertures=detections_apers)
     n_sources = len(detections_apers)
+    if rms is None:
+        rms = calculate_rms(image, mask=detections_mask)
     
     # create the table to record the results
     table_flux = Table(names=('ID','x','y','aper_maj','aper_min','theta','flux','flux_err'), 
@@ -1269,8 +1298,6 @@ def measure_flux(image, coords=None, wcs=None,
         for i,s in enumerate(segments_mask):
             x,y = coords[i]
             image_cutout = s.cutout(image)
-            if rms is None:
-                rms = calculate_rms(image, mask=detections_mask)
             # gaussian_fitting = gaussian_2Dfitting(image_cutout, debug=debug, plot=plot)
             flux, flux_err, params_fit = gaussian_fit2d(image_cutout, rms=rms, noise_fwhm=noise_fwhm)
             a_fitted_aper = 3 * params_fit[3] 
@@ -1339,8 +1366,6 @@ def measure_flux(image, coords=None, wcs=None,
         for i,s in enumerate(segments_mask):
             x,y = coords[i]
             image_cutout = s.cutout(image)
-            if rms is None:
-                rms = calculate_rms(image, mask=detections_mask)
             gaussian_fitting = gaussian_2Dfitting(image_cutout, debug=debug, plot=plot)
             
             flux = gaussian_fitting['flux'] 
@@ -1370,7 +1395,8 @@ def measure_flux(image, coords=None, wcs=None,
     if plot:
         if ax is None:
             fig, ax = plt.subplots(figsize=(8,6))
-        im = ax.imshow(image, interpolation='nearest', origin='lower')
+        im = ax.imshow(image, interpolation='nearest', origin='lower', 
+                       vmin=-2.*rms, vmax=5.0*rms, )
         plt.colorbar(im, fraction=0.046, pad=0.04)
 
         for i in range(n_sources):
@@ -1381,7 +1407,7 @@ def measure_flux(image, coords=None, wcs=None,
                                       width=2*obj['aper_maj'], height=2*obj['aper_min'], 
                                       angle=obj['theta']*180/np.pi, 
                                       facecolor='none', edgecolor='black', alpha=0.5)
-            vert_dist = 0.8*(obj['aper_maj']*np.cos(obj['theta']) + obj['aper_min']*np.cos(obj['theta']))
+            vert_dist = 12+0.4*(obj['aper_maj']*np.cos(obj['theta']) + obj['aper_min']*np.cos(obj['theta']))
             ax.add_patch(ellipse)
             ax.text(obj['x'], obj['y']-abs(vert_dist), "{:.2f}".format(obj['flux']), 
                     color=color, horizontalalignment='center', verticalalignment='center',)
@@ -1550,7 +1576,7 @@ def solve_impb(datafile=None, data=None, pbfile=None, pbdata=None,
             if header is None:
                 header = hdu[0].header
     elif (data is not None) and (pbcordata is not None):
-        pbdata = data/pbcordata
+        pbdata = data / pbcordata
     elif (datafile is not None) and (pbcorfile is not None):
         with fits.open(datafile) as hdu:
             data = hdu[0].data[0,0]
@@ -1567,13 +1593,18 @@ def solve_impb(datafile=None, data=None, pbfile=None, pbdata=None,
         else:
             pixel_coords = np.array(list(zip(*skycoord_to_pixel(sky_coords, WCS(header)))))
     if pixel_coords is None:
-        return Image(image=pbdata, header=header, name='pb')
-    pbcor_values = []
-    for coord in pixel_coords:
-        coord_int = np.round(coord).astype(int)
-        pbcor_values.append(pbdata[coord_int[1], coord_int[0]])
-    # return Image(image=pbdata, header=header, name='pb')
-    return pbcor_values
+        return Image(data=pbdata, header=header, name='pb')
+    else:
+        # apply interpolation
+        ys, xs = pbdata.shape
+        yy, xx = np.arange(0, ys)+0.5, np.arange(0, xs)+0.5
+        pb_interp = interpolate.RegularGridInterpolator((xx, yy), pbdata.T)
+        pbcor_values = pb_interp(pixel_coords)
+        # pbcor_values = []
+        # for coord in pixel_coords:
+            # coord_int = np.round(coord).astype(int)
+            # pbcor_values.append(pbdata[coord_int[1], coord_int[0]])
+        return pbcor_values
 
 def beam2psf(beam, savefile=None, normalize=False, overwrite=False):
     """generate the psf from the beam
@@ -1614,6 +1645,98 @@ def image2noise(image, shape=None, header=None, wcs=None, savefile=None, sigma=5
         primary_hdu.writeto(savefile, overwrite=overwrite)
     else:
         return noise_image
+
+def rotate_map(x, y, image, pa):
+    """ rotate the image according to the PA 
+    in the direction of counterclock wise
+    
+    Args:
+        pa: the angel counter-clockwise to the north
+
+    """
+    # change the PA to the radian angle relative to the positive x axis
+    angle_rad = np.radians(90.-pa)
+    rx = x*np.cos(angle_rad) - y*np.sin(angle_rad)
+    ry = x*np.sin(angle_rad) + y*np.cos(angle_rad)
+    return rx, ry
+
+def vorbin(image, xbin=None, ybin=None, noise=None, snr=5., ):
+    if not has_vorbin:
+        raise ValueError("Install vorbin to use vorbin!")
+    from vorbin.voronoi_2d_binning import voronoi_2d_binning
+    if image.ndim == 1:
+        if (xbin is None) or (ybin is None):
+            raise ValueError('Please provide the coordinates')
+        if image.size != xbin.size != ybin.size:
+            raise ValueError("data and coordinate should share the same size!")
+        signal = image
+    elif (image.ndim == 2) and (xbin is None):
+        ny,nx = image.shape
+        mx_image = np.max(image.shape)
+        x = (np.arange(0, nx)) + 0.5
+        y = (np.arange(0, ny)) + 0.5
+        xx, yy = np.meshgrid(x, y)
+        xbin, ybin, signal = map(np.ravel, (xx, yy, image))
+
+    binNum, x_gen, y_gen, x_bar, y_bar, sn, nPixels, scale = voronoi_2d_binning(
+        x, y, signal, noise, snr, plot=0, quiet=1)
+    return binNum, sn, nPixel
+
+def fit_pa(image, xbin=None, ybin=None, mom=1, err=1):
+    """fit the major axis of the data
+
+    Inspired by the kinmetry and pa_fit
+
+    mom = 0: returns the PA of the intensity
+    mom = 1: returns the kinematic PA
+    mom = 2: returns the dispersion PA
+    """
+    if image.ndim == 1:
+        if (xbin is None) or (ybin is None):
+            raise ValueError('Please provide the coordinates')
+        if image.size != xbin.size != ybin.size:
+            raise ValueError("data and coordinate should share the same size!")
+    elif (image.ndim == 2) and (xbin is None):
+        ny,nx = image.shape
+        mx_img = np.max(img.shape)
+        x = (np.arange(0, nx)) + 0.5
+        y = (np.arange(0, ny)) + 0.5
+        xx, yy = np.meshgrid(x, y)
+        xbin, ybin = map(np.ravel, (xx, yy))
+    else:
+        raise ValueError("Please provide an image or xbin, ybin, data!")
+
+    xbin, ybin, image = map(np.ravel, [xbin, ybin, image])
+    pa_list = np.arange(-90, 90, 0.5)
+    chi2 = np.zeros_like(pa_list)
+    for i,pa in enumerate(pa_list):
+        # create symmetric velocity map
+        x, y = rotate_map(xbin, ybin, image, pa)
+        x_sym = np.hstack([x,-x, x,-x])
+        y_sym = np.hstack([y, y,-y,-y])
+        image_sym = interpolate.griddata((x, y), image, (x_sym, y_sym))
+        image_sym = image_sym.reshape(4, xbin.size)
+        image_sym[0, :] = image
+        if mom == 1:
+            image_sym[[1, 3], :] *= -1.
+        image_sym = np.nanmean(image_sym, axis=0)
+        chi2[i] = np.sum(((image-image_sym)/err)**2)
+    k = np.argmin(chi2)
+    pa_best = pa_list[k]
+
+    # calculate 1 sigma 
+    f = chi2 - chi2[k] <= 1 + np.sqrt(2*xbin.size)
+    pa_min_err = max(0.5, (pa_list[1] - pa_list[0])/2.0)
+    if f.sum() > 1:
+        pa_err = (np.max(pa_list[f]) - np.min(pa_list[f]))/2.0
+        if pa_err >= 45:
+            good = np.degrees(np.arctan(np.tan(np.radians(pa_liat[f]))))
+            pa_err = (np.max(good) - np.min(good))/2.0
+        pa_err = max(angErr, minErr)
+    else:
+        pa_err = pa_min_err
+
+    return pa_best, pa_err 
 
 
 ########################################
@@ -1656,7 +1779,7 @@ def plot_pixel_image(image, beam=None, ax=None, figname=None,
         plt.close(fig)
 
 def plot_image(image, ax=None, name=None, pixel_size=1, 
-                show_colorbar=True, show_center=False, show_axis=True, show_fwhm=True,
+                show_colorbar=True, show_axis=True, show_fwhm=True,
                 **kwargs):
     if ax == None:
         fig = plt.figure(figsize=(10,8))
