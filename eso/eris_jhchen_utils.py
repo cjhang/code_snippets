@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.7'
+__version__ = '0.8.11'
 
 # import the standard libraries
 import os 
@@ -87,7 +87,7 @@ def download_file(url, filename=None, outdir='./', auth=None, debug=False):
         if filename is None:
             # automatically define the filename
             try:
-                filename_match = re.compile('filename=(?P<filename>.+.fits.Z)')
+                filename_match = re.compile('filename="(?P<filename>.+.fits.Z)"')
                 filename = filename_match.search(r.headers['Content-Disposition']).groupdict()['filename']
                 if debug:
                     print("Content-Disposition is: {}".format(filename))
@@ -2566,7 +2566,7 @@ def match_obs_folder(obsname):
     """match the foldername where stores the reduced data for every single OB (tpl_start)
     """
     # target_matcher = re.compile("(?P<target>[\w\s\-\.+]+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD))_(?P<id>\d{7})_(?P<tpl_start>[\d\-\:T]+)_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
-    target_matcher = re.compile("(?P<target>.+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD))_(?P<id>[0-9]{7})_(?P<tpl_start>[0-9-:T]+)_(?P<band>[JKH]_[a-z]{3,6}?)_(?P<spaxel>[0-9]{2,3}mas)_(?P<exptime>[0-9]+)s")
+    target_matcher = re.compile("(?P<target>.+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD|CALIB))_(?P<id>[0-9]{7})_(?P<tpl_start>[0-9-:T]+)_(?P<band>[JKH]_[a-z]{3,6}?)_(?P<spaxel>[0-9]{2,3}mas)_(?P<exptime>[0-9]+)s")
     try:
         obs_match = target_matcher.search(obsname).groupdict()
     except:
@@ -2605,7 +2605,7 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
             logging.warning(f"target_type: {target_type} is not valid")
             target_type_list = []
     else:
-        target_type_list = ['SCIENCE','CALIBPSF','CALIBSTD']
+        target_type_list = ['SCIENCE','CALIBPSF','CALIBSTD', 'CALIB']
     dates = os.listdir(datadir)
     image_list = []
     image_exp_list = []
@@ -2731,6 +2731,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
     # read the fits file
     if basename is None:
         basename = starfits
+    print(f'Reading stars from {starfits}')
     with fits.open(starfits) as hdu:
         header = hdu['PRIMARY'].header
         data_header = hdu['DATA'].header
@@ -2799,6 +2800,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
        
         # plot the main figure
         ax_main = fig.add_axes([0.08, 0.1, 0.45, 0.85])
+        line0, = ax_main.plot(32, 32, 'x', color='grey', alpha=0.6)
         line1, = ax_main.plot(args_default['x'], args_default['y'], 'x', color='red')
         image_ax = ax_main.imshow(image, vmax=vmax, vmin=vmin, origin='lower',
                                   **image_kwargs, )
@@ -4136,6 +4138,7 @@ def quick_fix_nan(cubefile, box=None, frac=0.1, header_ext='DATA', step=1,
     x, y, z = np.mgrid[0:nchan, 0:ny, 0:nx]
     nearest_interp = interpolate.NearestNDInterpolator(list(zip(x[~mask].flatten(),y[~mask].flatten(),z[~mask].flatten())), cube_small[~mask].flatten())
     cube_small = nearest_interp(x, y, z)
+    ## TODO: add support for interpolation along the spectral axis only, better for removing skylines
     #s3d = np.array([[[0,0,0],[0,1,0],[0,0,0]],
     #                        [[0,1,0],[1,1,1],[0,1,0]], 
     #                        [[0,0,0],[0,1,0],[0,0,0]]])
