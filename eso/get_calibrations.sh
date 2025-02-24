@@ -29,9 +29,16 @@
 #   --rename              Rename output files with detailed configurations
 
 
+# define the observing date, so the code will look for most recent calibration files
 obsdate="2024-08-29"
+
+# define all the possible band will be used
 declare -a band_list=("K_middle" "K_low")
+
+# define the all the possible requested pixel scales
 declare -a spaxel_list=("25mas" "100mas" "250mas")
+
+# all the possilbe exposures, here 10s and 30s are for PSF and 600s for science
 declare -a exptime_list=("10" "30" "600")
 
 for band in "${band_list[@]}"
@@ -46,3 +53,5 @@ do
   done
 done
 
+# or, if you just need a single calibration
+# eris_jhchen_utils get_daily_calib -d "2024-08-29" -b K_short -s 100mas -e 600 --outdir calibPool/ 

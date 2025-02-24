@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.11'
+__version__ = '0.8.17'
 
 # import the standard libraries
 import os 
@@ -195,7 +195,7 @@ def eris_quary(ob_id='', prog_id='',
     eris_query_tab = eso.query_instrument('eris', column_filters=column_filters)
     return eris_query_tab
 
-def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_days=60, 
+def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_days=120, 
                     column_filters={}, dry_run=False, debug=False, **kwargs):
     """query ESO/ERIS raw data from the database
 
@@ -223,10 +223,11 @@ def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_day
     eso = Eso()
     eso.ROW_LIMIT = -1 # remove the row limit of eso.query_instrument
     eso.clear_cache()
-    sdatetime = datetime.datetime.strptime(f'{start_date} {start_time:0>2d}', '%Y-%m-%d %H')
-    if end_date is not None:
-        edatetime = datetime.datetime.strptime(f'{end_date} {end_time:0>2d}', '%Y-%m-%d %H')
-        sdatetime = (edatetime - sdatetime)/2 + sdatetime
+    sdate = datetime.datetime.strptime(f'{start_date}', '%Y-%m-%d')
+    # sdatetime = datetime.datetime.strptime(f'{start_date} {start_time:0>2d}', '%Y-%m-%d %H')
+    # if end_date is not None:
+        # edatetime = datetime.datetime.strptime(f'{end_date} {end_time:0>2d}', '%Y-%m-%d %H')
+        # sdatetime = (edatetime - sdatetime)/2 + sdatetime
     delta_oneday = datetime.timedelta(days=1)
     matched = 0
     for i in range(0, max_days):
@@ -235,15 +236,21 @@ def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_day
         for j in [-1, 1]:
             if matched == 0:
                 if j == -1:
-                    t_start = (sdatetime - datetime.timedelta(days=i))
-                    t_end = sdatetime + delta_oneday
+                    night_date = sdate + datetime.timedelta(days=i)
+                    # t_start = (sdatetime - datetime.timedelta(days=i))
+                    # t_end = sdatetime + delta_oneday
                 elif j == 1:
-                    t_start = sdatetime
-                    t_end = (sdatetime + datetime.timedelta(days=i))
-                column_filters['stime'] = t_start.strftime('%Y-%m-%d')
-                column_filters['etime'] = t_end.strftime('%Y-%m-%d')
-                column_filters['starttime'] = t_start.strftime('%H')
-                column_filters['endtime'] = t_end.strftime('%H')
+                    night_date = sdate - datetime.timedelta(days=i)
+                    # t_start = sdatetime
+                    # t_end = (sdatetime + datetime.timedelta(days=i))
+                if debug:
+                    # print('time:', t_start, t_end)
+                    print('date:', night_date.strftime('%Y-%m-%d'))
+                # column_filters['stime'] = t_start.strftime('%Y-%m-%d')
+                # column_filters['etime'] = t_end.strftime('%Y-%m-%d')
+                # column_filters['starttime'] = t_start.strftime('%H')
+                # column_filters['endtime'] = t_end.strftime('%H')
+                column_filters['night'] = night_date.strftime('%Y-%m-%d')
                 warnings.simplefilter('ignore', category=NoResultsWarning)
                 tab_eris = eso.query_instrument('eris', column_filters=column_filters)
                 if tab_eris is not None:
@@ -268,6 +275,9 @@ def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_day
                         n_ds_wave_lamp = np.sum(tab_eris['DPR.TYPE'] == 'NS,WAVE,LAMP')
                         if (n_ds_fiber!=1) or (n_ds_fiber_lamp!=n_ds_fiber_dark) or (n_ds_wave_lamp<1) or (n_ds_wave_dark<1):
                             matched = 0
+                            if debug:
+                                print("Failed:")
+                                print(tab_eris)
                     if 'WAVE' in dptype:
                         n_wave_dark = np.sum(tab_eris['DPR.TYPE'] == 'WAVE,DARK')
                         n_wave_lamp = np.sum(tab_eris['DPR.TYPE'] == 'WAVE,LAMP')
@@ -285,7 +295,7 @@ def eris_auto_quary(start_date, end_date=None, start_time=9, end_time=9, max_day
 
 def request_calib(start_date=None, band=None, spaxel=None, exptime=None, 
                   outdir='calib_raw', end_date=None, dpcat='CALIB', arm='SPIFFIER', 
-                  metafile=None, max_days=60,
+                  metafile=None, max_days=120,
                   steps=['dark','detlin','distortion','flat','wavecal'],
                   dry_run=False, debug=False, **kwargs):
     """a general purpose to qeury calib files of ERIS/SPIFFIER observation
@@ -341,8 +351,10 @@ def request_calib(start_date=None, band=None, spaxel=None, exptime=None,
             column_filters['ins3_spgw_name'] = band
             column_filters['ins3_spxw_name'] = spaxel
 
-        step_query = eris_auto_quary(start_date, end_date=end_date, column_filters=column_filters,
-                                     dry_run=dry_run, debug=debug, **kwargs)
+        step_query = eris_auto_quary(start_date, end_date=end_date, 
+                                     column_filters=column_filters,
+                                     dry_run=dry_run, max_days=max_days,
+                                     debug=debug, **kwargs)
         if debug:
             print(step_query)
         # fix the data type issue of masked table columns
@@ -627,7 +639,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
                    dark_sof=None, detlin_sof=None, distortion_sof=None, flat_sof=None, 
                    wavecal_sof=None, stdstar_sof=None, drp_type_colname='DPR.TYPE', 
                    fits_suffix='fits.Z', esorex=None, dry_run=False,
-                   debug=False):
+                   debug=False, overwrite=True):
     """generate the science of frame of each calibration step
 
     Args:
@@ -664,7 +676,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if dark_sof is None:
             # generate the sof for dark calibration
             dark_sof = os.path.join(calib_pool, 'dark.sof')
-        if not os.path.isfile(dark_sof):
+        if not os.path.isfile(dark_sof) or overwrite:
             with open(dark_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} DARK\n")
@@ -680,7 +692,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if detlin_sof is None:
             # generate the sof for detector's linarity
             detlin_sof = os.path.join(calib_pool, 'detlin.sof')
-        if not os.path.isfile(detlin_sof):
+        if not os.path.isfile(detlin_sof) or overwrite:
             with open(detlin_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'LINEARITY,DARK,DETCHAR']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} LINEARITY_LAMP\n")
@@ -699,7 +711,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if distortion_sof is None:
             # generate the sof for distortion
             distortion_sof = os.path.join(calib_pool, 'distortion.sof')
-        if not os.path.isfile(distortion_sof):
+        if not os.path.isfile(distortion_sof) or overwrite:
             with open(distortion_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'NS,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} DARK_NS\n")
@@ -729,14 +741,15 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if flat_sof is None:
             # generate the sof for flat
             flat_sof = os.path.join(calib_pool, 'flat.sof')
-        if not os.path.isfile(flat_sof):
+        if not os.path.isfile(flat_sof) or overwrite:
             with open(flat_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} FLAT_LAMP\n")
                 for item in meta_tab[meta_tab[drp_type_colname] == 'FLAT,LAMP']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} FLAT_LAMP\n")
                 openf.write(f"{calib_pool}/eris_ifu_dark_bpm.fits BPM_DARK\n")
-                openf.write(f"{calib_pool}/eris_ifu_detlin_bpm_filt.fits BPM_DETLIN\n")
+                if 'detlin' in steps:
+                    openf.write(f"{calib_pool}/eris_ifu_detlin_bpm_filt.fits BPM_DETLIN\n")
                 openf.write(f"{calib_pool}/eris_ifu_distortion_bpm.fits BPM_DIST\n")
                 # read the timestamp, band, and spaxel
                 timestamp = item['Release Date']
@@ -751,7 +764,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if wavecal_sof is None:
             # generate the sof for wavecal
             wavecal_sof = os.path.join(calib_pool, 'wavecal.sof')
-        if not os.path.isfile(wavecal_sof):
+        if not os.path.isfile(wavecal_sof) or overwrite:
             with open(wavecal_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'WAVE,DARK']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} WAVE_LAMP\n")
@@ -776,7 +789,7 @@ def generate_calib(metadata, raw_pool='./raw', outdir='./', static_pool=None,
         if stdstar_sof is None:
             # generate the sof for wavecal
             stdstar_sof = os.path.join(calib_pool, 'stdstar.sof')
-        if not os.path.isfile(stdstar_sof):
+        if not os.path.isfile(stdstar_sof) or overwrite:
             with open(stdstar_sof, 'w+') as openf:
                 for item in meta_tab[meta_tab[drp_type_colname] == 'STD']:
                     openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} STD\n")
@@ -988,10 +1001,12 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
 
     ## Step-1
     # generate all the summary file if there is none
-    if os.path.isfile(metafile):
+    if metafile is None:
+        metadata = None
+    elif os.path.isfile(metafile):
         logging.info(f"> using existing metadata:{metafile}")
         metadata = read_metadata(metafile)
-    else:
+    if metadata is None:
         logging.info(f"> generating the metadata of {datadir}")
         # if os.path.isdir(date_folder + '/headers'):
             # metadata = generate_metadata(header_dir=date_folder+'/headers', 
@@ -1044,13 +1059,13 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
             if cat not in categories:
                 continue
             cat_metadata = tpl_metadata[tpl_metadata['DPR.CATG']==cat]
-            cat_exptime_list = np.unique(
-                    cat_metadata['DET.SEQ1.DIT']).astype(int).tolist()
+            det_seq1_dit = cat_metadata['DET.SEQ1.DIT'].astype(float)
+            cat_exptime_list = np.unique(det_seq1_dit).astype(int).tolist()
             logging.info(f'{cat} recieve exptime with: {cat_exptime_list}s')
             for exptime in cat_exptime_list:
                 stdstar_type = ''
                 exp_metadata = cat_metadata[
-                        abs((cat_metadata['DET.SEQ1.DIT']-exptime))<1e-6]
+                        abs((det_seq1_dit-exptime))<1e-6]
                 if len(exp_metadata) < 1:
                     logging.warning(f'{cat} recieve no real exptime with {exptime}s! Skip...')
                     continue
@@ -1096,13 +1111,18 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                         continue
                 
                 ## Step-3
-                # generate the calibPool
-                logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime}s")
-                if not dry_run:
-                    calib_pool_tpl = get_daily_calib(
-                            date, band, spaxel, exptime, esorex=esorex, 
-                            outdir=calib_pool, calib_raw=calib_raw,
-                            overwrite=overwrite)
+                # search or generate the calibPool
+                # if calib_pool is not None:
+                    # logging.info(f"> reusing calibration files from {calib_pool}")
+                    # calib_pool_tpl = calib_pool
+                # else:
+                if True:
+                    logging.info(f"> generating calibPool for {date} with {cat}+{band}+{spaxel}+{exptime}s")
+                    if not dry_run:
+                        calib_pool_tpl = get_daily_calib(
+                                date, band, spaxel, exptime, esorex=esorex, 
+                                outdir='calibPool', calib_raw=calib_raw,
+                                overwrite=overwrite)
                 # except:
                     # logging.warning(f"> Error found in geting the calibPool of {date}: {target}(OB.ID={ob_id}) with {band}+{spaxel}+{exptime}s")
 
@@ -3591,7 +3611,7 @@ def plot_fitcube(fitmaps, vmin=-300, vmax=300):
 
 def get_daily_calib(date, band, spaxel, exptime, outdir='./', esorex='esorex', 
                     calib_raw=None, overwrite=False, static_pool=None, 
-                    steps=None, max_days=60, 
+                    steps=None, max_days=120, 
                     rename=False, debug=False, dry_run=False):
     """A wrapper to get daily calibration file quickly
 
@@ -3648,7 +3668,7 @@ def get_daily_calib(date, band, spaxel, exptime, outdir='./', esorex='esorex',
                       max_days=max_days, debug=debug, dry_run=dry_run)
         generate_calib(metafile, raw_pool=calib_raw, outdir=archive_outdir, 
                        static_pool=static_pool, steps=steps, esorex=esorex,
-                       debug=debug, dry_run=dry_run)
+                       debug=debug, overwrite=overwrite, dry_run=dry_run)
     if rename:
         # rename the files name to avoid conflicts
         for ff in glob.glob(os.path.join(archive_outdir, '*.fits')):
@@ -4043,7 +4063,7 @@ def quick_pv_diagram(datacube, z=None, mode='horizontal', cmap='magma',
      
 
 #####################################
-######## helper functions ###########
+######## Helper Functions ###########
 
 def read_eris_header(fitsheader):
     """convert the header info to the info friendly to human
@@ -4206,7 +4226,7 @@ if __name__ == '__main__':
           * request_science: download the science data
           * generate_metadata: generate metadata from downloaded data
           * generate_calib: generate the calibration files
-          * auto_jitter: run jitter recipe automatically
+          * reduce_eris: reduce eris within a folder
           * search_archive: search archive files
           * get_telluric_calibration: derive the transmission curve and zero_point
 
@@ -4248,7 +4268,7 @@ if __name__ == '__main__':
     subp_request_calib.add_argument('--outdir', type=str, help='Output directory',
                                     default='raw')
     subp_request_calib.add_argument('--metafile', type=str, help='Summary file')
-    subp_request_calib.add_argument('--max_days', type=int, help='Maximum searching days before and after the observing day.', default=40)
+    subp_request_calib.add_argument('--max_days', type=int, help='Maximum searching days before and after the observing day.', default=120)
     subp_request_calib.add_argument('--debug', action='store_true',
                         help='dry run and print out all the input parameters')
     subp_request_calib.add_argument('--dry_run', action='store_true',
@@ -4368,13 +4388,17 @@ if __name__ == '__main__':
             Examples:
 
             eris_jhchen_utils reduce_eris --metadata raw/metadata.csv --datadir raw --outdir outdir 
+            # or reduce the manually download data without the metadata:
+            
+            eris_jhchen_utils reduce_eris --datadir raw --outdir outdir 
                                         '''))
     subp_reduce_eris.add_argument('--metafile', help='The summary file')
     subp_reduce_eris.add_argument('--datadir', help='The folder name with all the raw files')
     subp_reduce_eris.add_argument('--outdir', help='The output directory')
-    subp_reduce_eris.add_argument('--calib_pool', help='The folder with all the calibration files')
-    subp_reduce_eris.add_argument('--calib_raw', help='The folder to store the raw calibration files',
-                                  default=None)
+    subp_reduce_eris.add_argument('--calib_pool', default=None, 
+                                  help='The folder with all the calibration files')
+    subp_reduce_eris.add_argument('--calib_raw', default=None, 
+                                  help='The folder to store the raw calibration files')
     subp_reduce_eris.add_argument('--static_pool', help='The folder with all the static calibration files')
     subp_reduce_eris.add_argument('--overwrite', action='store_true', 
                                   help='Overwrite the existing files')
@@ -4469,7 +4493,7 @@ if __name__ == '__main__':
                                       help='Calibration steps to be proceeded')
     subp_get_daily_calib.add_argument('--calib_raw', default=None, 
                                       help='Directory for raw calibration files, default calib_raw')
-    subp_get_daily_calib.add_argument('--max_days', default=60, 
+    subp_get_daily_calib.add_argument('--max_days', default=120, type=int,
                                       help='The maxium days to search for calibration raw files')
     subp_get_daily_calib.add_argument('--overwrite', action='store_true', 
                                       help='Overwrite the existing files')
@@ -4650,10 +4674,10 @@ if __name__ == '__main__':
                        flat_sof=args.flat_sof, wavecal_sof=args.wavecal_sof, 
                        esorex=esorex, dry_run=args.dry_run, debug=args.debug)
     elif args.task == 'reduce_eris':
-        reduce_eris(metafile=args.metadata, datadir=args.datadir, 
+        reduce_eris(metafile=args.metafile, datadir=args.datadir, 
                     outdir=args.outdir, calib_pool=args.calib_pool, 
                     static_pool=args.static_pool, calib_raw=args.calib_raw,
-                    catagories=args.categories, overwrite=args.overwrite,
+                    categories=args.categories, overwrite=args.overwrite,
                     esorex=esorex, debug=args.debug)
     elif args.task == 'search_archive':
         image_list, _,_ = search_archive(

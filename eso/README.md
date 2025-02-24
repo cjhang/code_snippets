@@ -6,9 +6,13 @@ A complete help page for the cmd interface can be found by:
 
     python eris_jhchen_utils.py -h
 
-You can also use it as a Python package:
+You can make it executable by: `chmod +x eris_jhchen_utils.py` and put it into your system "PATH", then you can directly call it with `eris_jhchen_utils.py`.
+
+You can also use it as a normal Python package:
 
     from eris_jhchen_utils import request_calib
+
+Due to the limited user base of this script, there is currently no stand-alone documentation for all the functions. But you are welcome to dig into and modify the source code. The function and variable names should be reasonably easy to guess their meaning. The source code has four main sections for data reduction: 'DATA Retrieval', 'DATA Calibration', 'Flux Calibration', and 'DATA Combination'. Besides, "DATA Quicklook", "Quick Tools", and "Helper Functions" include some small functions/gadgets to make it easier to interact with the data.
 
 ## Requirement
 
@@ -42,9 +46,19 @@ Again, if you only want part of the calibration files:
 
 To download the ERIS science data, take the galphy project "111.24YQ.001" as an example:
 
-    eris_jhchen_utils.py request_science --prog_id "111.24YQ.001" --username <your_eso_user_name> --archive
+    eris_jhchen_utils.py request_science --prog_id "111.24YQ.001" --username <your_eso_user_name> --outdir science_raw --archive
 
 the `--archive` option tells the program to organise the downloaded raw data into different dates.
+
+Then, to reduce the download data:
+
+    eris_jhchen_utils.py reduce_eris --datadir raw/2023-04-10 --outdir science_reduced 
+
+The program will automatically search and download the calibration files for you. You can also specify the calib_pool, like:
+    
+    eris_jhchen_utils.py reduce_eris --datadir raw/klow_25mas --outdir klow_25mas_reduced--calib_pool klow_25mas_calib
+
+in this way, it is the user's responsibility to make sure the calib_pool contains the right calibration files for your science data. It is thus recommended to keep the science data (also the corresponding calibration files) with different configurations separately.
 
 
 ## Quick tools
@@ -72,14 +86,54 @@ For detailed input parameters of the quick tools:
 
     eris_jhchen_utils.py <quick_tool_name> -h
 
-## Galphy project
+## Reduce the data for a whole project
 
-To download the galphy project and reduce the data in an elegant way (just two steps):
+To download and reduce the data of a whole project (here we use galphys as an example, but it is similar to other projects as well) in an elegant way (just two steps):
 
-    # galphy pipeline, to reduce the most recent data
+    # galphys pipeline, to reduce the most recent data
     eris_jhchen_utils.py request_science --prog_id "112.25M3.002" --username <your_eso_user_name> --outdir science_raw --archive
     eris_jhchen_utils.py run_eris_pipeline -d science_raw --outdir science_reduced --calib_pool calibPool --calib_raw calib_raw
 
 To combine the reduced data:
 
     eris_jhchen_utils.py quick_combine --datadir science_reduced --target zc406690 --band K_short --spaxel 25mas --outdir combined --suffix test1 #--drifts drifts_file 
+
+
+## Prepare for the observing runs
+
+During the observing run it is always important to get a quick reduced science observation to evaluate the performance. In this case, having pre-prepared calibration files will speed up the data reduction on site. If you already know what observing configurations you will have, you can prepare the calibration files using "get_daily_calib":
+
+    eris_jhchen_utils.py get_daily_calib -d "2025-02-19" -b K_middle -s 100mas -e 600 --outdir calibPool/ 
+
+If you expect to have various configurations, you can using a bash loop:
+
+    obsdate="2025-02-19"
+    declare -a band_list=("K_middle" "K_low")
+    declare -a spaxel_list=("25mas" "100mas" "250mas")
+    declare -a exptime_list=("10" "30" "600")
+
+    for band in "${band_list[@]}"
+    do
+      for spaxl in "${spaxel_list[@]}"
+      do
+        for exptime in "${exptime_list[@]}"
+        do
+          echo "$obsdate" + "$band" + "$spaxl" + "$exptime"
+          eris_jhchen_utils.py get_daily_calib -d "$obsdate" -b "$band" -s "$spaxl" -e "$exptime" --outdir calibPool --calib_raw calib_raw
+        done
+      done
+    done
+
+
+here we have defined '--calib_raw' to store the raw calibration files locally, but you can remove them when the script is finished.
+
+On the mountains, you can dowload your new observation with:
+
+    eris_jhchen_utils.py request_science --user cjhang --ob_id 4206913 --outdir science_raw/obs1 --metafile science_raw/obs1/metadata.csv
+
+Or, you can download the same data directly from the internal server and put them into the folder 'science_raw/obs1'. Then, you can reduce your newly acquired data with:
+
+    eris_jhchen_utils.py reduce_eris --datadir science_raw/obs1 --outdir science_reduced/obs1 --calib_pool calibPool/2025-02-19_K_middle_100mas_600s --categories SCIENCE
+
+here we assume that your science data is stored in 'science_raw/obs1', and its instrument configuration is 'K_middle' + '100mas' + '600s'. We also specify the '--categories' to 'SCIENCE' only, so it will only reduce the science target. The date in the folder name is only used by 'get_daily_calib' to organize the data. For your quick reduction, the date is not so important.
+
