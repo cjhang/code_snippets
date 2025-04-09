@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.17'
+__version__ = '0.8.18'
 
 # import the standard libraries
 import os 
@@ -2770,8 +2770,8 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
 
         # get the initial image
         image = image_func(data)
-        vmax = np.nanpercentile(image[20:-20, 20:-20], 99)
-        vmin = np.nanpercentile(image[20:-20, 20:-20], 1)
+        vmax = np.nanpercentile(image[20:-20, 20:-20], 95)
+        vmin = np.nanpercentile(image[20:-20, 20:-20], 5)
         # if abs(vmax) < abs(vmin):
             # vmax, vmin = -1.*vmin, vmax
             # data = -1.*data
@@ -2786,7 +2786,7 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         slider_height=0.1
         slider_kwargs = {
                 'channel_range':{'default':[0,nchan], 'range':[0, nchan]},
-                'color_scale':{'default':[1,99], 'range':[0, 100]},
+                'color_scale':{'default':[5,95], 'range':[0, 100]},
                 'x': {'default':32, 'range':[0, 64]},
                 'y': {'default':32, 'range':[0, 64]}
                 }
@@ -3098,6 +3098,7 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
     summary_all = []
     group_id = 0
     table_start = None
+    # first read the existing file with existing tpl_start
     tpl_start_list_existing = []
     if driftfile is not None:
         if os.path.isfile(driftfile) and not overwrite:
@@ -3105,6 +3106,7 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
             table_start = table.Table.read(driftfile, format='csv')
             tpl_start_list_existing = np.unique(table_start['tpl_start'])
             group_id = np.max(table_start['group_id']) + 1
+    # loop through all the targeted tpl_start
     for tpl_start in tpl_start_list:
         if tpl_start in tpl_start_list_existing:
             print(f'skip tpl_start: {tpl_start}')
@@ -3115,6 +3117,9 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
         summary_tab_objs = summarise_eso_files(fits_objs)
         summary_tab_objs.sort(['date_obs'])
         time_array_objs = np.array(summary_tab_objs['date_obs'], dtype='datetime64[s]')
+        print("time_array_objs")
+        for item in time_array_objs:
+            print("obj:", item)
         # get the PSF stars with the same OB ID
         ob_id = summary_tab_objs['ob_id'][0]
         ob_exptime = float(summary_tab_objs['exptime'][0])
@@ -3131,13 +3136,16 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
             logging.info(f'{tpl_start}:{ob_id}: Found {len(summary_tab_stars)} PSF stars!')
             print(f'{tpl_start}:{ob_id}: Found {len(summary_tab_stars)} PSF stars!')
             time_array_stars = np.array(summary_tab_stars['date_obs'], dtype='datetime64[s]') 
+            print("time_array_stars")
+            for item in time_array_stars:
+                print('star:', item)
             time_array_stars_delta1 = np.abs(time_array_stars-time_array_objs[0]).astype(float)
             time_array_stars_delta2 = np.abs(time_array_stars-time_array_objs[-1]).astype(float)
             print("time difference:", time_array_stars_delta1, time_array_stars_delta2)
             summary_tab_stars_valid = summary_tab_stars[(time_array_stars_delta1<300) | (time_array_stars_delta2<ob_exptime*2+300)]
             print(summary_tab_stars_valid)
             n_valid_star = len(summary_tab_stars_valid)
-            print(f"{n_valid_star} is found!")
+            print(f"{n_valid_star} valid PSF stars are found!")
             if n_valid_star > 1:
                 summary_tab_stars.sort(['date_obs'])
                 # psf_star_start = summary_tab_stars[np.argmin(np.abs(time_array_stars-time_array_objs[0]))]

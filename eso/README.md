@@ -96,10 +96,28 @@ To download and reduce the data of a whole project (here we use galphys as an ex
 
 To combine the reduced data:
 
-    eris_jhchen_utils.py quick_combine --datadir science_reduced --target zc406690 --band K_short --spaxel 25mas --outdir combined --suffix test1 #--drifts drifts_file 
+    eris_jhchen_utils.py quick_combine --datadir science_reduced --target zc406690 --band K_short --spaxel 25mas --outdir combined --suffix try1 #--drifts drifts_file 
 
+A crucial step for 25mas observations is the correction for drifts. This step involves with some human intervention to derive the offset from the PSF stars. The following python code can be used to derive the drifts (taking d3a6004 as an example):
 
-## Prepare for the observing runs
+    from eris_jhchen_utils import search_archive, summarise_eso_files, construct_drift_file, fit_eris_psf_star, interpolate_drifts, quick_fix_nan
+
+    target = 'd3a6004'
+    file_list,_,_ = search_archive('./science_reduced', target=target, band='K_middle', spaxel='25mas', target_type='SCIENCE')
+    target_summary = summarise_eso_files(file_list)
+    construct_drift_file(target_summary['tpl_start'], datadir='science_reduced', driftfile=target+'_drift.csv')
+    fit_eris_psf_star(target+'_drift.csv', plotfile=target+'_PSF.pdf', interactive=1)
+    interpolate_drifts(target+'_drift.csv')
+
+Then, the final "*_drift.csv" can be read by the `quick_combine` to properly account the drifts of the telescope (taking d3a6004 as an example).
+
+    eris_jhchen_utils.py quick_combine --datadir science_reduced --target d3a6004 --band K_middle --spaxel 25mas --outdir combined --suffix try1_withdrifts --drifts d3a6004_drifts.csv
+
+## Flux calibration
+
+Coming later.
+
+## Preparing for the observing runs
 
 During the observing run it is always important to get a quick reduced science observation to evaluate the performance. In this case, having pre-prepared calibration files will speed up the data reduction on site. If you already know what observing configurations you will have, you can prepare the calibration files using "get_daily_calib":
 
