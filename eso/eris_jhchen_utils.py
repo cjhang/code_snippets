@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.18'
+__version__ = '0.8.19'
 
 # import the standard libraries
 import os 
@@ -49,7 +49,10 @@ from astropy.wcs import utils as wcs_utils
 from astropy import stats as astro_stats
 from astropy.modeling import models
 from astropy.convolution import convolve, Gaussian2DKernel
+from astropy.coordinates import SkyCoord
 from astroquery.eso import Eso
+from astroquery.vizier import Vizier 
+from astroquery.simbad import Simbad
 from astroquery.eso.core import NoResultsWarning
 from photutils.aperture import EllipticalAperture, RectangularAperture
 import requests 
@@ -1151,12 +1154,259 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
 #####################################
 ######### Flux calibration ##########
 
-def query_star_VizieR(name, band=None):
+def match_catalog(sk, radius, catalog, ra_name=None, dec_name=None):
+    vizier = Vizier()
+    result = vizier.query_region(sk, radius=radius, catalog=catalog)
+    if len(result) < 1:
+        # print(f"{name} is not found in GAIA DR3!")
+        return []
+    else:
+        matched = result[0]
+        if len(matched) > 1:
+            # select the closest
+            dist = ((matched[ra_name].data-ra)**2 
+                    + (matched[dec_name].data-dec)**2)
+            matched = matched[np.argmin(dist)]
+        else:
+            matched = matched[0]
+
+    return matched
+
+def select_closest_matched(name, matched, ra_name, dec_name):
+    simbad_tab = Simbad.query_object(name)
+    ra, dec = simbad_tab['RA','DEC'][0]
+    if len(matched) > 1:
+        # select the closest
+        dist = ((matched[ra_name].data-ra)**2 
+                + (matched[dec_name].data-dec)**2)
+        matched = matched[np.argmin(dist)]
+    else:
+        matched = matched[0]
+    return matched
+
+def query_star_Telluric(name,):
+    """possibly the most reliable Telluric stars, but does not include all the stars
+    """
+    vizier = Vizier()
+    # Extended Hipparcos Compilation (XHIP) (Anderson+, 2012)
+    catalog = 'V/137D/XHIP'
+    matched = vizier.query_object(name, catalog=catalog)
+    if len(matched) < 1:
+        return None
+    matched = matched[0]
+    if len(matched) > 1:
+        print(f'Warning! {name}: multiple component matched')
+        matched = matched[-1]
+    hip_id = matched['HIP'][0]
+
+    # get the votable from ESO
+    from astropy.io.votable import parse_single_table
+    eso_recommended_tables = ['TelluricB5V-B9V.vot','TelluricB0V-B4V.vot','TelluricG0V-G4V.vot']
+    for eso_table in eso_recommended_tables:
+        try:
+            votable = f'https://www.eso.org/sci/facilities/paranal/instruments/kmos/tools/Standards_catalogue/{eso_table}'
+            table = parse_single_table(votable).to_table()
+            if hip_id in table['HIP']:
+                return table[table['HIP']==hip_id]
+        except:
+            pass
+    print("Nothing found...")
+    return None
+
+def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec, 
+                      gaia_radius=1*u.arcsec, twomass_radius=5*u.arcsec):
     """get the star info from VizieR database
 
     """
-    # return Tstar, magnetude, type
-    pass
+    twomass_catalog = 'II/246/out'
+    gaia_dr3_catalog = 'I/355/gaiadr3'
+    HD_catalog = 'III/135A/catalog' # Henry Draper catalog
+    # hip_catalog = 'I/311/hip2'
+    hip_catalog = 'V/137D/XHIP' # Extended Hipparcos Compilation (XHIP) (Anderson+2012), for SpType
+    gaia_id = None
+    gaia_ra = None
+    gaia_dec = None
+   
+    vizier = Vizier()
+
+    if name is not None:
+        simbad_tab = Simbad.query_object(name)
+        ra_string, dec_string = simbad_tab['RA','DEC'][0]
+        named_skycoord = SkyCoord(ra_string, dec_string, unit=(u.hourangle, u.deg))
+        ra = named_skycoord.ra.to(u.deg).value
+        dec = named_skycoord.dec.to(u.deg).value
+        tablist = vizier.query_object(name, catalog=[hip_catalog, gaia_dr3_catalog, twomass_catalog], radius=radius)
+        if hip_catalog in tablist.keys():
+            print("Matching HD_catalog")
+            hip_matched = tablist[hip_catalog]
+            star_type = hip_matched['SpType'][0]
+            # star_type = HD_matched['SpT'][0]
+        else:
+            star_type = 'none'
+        if gaia_dr3_catalog in tablist.keys():
+            print("Matching gaia catalog")
+            matched = tablist[gaia_dr3_catalog]
+            if len(matched) > 1:
+                # select the closest
+                dist = ((matched['RA_ICRS'].data-ra)**2 
+                        + (matched['DE_ICRS'].data-dec)**2)
+                matched = matched[np.argmin(dist)]
+            else:
+                matched = matched[0]
+            gaia_matched = matched
+            gaia_id = gaia_matched['Source']
+            gaia_ra = gaia_matched['RA_ICRS']
+            gaia_dec = gaia_matched['DE_ICRS']
+
+        if twomass_catalog in tablist.keys():
+            print("Matching twomass catalog")
+            matched = tablist[twomass_catalog]
+            if len(matched) > 1:
+                # select the closest
+                dist = ((matched['RAJ2000'].data-ra)**2 
+                        + (matched['DEJ2000'].data-dec)**2)
+                matched = matched[np.argmin(dist)]
+            else:
+                matched = matched[0]
+            twomass_matched = matched
+            try: Jmag, Jmag_err  = twomass_matched['Jmag','e_Jmag']
+            except: pass
+            try: Hmag, Hmag_err = twomass_matched['Hmag', 'e_Hmag'] 
+            except: pass
+            try: Kmag, Kmag_err = twomass_matched['Kmag', 'e_Kmag'] 
+            except: pass
+
+    elif skycoord is not None:
+        search_function = vizier.query_region
+        if isinstance(skycoord, SkyCoord):
+            sk = skycoord
+        elif isinstance(skycoord, (list,tuple)):
+            if isinstance(skycoord[0], float):
+                sk = SkyCoord(*skycoord, unit='deg')
+            else:
+                sk = SkyCoord(*skycoord, unit=(u.hourangle, u.deg))
+
+        if True:
+            # get gaia id and coordinates
+            result = vizier.query_region(sk, radius=gaia_radius, 
+                                         catalog=[gaia_dr3_catalog])
+            if len(result) < 1:
+                print(f"{name} is not found in GAIA DR3!")
+                gaia_id = 0
+            else:
+                gaia_matched = result[0]
+                if len(gaia_matched) > 1:
+                    # select the closest
+                    dist = ((gaia_matched['RA_ICRS'].data-ra)**2 
+                            + (gaia_matched['DE_ICRS'].data-dec)**2)
+                    gaia_matched = gaia_matched[np.argmin(dist)]
+                else:
+                    gaia_matched = gaia_matched[0]
+                gaia_id = gaia_matched['Source']
+                gaia_ra = gaia_matched['RA_ICRS']
+                gaia_dec = gaia_matched['DE_ICRS']
+
+        if True:
+            # get the star type
+            HD_matched = match_catalog(sk, radius=radius, catalog=HD_catalog, 
+                                       ra_name='RAJ2000', dec_name='DEJ2000')
+            if len(HD_matched) < 1:
+                print(f"{name} is not found in HD catalog!")
+                star_type = None
+            else:
+                star_type = HD_matched['SpT']
+
+        if True:
+            # check with the 2mass 
+            # get the magnitude of J,H,K
+            Jmag, Jmag_err = -99, -99
+            Hmag, Hmag_err = -99, -99
+            Kmag, Kmag_err = -99, -99
+     
+            result = vizier.query_region(sk, radius=twomass_radius, 
+                                         catalog=twomass_catalog)
+            if len(result) < 1:
+                print(f"{name} is not found in 2mass catalog!")
+            else:
+                cat_matched = result[0]
+                if len(cat_matched) > 1:
+                    # select the closest
+                    dist = (cat_matched['RAJ2000'].data-ra)**2 + (cat_matched['DEJ2000'].data-dec)**2
+                    cat_matched = cat_matched[np.argmin(dist)]
+                else:
+                    cat_matched = cat_matched[0]
+                try: Jmag, Jmag_err  = cat_matched['Jmag','e_Jmag']
+                except: pass
+                try: Hmag, Hmag_err = cat_matched['Hmag', 'e_Hmag'] 
+                except: pass
+                try: Kmag, Kmag_err = cat_matched['Kmag', 'e_Kmag'] 
+                except: pass
+        # return Tstar, magnetude, type
+
+    table_vizier = table.Table(
+            names=('name','ra','dec','type','Jmag','Jmag_err','Hmag','Hmag_err', 'Kmag', 'Kmag_err'), 
+            dtype=('S8','f8','f8','S4','f8','f8','f8','f8','f8','f8'))
+    table_vizier.add_row([name, gaia_ra, gaia_dec, star_type, Jmag, Jmag_err, Hmag, Hmag_err, Kmag, Kmag_err])
+    return table_vizier
+
+def guess_star_temperature(star_type, debug=False):
+    """guess/interpolate the star temperature based on the gridded values
+    star_type is the full type string from the Vizier catalogue
+    """
+    # https://www.not.iac.es/instruments/notcam/ReferenceInfo/temp.html
+    # B type, from giant to main-sequence star
+    if debug:
+        print(f"Guess star type for {star_type}")
+    B_type_temperature = {'B0': {'I': 26000, 'V': 29700},
+                          'B1': {'I': 20700, 'V': 25600},
+                          'B2': {'I': 17800, 'V': 22300},
+                          'B3': {'I': 15600, 'V': 19000},
+                          'B4': {'I': 13900, 'V': 17200},
+                          'B5': {'I': 13400, 'V': 15400},
+                          'B6': {'I': 12700, 'V': 14100},
+                          'B7': {'I': 12000, 'V': 13000},
+                          'B8': {'I': 11200, 'V': 11800},
+                          'B9': {'I': 10500, 'V': 10700},
+                          }
+    # G type, from giant to main-sequence star
+    G_type_temperature = {'G0': {'I': 5510, 'V': 5930},
+                          'G1': {'I': 5330., 'V': 5880.},
+                          'G2': {'I': 5150., 'V': 5830},
+                          'G3': {'I': 4980, 'V': 5790.},
+                          'G4': {'I': 4974., 'V': 5740},
+                          'G5': {'I': 4968., 'V': 5680.},
+                          'G6': {'I': 4962., 'V': 5620},
+                          'G7': {'I': 4956., 'V': 5650.},
+                          'G8': {'I': 4950, 'V': 5500.},
+                          }
+    dist_roman = {'I':1,'Ia':1,'Iab':1,'Ib':1,'I/II':1.5,'II':2,'II/III':2.5,
+                  'III':3,'III/IV':3.5,'IV':4,'V':5}
+    star_type_matcher = re.compile('(?P<group>[G,B]+)(?P<dist>[\d\/]+)\s*(?P<stage>[\/IVab]+)')
+    star_classified = star_type_matcher.match(star_type).groupdict()
+    star_group = star_classified['group']
+    star_dist = eval(star_classified['dist'])
+    star_stage = dist_roman[star_classified['stage']]
+    if debug:
+        print(f'star is type:{star_group}, dist:{star_dist}, stage:{star_stage}')
+    if star_group == 'B':
+        type_grid_temperature = B_type_temperature
+    elif star_group == 'G':
+        type_grid_temperature = G_type_temperature
+    # extract the all the required data to construct the grid
+    type_dist_list = [] # from B0 to B9 in example of B
+    type_stage_list = [1,5] # I and V
+    type_temperatures = []
+    for key, value in type_grid_temperature.items():
+        type_dist_list.append(int(key[-1])) 
+        type_temperatures.append([value['I'], value['V']])
+    if debug:
+        print("type_dist_list:",type_dist_list) 
+        print('type_stage_list', type_stage_list)
+        print('type_temperatures', type_temperatures)
+    grid_interp = interpolate.RegularGridInterpolator(
+            (type_dist_list, type_stage_list), 
+            type_temperatures, method='linear',)
+    return grid_interp([star_dist, star_stage])[0]
 
 def gaussian_2d_legacy(params, x=None, y=None):
     """a simple 2D gaussian function
@@ -1212,6 +1462,60 @@ def airy_2d(params, x=None, y=None):
     z[r > 0] = (2.0 * j1(rt) / rt) ** 2
     z *= amplitude
     return z
+
+def curvegrowth_photometry(image, aperture, step=0.5, mask=None, 
+                           center=None, offset=None,  
+                           tolerence=1e-2, plot=False, 
+                           max_aperture=None, min_aperture=None,
+                           return_table=False,):
+    """photometry with curve of growth
+    """
+    ny, nx = image.shape
+    peak_value = np.ma.array(image, mask=mask).max()
+    a, b, theta = aperture
+    b2a = b/a
+    if max_aperture is None:
+        max_aperture = nx
+    if min_aperture is None:
+        min_aperture = np.min([a,b])
+    radii = np.arange(step, max_aperture, step)
+    if center is None:
+        center = [0.5*nx-0.5, 0.5*ny-0.5]
+    if offset is not None:
+        center = np.array(center) + np.array(offset)
+    # build all the required apertures
+    phot_table = table.Table(names=['r', 'area', 'flux', 'flux_err'],
+                             dtype=('f8', 'f8', 'f8', 'f8'))
+    for r in radii:
+        aper = EllipticalAperture(center, r, r*b2a, theta)
+        aper_sum, aper_sum_err = aper.do_photometry(image, mask=mask)
+        # print([r, aper.area, aper_sum[0], 0])
+        phot_table.add_row([r, aper.area, aper_sum[0], 0])
+    # calculate the flattening radius and total flux
+    slope_selection = (np.diff(phot_table['flux']) < step*tolerence) & (radii[:-1]>min_aperture)
+    if np.any(slope_selection):
+        max_idx = np.argmax(slope_selection)
+    else:
+        max_idx = len(slope_selection)
+    flux_max = phot_table['flux'][max_idx]
+    flux_max_err = np.max([phot_table['flux_err'][max_idx], tolerence*flux_max])
+    flux_max_r = radii[max_idx]
+    if plot:
+        fig, ax = plt.subplots(1,2,figsize=(12,5))
+        ax[0].imshow(np.ma.array(image,mask=mask), origin='lower')
+        for r in radii:
+            aper = EllipticalAperture(center, r, r*b2a, theta)
+            aper.plot(ax=ax[0], color='k', alpha=0.3)
+
+        aper = EllipticalAperture(center, half_flux_r, half_flux_r*b2a, theta)
+        aper.plot(color='red', ax=ax[0], alpha=0.8)
+        aper = EllipticalAperture(center, flux_max_r, flux_max_r*b2a, theta)
+        aper.plot(color='black', ax=ax[0], alpha=0.8)
+        ax[1].errorbar(radii, phot_table['flux'], yerr=phot_table['flux_err'])
+        ax[1].vlines(x=half_flux_r1, ymin=0, ymax=0.5*flux_max, color='red')
+        ax[1].vlines(x=flux_max_r, ymin=0, ymax=flux_max, color='black')
+        plt.show()
+    return phot_table, flux_max, flux_max_r
 
 def fit_star(starfits, x0=None, y0=None, pixel_size=1, 
              plot=False, plotfile=None, model='gaussian_2d',
@@ -1291,10 +1595,10 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         if model == 'gaussian_2d':
             p_init = [image_normed[int(yclick), int(xclick)], 
                       xclick-center_ref[0], yclick-center_ref[1], xsigma, ysigma, 0]
-        elif mode == 'moffat_2d':
+        elif model == 'moffat_2d':
             p_init = [image_normed[int(yclick), int(xclick)], xclick-center_ref[0], 
                       yclick-center_ref[1], gamma0, alpha0]
-        elif mode == 'airy_2d':
+        elif model == 'airy_2d':
             p_init = [image_normed[int(yclick), int(xclick)], xclick-center_ref[0], 
                       yclick-center_ref[1], gamma0, alpha0]
         
@@ -1342,6 +1646,8 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
     # print(f"p_fit: {bestfit_params}")
    
     if extract_spectrum and (ndim == 3):
+        # TODO: extract spectrum with adaptive aperture
+        # and plot the apture extraction results
         # get all the best fit value
         aperture_size = 1.5*np.mean([xfwhm_fit, yfwhm_fit])
         #aperture_correction = 1.000006565#1.0374 for 1*fwhm
@@ -1358,6 +1664,7 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         output_unit = 'adu/s'
         # output_unit = 'adu'
     else: aperture = None
+
     if plot:
         fit_image = model_func(res_minimize.x, xgrid, ygrid)
         fig = plt.figure(figsize=(12, 6))
@@ -1396,6 +1703,134 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
         return wavelength, spectrum
     else:
         return bestfit_params
+
+def extract_star(starfits, x0=None, y0=None, pixel_size=1, 
+                 plot=False, plotfile=None, mode='fit',
+                 sky_aperture=5, subtract_background=True, 
+                 interactive=False, 
+                 outfile=None, negative_signal=False):
+    # read the fits file
+    with fits.open(starfits) as hdu:
+        header = hdu['PRIMARY'].header
+        data_header = hdu['DATA'].header
+        data = hdu['DATA'].data
+        ndim = data.ndim
+        exptime = header['EXPTIME']
+        arcfile = header['ARCFILE']
+    if ndim == 2:
+        # it is already a map
+        image = data
+    elif data.ndim == 3:
+        wavelength = get_wavelength(header=data_header)
+        nchan = len(data)
+        # collapse the cube to make map
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
+        # collapse the cube to make map
+        # data = clean_cube(data, median_filter=False, median_subtract=False, sigma=10)
+        data_median_filtered = ndimage.median_filter(data, size=20, axes=0)
+        image = np.nansum(data_median_filtered, axis=0)
+    vmax = np.nanpercentile(image, 99)
+    vmin = np.nanpercentile(image, 1)
+    yshape, xshape = image.shape
+
+    if negative_signal:
+        data *= -1.
+        image *= -1.
+   
+    if True:
+        # try to fit a gaussian to determine the center of the star
+        if interactive:
+            # get the initial position of star
+            plt.figure()
+            plt.imshow(image, origin='lower', vmin=vmin, vmax=vmax)
+            plt.colorbar()
+            plt.ylabel('Y')
+            plt.xlabel('X')
+            plt.title('Please click on the star')
+            plt.colorbar()
+            plt.show(block=False)
+            x0, y0 = plt.ginput(1)[0]#, timeout=5
+            plt.close()
+        else:
+            x0, y0 = 0.5*np.array([xshape, yshape])
+        gaussian_fit = fit_gaussian_2d(image, x0=x0, y0=y0)
+        sigma_fit = 0.5*(gaussian_fit[3]+gaussian_fit[4]) # average
+        xref, yref = gaussian_fit[1], gaussian_fit[2]
+    if subtract_background: # background subtraction
+        r_boundary = np.sqrt(8*np.log(2)) * sigma_fit * sky_aperture
+        xgrid, ygrid = np.meshgrid((np.arange(0, xshape)),
+                                   (np.arange(0, yshape)))
+        sky_mask = ((xgrid - xref)**2 + (ygrid - yref)**2) < r_boundary**2
+        image_median = np.ma.median(astro_stats.sigma_clip(
+                image[sky_mask], sigma=3))
+        global_median = np.ma.median(astro_stats.sigma_clip(
+                data[np.repeat(sky_mask[None,:,:], nchan, axis=0)], 
+                sigma=3))
+        print('Image median:', image_median)
+        print('Global median:', global_median)
+        aperture_bkg = EllipticalAperture([xref, yref], 
+                                          r_boundary, r_boundary, theta=0)
+        print(f'Background radius: {r_boundary}')
+    else:
+        image_median = 0.
+        global_median = 0.
+
+    # define the extraction aperture
+    if True:# curve_of_growth flux measurement
+        phot_table, flux_max, flux_max_r = curvegrowth_photometry(
+                image-image_median, [1,1,0], center=[xref, yref], 
+                step=0.5, tolerence=0.01)
+        extract_radius = flux_max_r
+        print(f'Max flux radius: {flux_max_r}')
+        print(f'Max flux: {flux_max}')
+
+    if True: # extract the spectrum
+        aperture = EllipticalAperture([xref, yref], 
+                                      extract_radius, extract_radius, theta=0)
+        aper_mask = aperture.to_mask().to_image([xshape, yshape]).astype(bool)
+        aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
+        data_selected = (data-global_median)[aper_mask_3D]
+        spectrum = np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
+        spectrum = spectrum / exptime # units in adu/second
+        output = spectrum
+        output_unit = 'adu/s'
+        # output_unit = 'adu'
+
+    if plot:
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 3)
+        ax1 = fig.add_subplot(gs[0,0])
+        im = ax1.imshow(image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax1)
+        ax1.plot(xref, yref, 'x', color='red')
+        ax2 = fig.add_subplot(gs[0,1:])
+        ax2.plot(phot_table['r'], phot_table['flux'], 'k-', alpha=0.8)
+        ax2.vlines(x=flux_max_r, ymin=0, ymax=flux_max, color='tab:cyan')
+        if aperture is not None:
+            aperture.plot(ax=ax1, color='tab:cyan')
+        if subtract_background:
+            ax2.vlines(x=r_boundary, ymin=0, ymax=flux_max, color='grey')
+            aperture_bkg.plot(ax=ax1, color='grey')
+        if True: # plot extracted spectrum
+            ax4 = fig.add_subplot(gs[1,:])
+            ax4.plot(wavelength, output)
+            ax4.set_xlabel('wavelength [um]')
+            ax4.set_ylabel(output_unit)
+        if plotfile is not None:
+            plotfile.savefig(fig, bbox_inches='tight')
+            plt.close()
+        if plot:
+            plt.show()
+        else:
+            plt.close()
+
+    if outfile is not None:
+        np.savetxt(outfile, np.vstack([wavelength, output]).T, delimiter=',')
+    else:
+        return wavelength, spectrum
+
 
 def scale_blackbody(blackbody_func, band, magnitude, filter_file):
     """scale the blackbody function to the correct flux values
@@ -1558,6 +1993,40 @@ def get_zero_point(wavelength, spectrum, T_star, band_2mass=None, magnetude_2mas
     zero_point = bb_zero_point / transmission_norm
     return zero_point
 
+def read_starfile(starfile, star_catalogue=None,):
+    with fits.open(starfile) as hdu:
+        star_header = hdu[0].header
+        target_star = star_header['HIERARCH ESO OBS TARG NAME']
+        exptime = star_header['EXPTIME']
+        band = star_header['HIERARCH ESO INS3 SPGW NAME']
+        spaxel = star_header['HIERARCH ESO INS3 SPXW NAME']
+        tpl_start = star_header['HIERARCH ESO TPL START'] 
+        airmass_start = star_header['HIERARCH ESO TEL AIRM START']
+        airmass_end = star_header['HIERARCH ESO TEL AIRM END']
+        star_airmass = np.mean([airmass_start, airmass_end])
+        star_order = starfile[-8:-5]
+    if 'K' in band: band_2mass = 'Ks'; band_starMag = 'Kmag'
+    elif 'J' in band: band_2mass = 'J'; band_starMag = 'Jmag'
+    elif 'H' in band: band_2mass = 'H'; band_starMag = 'Hmag'
+    print('Name', target_star)
+    if star_catalogue is not None:
+        star_info = star_catalogue[star_catalogue['name']==target_star]
+        magnitude_2mass = star_info[band_2mass]
+    else:
+        star_info = query_star_VizieR(name=target_star)
+        magnitude_2mass = star_info[band_starMag][0]
+        star_type = star_info['type'][0]
+        T_star = guess_star_temperature(star_type)
+        print(f'star_type={star_type}, T_star={T_star}, {band} Magnitude:{magnitude_2mass}')
+    if len(star_info) < 1:
+        logging.warning(f'No info found for star {target_star}')
+        return None
+    return {'name':target_star, 'type':star_type, 'temperature':T_star, 
+            'band': band, 'band_2mass':band_2mass, 'magnitude_2mass': magnitude_2mass,
+            'exptime': exptime, 'spaxel':spaxel, 'airmass': star_airmass, 
+            'tpl_start': tpl_start,
+            }
+
 def get_telluric_calibration(star_list=None, star_catalogue=None,
                              datadir='science_reduced', outdir='spectral_corrections', 
                              target_types=['CALIBSTD'],# also 'CALIBPSF'
@@ -1567,6 +2036,14 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
                              debug=False, dry_run=False):
     """derive the flux and transmission corrections from the standard telluric stars
     """
+    if static_datadir is None:
+        try:
+            static_datadir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'static_data')
+            print('Default static data directory:', static_datadir)
+        except:
+            static_datadir = None
+            print('Faild in determing the static_data directory!')
+
     if outdir is not None:
         if not os.path.isdir(outdir):
             os.system(f'mkdir {outdir}')
@@ -1583,45 +2060,7 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
             raise ValueError("Please either provide the list of star fits files or the datadir!")
         datadir = datadir.strip('/')
         star_list,_,_ = search_archive(datadir, target_type='CALIBSTD')
-    if False:
-        date_list = []
-        if datadir is None:
-            raise ValueError("Please either provide the list of star fits files or the datadir!")
-        for date_folder in os.listdir(datadir):
-            if date_matcher.match(date_folder):
-                obs_date = date_folder
-                for obs in os.listdir(os.path.join(datadir, date_folder)):
-                    obs_dir = os.path.join(datadir, date_folder, obs)
-                    obs_match = match_obs_folder(obs)
-                    if obs_match is None:
-                        continue
-                    target_star = obs_match['target']
-                    exptime = obs_match['exptime']
-                    target_type = obs_match['target_type']
-                    band = obs_match['band']
-                    spaxel = obs_match['spaxel']
-                    if target_type not in target_types:
-                        continue
-                    if star_list is not None:
-                        if target_star not in star_list:
-                            logging.warning(f'Skip star {target_star}')
-                            continue
-                    if star_catalogue is not None:
-                        if target_star not in star_catalogue['name']:
-                            logging.warning(f'Skip star {target_star}, missed in the catalogue.')
-                            continue
-                        star_info = star_catalogue[star_catalogue['name']==target_star]
-                    logging.info(f'Working on {target_star} on {obs_date} with {band}+{spaxel}')
-                            
-                    if target_type == 'CALIBPSF':
-                        ob_exp_list = glob.glob(obs_dir+'/eris_ifu_stdstar_psf_cube_[0-9]*.fits')
-                    elif target_type == 'CALIBSTD':
-                        ob_exp_list = glob.glob(obs_dir+'/eris_ifu_stdstar_std_cube_[0-9]*.fits')
-                    if len(ob_exp_list) > 2:
-                        print('Find more than one star datacube. Please check!')
-                        print(ob_exp_list)
-                    for starfile in ob_exp_list:
-                        star_list.append(starfile)
+
     for starfile in star_list:
         # read the star fits to get the airmass
         print("Working on: {}".format(starfile))
@@ -1636,27 +2075,38 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
             airmass_end = star_header['HIERARCH ESO TEL AIRM END']
             star_airmass = np.mean([airmass_start, airmass_end])
             star_order = starfile[-8:-5]
-
-        star_info = star_catalogue[star_catalogue['name']==target_star]
+        if 'K' in band: band_2mass = 'Ks'; band_starMag = 'Kmag'
+        elif 'J' in band: band_2mass = 'J'; band_starMag = 'Jmag'
+        elif 'H' in band: band_2mass = 'H'; band_starMag = 'Hmag'
+        print('Name', target_star)
+        if star_catalogue is not None:
+            star_info = star_catalogue[star_catalogue['name']==target_star]
+            magnitude_2mass = star_info[band_2mass]
+        else:
+            star_info = query_star_VizieR(name=target_star)
+            magnitude_2mass = star_info[band_starMag][0]
+            star_type = star_info['type'][0]
+            T_star = guess_star_temperature(star_type)
+            print(f'star_type={star_type}, T_star={T_star}, {band} Magnitude:{magnitude_2mass}')
         if len(star_info) < 1:
             logging.warning(f'No info found for star {target_star}')
             continue
         star_basenname = f'{target_star}_{tpl_start}_{band}_{spaxel}_airmass{star_airmass:.2f}'
         star_plotfile = os.path.join(outdir, star_basenname+'_qa.pdf')
         star_pdf_plotfile = PdfPages(star_plotfile)
-        wave_extract, spec_extract = fit_star(starfile, extract_spectrum=True, 
-                                              plot=True, plotfile=star_pdf_plotfile) 
-        if 'K' in band: band_2mass = 'Ks'
-        elif 'J' in band: band_2mass = 'J'
-        elif 'H' in band: band_2mass = 'H'
-        try:
+        # wave_extract, spec_extract = fit_star(starfile, extract_spectrum=True, 
+                                              # plot=True, plotfile=star_pdf_plotfile) 
+        wave_extract, spec_extract = extract_star(starfile, plotfile=star_pdf_plotfile,
+                                                  plot=True)
+        # try:
+        if True:
             zero_point, transmission_normed, correction = get_corrections(
-                    wave_extract, spec_extract, T_star=star_info['T'], band_2mass=band_2mass, 
-                    magnitude_2mass=star_info[band_2mass][0], static_datadir=static_datadir,
+                    wave_extract, spec_extract, T_star=T_star, band_2mass=band_2mass, 
+                    magnitude_2mass=magnitude_2mass, static_datadir=static_datadir,
                     plot=True, plotfile=star_pdf_plotfile)
-        except:
-            print(f"Errors in getting the correction for star {target_star}")
-            continue
+        # except:
+            # print(f"Errors in getting the correction for star {target_star}")
+            # continue
         # save the transmission and zero_point as fits file
         if True:
             star_corr_file = os.path.join(outdir, star_basenname+f'_zp{zero_point.value*1e16:.2f}.fits')
@@ -1755,7 +2205,8 @@ def auto_spec_correction(fitslist, correction_dir, outdir=None):
         correct_cube = correct_cube(fitsfile, correction=fits_corr, outdir=None)
         fitslist_corrected.append(correct_cube)
 
-def correct_cube(fitscube, wavelength=None, transmission=None, zp=None, correction=None, 
+def correct_cube(fitscube, wavelength=None, transmission=None, zp=None, 
+                 correction=None, 
                  suffix='corrected', exptime=None, outdir=None):
     """correct the flux the cube
 
@@ -2626,17 +3077,24 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
             target_type_list = []
     else:
         target_type_list = ['SCIENCE','CALIBPSF','CALIBSTD', 'CALIB']
-    dates = os.listdir(datadir)
+    dates = []
+    for sub_dir in os.listdir(datadir):
+        if date_matcher.match(sub_dir):
+            dates.append(sub_dir)
     image_list = []
     image_exp_list = []
     image_arcname_list = []
-    for date in dates:
-        if not date_matcher.match(date):
-            continue
-        for obs in os.listdir(os.path.join(datadir, date)):
+    if len(dates) > 0:
+        datadir_with_dates = []
+        for date in dates:
+            datadir_with_dates.append(os.path.join(datadir, date))
+    else:
+        datadir_with_dates = [datadir]
+    for data_folder in datadir_with_dates:
+        for obs in os.listdir(data_folder):
             obs_match = match_obs_folder(obs)
             if obs_match is not None:
-                obs_dir = os.path.join(datadir, date, obs)
+                obs_dir = os.path.join(data_folder, obs)
                 ob_target, ob_id = obs_match['target'], obs_match['id']
                 ob_target_type = obs_match['target_type']
                 if ob_list is not None:
@@ -2735,7 +3193,7 @@ def summarise_eso_files(filelist, outfile=None):
 
 def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                       interactive=False, basename=None, outfile=None, plotfile=None,
-                      ):
+                      is_fitted=False, is_failed=False, fitted_dict={}):
     """two dimentional Gaussian fit
 
     """
@@ -2759,6 +3217,18 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         ndim = data.ndim
         exptime = header['EXPTIME']
         arcfile = header['ARCFILE']
+        nchan, ny, nx = data.shape
+    # set up the default values
+    slider_kwargs = {
+            'channel_range':{'default':[0,nchan], 'range':[0, nchan]},
+            'color_scale':{'default':[5,95], 'range':[0, 100]},
+            'x': {'default':32, 'range':[0, 64]},
+            'y': {'default':32, 'range':[0, 64]}
+            }
+    # reset the default value to the fitted values
+    for key, value in fitted_dict.items():
+        slider_kwargs[key]['default'] = value
+
     if True:
         wavelength = get_wavelength(header=data_header)
         # collapse the cube to make map
@@ -2766,7 +3236,6 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
             warnings.simplefilter('ignore', AstropyWarning)
             data = astro_stats.sigma_clip(data, sigma=5, axis=0).filled(0)
         # data = ndimage.median_filter(data, size=20, axes=0)
-        nchan, ny, nx = data.shape
 
         # get the initial image
         image = image_func(data)
@@ -2776,23 +3245,13 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
             # vmax, vmin = -1.*vmin, vmax
             # data = -1.*data
             # image = -1.*image
-
-        fit_image = fit_gaussian_2d(image, return_fitimage=True)
-        residual_image = image - fit_image
     if True: # make a interative fit
         # prepare the ajustable parameters for the interactive window
-        from matplotlib.widgets import Slider, RangeSlider, Button
+        from matplotlib.widgets import Slider, RangeSlider, Button, CheckButtons
         image_kwargs = {}
         slider_height=0.1
-        slider_kwargs = {
-                'channel_range':{'default':[0,nchan], 'range':[0, nchan]},
-                'color_scale':{'default':[5,95], 'range':[0, 100]},
-                'x': {'default':32, 'range':[0, 64]},
-                'y': {'default':32, 'range':[0, 64]}
-                }
 
         fig = plt.figure(figsize=(12, 7))
-        
         # set the height of the sliders
         if slider_height == 'auto':
             nparam = len(slider_args)
@@ -2818,6 +3277,14 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
             args_default[key] = arg_default
             args_slider[key] = ax_slider
        
+        # make a first fit
+        kwargs = {}
+        for a in slider_kwargs.keys():
+            kwargs[a] = args_slider[a].val
+        fit_image = fit_gaussian_2d(image, x0=kwargs['x'], y0=kwargs['y'], 
+                                    return_fitimage=True)
+        residual_image = image - fit_image
+
         # plot the main figure
         ax_main = fig.add_axes([0.08, 0.1, 0.45, 0.85])
         line0, = ax_main.plot(32, 32, 'x', color='grey', alpha=0.6)
@@ -2856,8 +3323,17 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         # add the fit botton
         fit_botton = fig.add_axes([0.9, 0.1, 0.05, 0.04])
         button_fit = Button(fit_botton, 'Fit', hovercolor='0.975')
-        # accept_botton = fig.add_axes([0.9, 0.025, 0.05, 0.04])
-        # button_accept = Button(accept_botton, 'Accept', hovercolor='0.975')
+        # add check botton
+        check_botton1 = fig.add_axes([0.55, 0.1, 0.05, 0.04])
+        check_botton1.axis('off')
+        check_botton2 = fig.add_axes([0.6, 0.1, 0.05, 0.04])
+        check_botton2.axis('off')
+        button_isfitted = CheckButtons(check_botton1, labels=['Fitted?'])
+        button_isfailed = CheckButtons(check_botton2, labels=['Failed?'])
+        if is_fitted:
+            button_isfitted.set_active(0)
+        if is_failed:
+            button_isfailed.set_active(0)
         def fit_position(event):
             kwargs = {}
             for a in slider_kwargs.keys():
@@ -2878,9 +3354,18 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
         for a in slider_kwargs.keys():
             final_kwargs[a] = args_slider[a].val
         image = image_func(data, **final_kwargs)
-        best_fit = fit_gaussian_2d(image, x0=final_kwargs['x'], y0=final_kwargs['y'], 
-                                   basename=basename, plot=plot, plotfile=plotfile)
-        print("best_fit", best_fit)
+        if button_isfailed.get_status()[0]:
+            print("Fitting marked failed")
+            return -1
+        elif button_isfitted.get_status()[0]:
+            print("Fitting has already been done, skipping")
+            return 0
+        else:
+            best_fit = fit_gaussian_2d(image, x0=final_kwargs['x'], 
+                                       y0=final_kwargs['y'], 
+                                       basename=basename, plot=plot, 
+                                       plotfile=plotfile)
+            print("best_fit", best_fit)
         return best_fit
 
 def fit_gaussian_2d(image, amp=None, x0=None, y0=None, xsigma=None, ysigma=None,
@@ -2925,8 +3410,10 @@ def fit_gaussian_2d(image, amp=None, x0=None, y0=None, xsigma=None, ysigma=None,
 
     def _cost(params, xgrid, ygrid):
         # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/(rgrid**2+(5+rms)**2))
-    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), method='L-BFGS-B',
+        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid)
+                       )**2/(rgrid**2+(5+rms)**2))
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), 
+                                     method='L-BFGS-B',
                                      bounds=bounds)
     amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
     best_fit = [amp_fit*norm_scale, x0_fit+center_ref[0], y0_fit+center_ref[1], 
@@ -3226,8 +3713,15 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
         print("Nothing to return")
 
 def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite=True, 
-                      category='PSF_CALIBRATOR'):
-    # fit the PSF stars in the summary table
+                      fitcode=0, category='PSF_CALIBRATOR'):
+    """fit the PSF stars in the summary table
+
+    Args:
+        summary_table: the summary_table for each target
+        plotfile: the filename of the output plotfile
+        interactive: interactive fitting
+        mode: available modes: 'all', 'fitted', 'unfitted', 'failed'
+    """
     if isinstance(summary_table, str):
         writefile = summary_table
         summary_table = table.Table.read(summary_table, format='csv')
@@ -3239,23 +3733,49 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
         pdf_file = PdfPages(plotfile)
     else:
         pdf_file = None
+    if fitcode is None:
+        selection_idx = np.where(summary_table['catg'] == category)[0]
+    else:
+        selection_idx = np.where((summary_table['fitted']==fitcode) \
+                                 & (summary_table['catg'] == category))[0]
+    print('selection_idx', selection_idx)
+    for i in selection_idx:
+        item = summary_table[i]
+        is_fitted = 0
+        is_failed = 0
+        code_fit = item['fitted']
+        fitted_dict = {}
+        if code_fit < 0:
+            is_failed = 1
+        if code_fit > 0:
+            is_fitted = 1
+            fitted_dict = {'x':item['Xref'], 'y':item['Yref']}
+        print(f'Working on psf star: {item["ob_id"]}+{item["tpl_start"]}...')
+        # logging.info('Fitting star {}'.format(item[]))
+        if interactive:
+            fit_result = fit_star_position(item['filename'], plot=True, 
+                                           plotfile=pdf_file, 
+                                           is_fitted=is_fitted, is_failed=is_failed,
+                                           fitted_dict=fitted_dict)
+            if fit_result == -1: 
+                is_failed = 1
+            elif fit_result == 0:
+                continue
+            else: 
+                is_fitted = 1
+                _amp, xpix, ypix, _xsigma, _ysigma, _theta = fit_result
+        else:
+            _amp, xpix, ypix, _xsigma, _ysigma, _theta = \
+                    fit_star_position_legacy(item['filename'], interactive=False,
+                                      plot=True, plotfile=pdf_file)
+            is_fitted = True
+        if is_fitted:
+            item['Xref'] = xpix
+            item['Yref'] = ypix
+            item['fitted'] = 1
+        elif is_failed:
+            item['fitted'] = -1
 
-    for i,item in enumerate(summary_table):
-        if item['catg'] == category:
-            print(f'Working on psf star: {item["ob_id"]}+{item["tpl_start"]}...')
-            if not item['fitted']:
-                # logging.info('Fitting star {}'.format(item[]))
-                if interactive:
-                    _amp, xpix, ypix, _xsigma, _ysigma, _theta = \
-                            fit_star_position(item['filename'],
-                                              plot=True, plotfile=pdf_file)
-                else:
-                    _amp, xpix, ypix, _xsigma, _ysigma, _theta = \
-                            fit_star_position_legacy(item['filename'], interactive=False,
-                                              plot=True, plotfile=pdf_file)
-                item['Xref'] = xpix
-                item['Yref'] = ypix
-                item['fitted'] = True
     if plotfile is not None:
         pdf_file.close()
 
@@ -3267,7 +3787,8 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
     else:
         return summary_table
 
-def interpolate_drifts(summary_table, extrapolate=True, overwrite=True):
+def interpolate_drifts(summary_table, force=False, extrapolate=True, overwrite=True,
+                       use_model=True):
     """ derive the drift of the science exposures 
 
     """
@@ -3284,12 +3805,13 @@ def interpolate_drifts(summary_table, extrapolate=True, overwrite=True):
         # extrapolate the science scans with the two PSF stars
         group_select = summary_table['group_id'] == group_id
         group_obs = summary_table[group_select]
-        group_is_star = group_obs['is_star'].astype(bool)
+        group_is_star = (group_obs['is_star'].astype(bool)) & (group_obs['fitted']==1)
         # check if the group has already been interpolated
         group_is_interpolated = group_obs['interpolated'].astype(int)
-        if (group_is_interpolated > 0).all():
-            print("Skip group={}".format(group_id))
-            continue
+        if not force:
+            if (group_is_interpolated > 0).all():
+                print("Skip group={}".format(group_id))
+                continue
         if np.sum(group_is_star) >= 2:
             print('Extrapolating offsets for group={}'.format(group_id))
             obs_time_array = np.array(summary_table[group_select]['date_obs'], dtype='datetime64[s]')
@@ -3313,7 +3835,7 @@ def interpolate_drifts(summary_table, extrapolate=True, overwrite=True):
                                                             obs_delta_time[group_is_star], 
                                                             group_obs['Yref'][group_is_star],
                                                             right=32)
-        elif np.sum(group_is_star) == 1:
+        elif (np.sum(group_is_star) == 1) & use_model:
             print('Extrapolating offsets from existing model for group={}'.format(group_id))
             # print(group_obs[group_is_star]['Xref','Yref'])
             ref0_tab = group_obs[group_is_star]['Xref', 'Yref']

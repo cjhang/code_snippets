@@ -107,6 +107,7 @@ For detailed input parameters of other quick tools:
 
 A crucial step for 25mas observations is the correction for drifts. This step involves with some human intervention to derive the offset from the PSF stars. The following python code can be used to derive the drifts (taking d3a6004 clump-A as an example):
 
+```python
     from eris_jhchen_utils import search_archive, summarise_eso_files, construct_drift_file, fit_eris_psf_star, interpolate_drifts, quick_fix_nan
 
     target = 'd3a6004'
@@ -115,14 +116,68 @@ A crucial step for 25mas observations is the correction for drifts. This step in
     construct_drift_file(target_summary['tpl_start'], datadir='science_reduced', driftfile=target+'_clumpA_drifts.csv')
     fit_eris_psf_star(target+'_clumpA_drifts.csv', plotfile=target+'_clumpA_PSF.pdf', interactive=1)
     interpolate_drifts(target+'_clumpA_drifts.csv')
+```
 
 Then, the final "*_drift.csv" can be read by the `quick_combine` to properly account the drifts of the telescope (taking d3a6004 as an example).
 
-    eris_jhchen_utils.py quick_combine --datadir science_reduced --target d3a6004 --band K_middle --spaxel 25mas --outdir combined --suffix try1_withdrifts --drifts d3a6004_drifts.csv
+```python
+    from eris_jhchen_utils import quick_combine
+    quick_combine(datadir='science_reduced', target='d3a6004', sigma_clip=5, weak_signal=True, band='K_middle', spaxel='25mas', outdir='combined', suffix='try1_withdrifts', drifts='d3a6004_drifts.csv', z=2.3871)
+```
+
+Or, if you prefer command line tool:
+
+    eris_jhchen_utils.py quick_combine --datadir science_reduced --target d3a6004 --band K_middle --spaxel 25mas --outdir combined --suffix try1_withdrifts --z 2.3871 --drifts d3a6004_drifts.csv --weak_signal --sigma_clip 5
+
+Here, we adopted the options `--weak_signal`, `--sigma_clip` to clipping the bad channels and pixels. The redshift is also important to preserve the possible spectral lines.
 
 ## Flux calibration
 
-Coming later.
+Flux calibration normally needs more human intervention if the star is offset from the field center or the star is not typical B or G type stars.
+
+In normal situation, the flux calibration (zero point and transmission curve) can be quickly derived from the standard telluric stars using:
+
+```python
+    from eris_jhchen_utils import search_archive, get_telluric_calibration
+    
+    star_list, _, _ = search_archive('./science_reduced', band='K_short', spaxel='25mas', target_type='CALIBSTD')
+    get_telluric_calibration(star_list, datadir='science_reduced', outdir='spectral_correction')
+```
+
+Then, you can get the correction in fits format in the folder of `spectral_correction`. For each fits file, there is also a qa file for quality assessment.
+
+With the "*_qa.pdf", you can check the quality of the flux calibration. If more human interventions are needed. You can also break the task into individual steps:
+
+```python
+    from eris_jhchen_utils import extract_star, get_corrections
+    
+    # extract the spectrum from the standard star
+    starfile = '' # e.g. science_reduced/<date>/<name>_CALIBSTD_<OB-ID>_<TPL-start>_<band>_<spaxel>_<exptime>'
+    # then, you can specify all the paremters manually
+    star_name = 'HD 22586'
+    band_2mass = 'Ks' # possible are J, H, Ks
+    star_info = query_star_VizieR(star_name)
+    star_type = star_info['type'][0]
+    T_star = guess_star_temperature(star_type) # or manually
+    magnitude_2mass = star_info[band_2mass[0]+'mag'][0] # or manually
+    # all the above information can be also automatically generated with
+    # the function "read_starfile", check help(read_starfile)
+    # read_starfile(starfile)
+    wave, spec = extract_star(starfile, plot=True, sky_aperture=6)
+    zero_point, transmission_normed, correction = get_corrections(
+        wave, spec, T_star=T_star, band_2mass=band_2mass, 
+        magnitude_2mass=magnitude_2mass)
+```
+Check for each function, epecially `extract_star` to fine-tune the extraction aperture and apply the background subtraction.
+
+The "correction", other returned from the function `get_corrections` or the 'pdf' file in the directory of "spectral_correction", is the combined correction from zero_point and transmission. To correct the reduced science datacube, one only needs multiple the correction to the datacube:
+
+    data_corrected = correction[:,None,None] * data
+
+Or, to automatically aligned the spectral axis and apply the correction:
+
+    from eris_jhchen_utils import correct_cube
+    correct_cube(fitscube, correction, outdir='output')
 
 ## Preparing for the observing runs
 
