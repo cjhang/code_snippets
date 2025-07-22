@@ -141,7 +141,7 @@ In normal situation, the flux calibration (zero point and transmission curve) ca
     from eris_jhchen_utils import search_archive, get_telluric_calibration
     
     star_list, _, _ = search_archive('./science_reduced', band='K_short', spaxel='25mas', target_type='CALIBSTD')
-    get_telluric_calibration(star_list, datadir='science_reduced', outdir='spectral_correction')
+    get_telluric_calibration(star_list, outdir='spectral_correction')
 ```
 
 Then, you can get the correction in fits format in the folder of `spectral_correction`. For each fits file, there is also a qa file for quality assessment.

@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.19'
+__version__ = '0.8.20'
 
 # import the standard libraries
 import os 
@@ -48,7 +48,7 @@ from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy import stats as astro_stats
 from astropy.modeling import models
-from astropy.convolution import convolve, Gaussian2DKernel
+from astropy.convolution import convolve, Gaussian2DKernel, Gaussian1DKernel
 from astropy.coordinates import SkyCoord
 from astroquery.eso import Eso
 from astroquery.vizier import Vizier 
@@ -1230,12 +1230,16 @@ def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec,
     vizier = Vizier()
 
     if name is not None:
-        simbad_tab = Simbad.query_object(name)
-        ra_string, dec_string = simbad_tab['RA','DEC'][0]
-        named_skycoord = SkyCoord(ra_string, dec_string, unit=(u.hourangle, u.deg))
-        ra = named_skycoord.ra.to(u.deg).value
-        dec = named_skycoord.dec.to(u.deg).value
-        tablist = vizier.query_object(name, catalog=[hip_catalog, gaia_dr3_catalog, twomass_catalog], radius=radius)
+        try:
+            simbad_tab = Simbad.query_object(name)
+            ra_string, dec_string = simbad_tab['RA','DEC'][0]
+            named_skycoord = SkyCoord(ra_string, dec_string, unit=(u.hourangle, u.deg))
+            ra = named_skycoord.ra.to(u.deg).value
+            dec = named_skycoord.dec.to(u.deg).value
+            tablist = vizier.query_object(name, catalog=[hip_catalog, gaia_dr3_catalog, twomass_catalog], radius=radius)
+        except:
+            print(f"Error: cannot matched the star {name} with Vizier!")
+            return None
         if hip_catalog in tablist.keys():
             print("Matching HD_catalog")
             hip_matched = tablist[hip_catalog]
@@ -1379,14 +1383,20 @@ def guess_star_temperature(star_type, debug=False):
                           'G7': {'I': 4956., 'V': 5650.},
                           'G8': {'I': 4950, 'V': 5500.},
                           }
-    dist_roman = {'I':1,'Ia':1,'Iab':1,'Ib':1,'I/II':1.5,'II':2,'II/III':2.5,
-                  'III':3,'III/IV':3.5,'IV':4,'V':5}
-    star_type_matcher = re.compile('(?P<group>[G,B]+)(?P<dist>[\d\/]+)\s*(?P<stage>[\/IVab]+)')
-    star_classified = star_type_matcher.match(star_type).groupdict()
-    star_group = star_classified['group']
-    star_dist = eval(star_classified['dist'])
-    star_stage = dist_roman[star_classified['stage']]
+    dist_roman = {'I':1,'Ia':1,'IA':1,'Iab':1,'IAB':1,'Iab/b':1,'IAB/B':1,'Ib':1,'IB':1,
+                  'I/II':1.5, 'I-II':1/5,'II':2,'II/III':2.5, 'II-III':2.5, 
+                  'III':3,'III/IV':3.5, 'III-IV':3.5,
+                  'IV':4, 'IV/V':4.5,'IV-V':4.5,'V':5,}
+    try:
+        star_type_matcher = re.compile('(?P<group>[G,B]+)(?P<dist>[\d\/]+)\s*(?P<stage>[\/IVabAB-]+)')
+        star_classified = star_type_matcher.match(star_type).groupdict()
+        star_group = star_classified['group']
+        star_dist = eval(star_classified['dist'])
+        star_stage = dist_roman[star_classified['stage']]
+    except:
+        return None
     if debug:
+        print(star_classified)
         print(f'star is type:{star_group}, dist:{star_dist}, stage:{star_stage}')
     if star_group == 'B':
         type_grid_temperature = B_type_temperature
@@ -1706,8 +1716,8 @@ def fit_star(starfits, x0=None, y0=None, pixel_size=1,
 
 def extract_star(starfits, x0=None, y0=None, pixel_size=1, 
                  plot=False, plotfile=None, mode='fit',
-                 sky_aperture=5, subtract_background=True, 
-                 interactive=False, 
+                 sky_aperture=6, subtract_background=True, 
+                 interactive=False, max_step=100, 
                  outfile=None, negative_signal=False):
     # read the fits file
     with fits.open(starfits) as hdu:
@@ -1758,11 +1768,31 @@ def extract_star(starfits, x0=None, y0=None, pixel_size=1,
         gaussian_fit = fit_gaussian_2d(image, x0=x0, y0=y0)
         sigma_fit = 0.5*(gaussian_fit[3]+gaussian_fit[4]) # average
         xref, yref = gaussian_fit[1], gaussian_fit[2]
+    
     if subtract_background: # background subtraction
-        r_boundary = np.sqrt(8*np.log(2)) * sigma_fit * sky_aperture
+        # get an initial estimate of aperture
+        r_background = np.sqrt(8*np.log(2)) * sigma_fit * sky_aperture
         xgrid, ygrid = np.meshgrid((np.arange(0, xshape)),
                                    (np.arange(0, yshape)))
-        sky_mask = ((xgrid - xref)**2 + (ygrid - yref)**2) < r_boundary**2
+        r_start = r_background
+        step = 0
+        while step < max_step:
+            sky_mask = ((xgrid - xref)**2 + (ygrid - yref)**2) < r_background**2
+            image_median = np.ma.median(astro_stats.sigma_clip(
+                    image[sky_mask], sigma=3))
+            flux_total = np.sum(image - image_median)
+            phot_table, flux_max, flux_max_r = curvegrowth_photometry(
+                    image-image_median, [1,1,0], center=[xref, yref], 
+                    step=0.5, tolerence=0.01)
+            if np.abs(flux_total - flux_max) < 0.01*flux_max:
+                break
+            if r_background > 0.25*(xshape+yshape):
+                break
+            r_background += 0.5
+            step += 1
+        extract_radius = flux_max_r
+        # treat the radius > extract_radius as the background
+        sky_mask = ((xgrid - xref)**2 + (ygrid - yref)**2) < extract_radius**2
         image_median = np.ma.median(astro_stats.sigma_clip(
                 image[sky_mask], sigma=3))
         global_median = np.ma.median(astro_stats.sigma_clip(
@@ -1771,14 +1801,16 @@ def extract_star(starfits, x0=None, y0=None, pixel_size=1,
         print('Image median:', image_median)
         print('Global median:', global_median)
         aperture_bkg = EllipticalAperture([xref, yref], 
-                                          r_boundary, r_boundary, theta=0)
-        print(f'Background radius: {r_boundary}')
+                                          r_background, r_background, theta=0)
+        print(f'Background radius: from {r_start} to {r_background}')
+ 
+        print(f'Max flux radius: {flux_max_r}')
+        print(f'Max flux: {flux_max}')
+   
     else:
         image_median = 0.
         global_median = 0.
 
-    # define the extraction aperture
-    if True:# curve_of_growth flux measurement
         phot_table, flux_max, flux_max_r = curvegrowth_photometry(
                 image-image_median, [1,1,0], center=[xref, yref], 
                 step=0.5, tolerence=0.01)
@@ -1791,7 +1823,8 @@ def extract_star(starfits, x0=None, y0=None, pixel_size=1,
                                       extract_radius, extract_radius, theta=0)
         aper_mask = aperture.to_mask().to_image([xshape, yshape]).astype(bool)
         aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
-        data_selected = (data-global_median)[aper_mask_3D]
+        # data_selected = (data-global_median)[aper_mask_3D]
+        data_selected = data[aper_mask_3D]
         spectrum = np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
         spectrum = spectrum / exptime # units in adu/second
         output = spectrum
@@ -1811,7 +1844,7 @@ def extract_star(starfits, x0=None, y0=None, pixel_size=1,
         if aperture is not None:
             aperture.plot(ax=ax1, color='tab:cyan')
         if subtract_background:
-            ax2.vlines(x=r_boundary, ymin=0, ymax=flux_max, color='grey')
+            ax2.vlines(x=r_background, ymin=0, ymax=flux_max, color='grey')
             aperture_bkg.plot(ax=ax1, color='grey')
         if True: # plot extracted spectrum
             ax4 = fig.add_subplot(gs[1,:])
@@ -1830,7 +1863,6 @@ def extract_star(starfits, x0=None, y0=None, pixel_size=1,
         np.savetxt(outfile, np.vstack([wavelength, output]).T, delimiter=',')
     else:
         return wavelength, spectrum
-
 
 def scale_blackbody(blackbody_func, band, magnitude, filter_file):
     """scale the blackbody function to the correct flux values
@@ -1905,25 +1937,64 @@ def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2ma
 
     if plot:
         fig, ax = plt.subplots(1,2, figsize=(12,4))
-    for line in obsorption_lines:
-        if (wavelength[0] < line) & (wavelength[-1]>line):
-            line_mask = (wavelength > line - line_width) & (wavelength < line + line_width)
-            spec_select = spec_corrected[line_mask]
-            cont_line = np.median(spec_select)
-            amp_absorb = np.min(spec_select) - cont_line
-            line_model = models.Lorentz1D(amplitude=amp_absorb, x_0=line, fwhm=dwave[0]) + models.Linear1D(slope=0, intercept=cont_line)
-            line_fit = fitting.LevMarLSQFitter()
-            line_fitted = line_fit(line_model, wavelength[line_mask], spec_select)
-            if plot:
-                ax[0].plot(wavelength, spectrum)
-                ax[0].plot(wavelength[line_mask], line_fitted(wavelength[line_mask]), label='fitted stellar obsorption line')
-                ax[0].legend()
-            absorb_line = models.Lorentz1D(amplitude=line_fitted.amplitude_0, x_0=line_fitted.x_0_0, 
-                                           fwhm=line_fitted.fwhm_0)
-            spec_corrected[line_mask] = spec_corrected[line_mask] - absorb_line(wavelength[line_mask])
-            if plot:
-                ax[0].plot(wavelength[line_mask], absorb_line(wavelength[line_mask]), 'r')
 
+    if T_star < 6000: # then it is G type star,
+        # we need to read the G-type spectrum to get all the obsorption lines
+        if static_datadir is None:
+            static_datadir = os.path.join(
+                    os.path.dirname(os.path.realpath(__file__)), 'static_data')
+        with fits.open(os.path.join(static_datadir, f'SOL_{band_2mass[0]}.fits')) as hdu:
+            header = hdu[0].header
+            G_spec = hdu[0].data
+            G_wave = (header['CRVAL1'] + (np.arange(1, header['NAXIS1']+1)-header['CRPIX1']) * header['CDELT1']) * 1e-4 # change to um
+        # downgrade the spectral resolution
+        d_G_wave = G_wave[1]- G_wave[0]
+        # print(f'dwave:{wavelength[0]/dwave[0]}; d_G_wave:{wavelength[0]/d_G_wave}')
+        Rin = np.median(wavelength/dwave)
+        # print(f'Rin: {Rin}')
+        # print('G_wave', G_wave)
+        sigma_in  = np.nanmean(G_wave)/40000. / 2.355 / d_G_wave
+        sigma_out = np.nanmean(G_wave)/Rin / 2.355 / d_G_wave
+        # print('sigma_in out:', sigma_in, sigma_out)
+        sigma_match = np.sqrt(sigma_out**2 - sigma_in**2)
+        # print(f'sigma_match: {sigma_match}')
+        gauss_kernel = Gaussian1DKernel(stddev=sigma_match)
+        G_spec_convolved = convolve(G_spec, gauss_kernel)
+        G_spec = G_spec_convolved
+        # extrapolate the high-resolution spectrum to the observed wavelengths
+        cspl_interp = interpolate.CubicSpline(G_wave, G_spec_convolved) # cubic interpolation
+        G_spec_obs = cspl_interp(wavelength)
+        spec_corrected_G = spec_corrected/G_spec_obs
+        if plot:
+            ax[0].plot(wavelength, spec_corrected, label='origin spectrum', alpha=0.8)
+            ax[0].plot(wavelength, spec_corrected_G, 
+                       label='corrected for G-type absorptions', alpha=0.8)
+            ax[0].plot(wavelength, G_spec_obs*np.median(spec_corrected), color='grey', alpha=0.8, label='G type absorptions')
+            ax[0].legend(loc=2)
+        # assign the G-type corrected to spec_corrected
+        spec_corrected = spec_corrected_G
+    elif (T_star > 10000) & (T_star < 30000):
+        for line in obsorption_lines:
+            if (wavelength[0] < line) & (wavelength[-1]>line):
+                line_mask = (wavelength > line - line_width) & (wavelength < line + line_width)
+                spec_select = spec_corrected[line_mask]
+                cont_line = np.median(spec_select)
+                amp_absorb = np.min(spec_select) - cont_line
+                line_model = models.Lorentz1D(amplitude=amp_absorb, x_0=line, fwhm=dwave[0]) + models.Linear1D(slope=0, intercept=cont_line)
+                line_fit = fitting.LevMarLSQFitter()
+                line_fitted = line_fit(line_model, wavelength[line_mask], spec_select)
+                if plot:
+                    ax[0].plot(wavelength, spectrum)
+                    ax[0].plot(wavelength[line_mask], line_fitted(wavelength[line_mask]), 
+                               'r', label='fitted stellar obsorption line')
+                    ax[0].legend(loc=1)
+                absorb_line = models.Lorentz1D(amplitude=line_fitted.amplitude_0, x_0=line_fitted.x_0_0, 
+                                               fwhm=line_fitted.fwhm_0)
+                spec_corrected[line_mask] = spec_corrected[line_mask] - absorb_line(wavelength[line_mask])
+                if plot:
+                    ax[0].plot(wavelength[line_mask], absorb_line(wavelength[line_mask]), 'r')
+    else:
+        raise ValueError("Failed to correct the star obsorption lines! Unkown star!")
     blackbody_star = models.BlackBody(temperature=T_star*u.K, 
                                       scale=1.0*u.W/u.m**2/u.um/u.sr)
     transmission = spec_corrected/blackbody_star(wavelength*u.um) #* bb_zero_point)
@@ -1939,8 +2010,10 @@ def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2ma
     # mask the abnormal corrections with sigma_clip
     correction = astro_stats.sigma_clip(correction, sigma=10).filled(np.ma.median(correction))
     if plot:
-        ax[1].plot(wavelength, transmission_normed, label='normalised transmission')
-        ax[1].plot(wavelength, zero_point/correction, 'r', alpha=0.5,)
+        ax[1].plot(wavelength, transmission_normed, label='normalised transmission',
+                   alpha=0.5)
+        ax[1].plot(wavelength, zero_point/correction, 'r', alpha=0.5, 
+                   label='zero_point/correction')
         ax[1].text(.8,.05, f'zp={zero_point.value:.3e}', horizontalalignment='center', 
                    transform=ax[1].transAxes, fontsize=10)
         ax[1].legend(loc=1)
@@ -1950,7 +2023,7 @@ def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2ma
             plotfile.savefig(fig, bbox_inches='tight')
             plt.close(fig)
         else:
-            plt.show(fig)
+            plt.show()
 
     if outfile is not None:
         # save the transmission and zero_point
@@ -2029,6 +2102,7 @@ def read_starfile(starfile, star_catalogue=None,):
 
 def get_telluric_calibration(star_list=None, star_catalogue=None,
                              datadir='science_reduced', outdir='spectral_corrections', 
+                             summary_file='None',
                              target_types=['CALIBSTD'],# also 'CALIBPSF'
                              static_datadir=None,
                              plot=True,
@@ -2036,6 +2110,11 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
                              debug=False, dry_run=False):
     """derive the flux and transmission corrections from the standard telluric stars
     """
+
+
+    summary_tab = table.Table(
+            names=('name','night', 'type', 'pixelscale', 'filter', 'zeropoint', 'filename'), 
+            dtype=('S8','S8','S8','S8','S8','f8','S8'))
     if static_datadir is None:
         try:
             static_datadir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'static_data')
@@ -2084,10 +2163,16 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
             magnitude_2mass = star_info[band_2mass]
         else:
             star_info = query_star_VizieR(name=target_star)
+            if star_info is None:
+                print(f"Warning: failed in matching the star, faied on {target_star}!")
+                continue
             magnitude_2mass = star_info[band_starMag][0]
             star_type = star_info['type'][0]
             T_star = guess_star_temperature(star_type)
             print(f'star_type={star_type}, T_star={T_star}, {band} Magnitude:{magnitude_2mass}')
+            if T_star is None:
+                print(f"Warning: failed in interpreting the temperature of the star, faied on {starfile}")
+                continue
         if len(star_info) < 1:
             logging.warning(f'No info found for star {target_star}')
             continue
@@ -2107,7 +2192,6 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
         # except:
             # print(f"Errors in getting the correction for star {target_star}")
             # continue
-        # save the transmission and zero_point as fits file
         if True:
             star_corr_file = os.path.join(outdir, star_basenname+f'_zp{zero_point.value*1e16:.2f}.fits')
             header = fits.Header()
@@ -2125,6 +2209,11 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
             hdul = fits.HDUList([primary_hdu, bintable_hdu])
             hdul.writeto(star_corr_file, overwrite=True)
         star_pdf_plotfile.close()
+
+        # save into summary file
+        summary_tab.add_row([target_star, tpl_start, star_type, spaxel, band, zero_point, star_corr_file])
+    if summary_file is not None:
+        summary_tab.write(summary_file, format='csv', overwrite=overwrite)
 
 def match_telluric_corrections(name):
     """match the corrections for each observation
