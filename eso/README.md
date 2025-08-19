@@ -144,6 +144,11 @@ In normal situation, the flux calibration (zero point and transmission curve) ca
     get_telluric_calibration(star_list, outdir='spectral_correction')
 ```
 
+Or, in command line tool for individual files and for the whole reduced data directory:
+
+    eris_jhchen_utils.py get_telluric_calibration -f starfile1 starfile2
+    eris_jhchen_utils.py get_telluric_calibration -d ./science_reduced
+
 Then, you can get the correction in fits format in the folder of `spectral_correction`. For each fits file, there is also a qa file for quality assessment.
 
 With the "*_qa.pdf", you can check the quality of the flux calibration. If more human interventions are needed. You can also break the task into individual steps:

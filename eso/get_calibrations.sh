@@ -11,12 +11,12 @@
 # 
 # options:
 #   -h, --help            show this help message and exit
-#   -d DATE, --date DATE  Observing date
-#   -b BAND, --band BAND  Observation band
-#   -s SPAXEL, --spaxel SPAXEL
-#                         Pixel size
+#   -d DATE, --date DATE  Observing date, in the format of 2023-04-09
+#   -b BAND, --band BAND  Observation band, such as: K_low, K_middle, J_long
+#    -s SPAXEL, --spaxel SPAXEL
+#                         Pixel size, such as: 25mas, 100mas, 150mas
 #   -e EXPTIME, --exptime EXPTIME
-#                         Exposure time
+#                         Exposure time, such as: 30, 600
 #   --outdir OUTDIR       Output directory, default ./
 #   --static_pool STATIC_POOL
 #                         Static calibration pool directory

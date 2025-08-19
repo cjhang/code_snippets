@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.20'
+__version__ = '0.8.21'
 
 # import the standard libraries
 import os 
@@ -1214,7 +1214,7 @@ def query_star_Telluric(name,):
     return None
 
 def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec, 
-                      gaia_radius=1*u.arcsec, twomass_radius=5*u.arcsec):
+                      gaia_radius=1*u.arcsec, twomass_radius=5*u.arcsec, debug=False):
     """get the star info from VizieR database
 
     """
@@ -1236,19 +1236,26 @@ def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec,
             named_skycoord = SkyCoord(ra_string, dec_string, unit=(u.hourangle, u.deg))
             ra = named_skycoord.ra.to(u.deg).value
             dec = named_skycoord.dec.to(u.deg).value
-            tablist = vizier.query_object(name, catalog=[hip_catalog, gaia_dr3_catalog, twomass_catalog], radius=radius)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore')
+                tablist = vizier.query_object(name, catalog=[hip_catalog, 
+                                                             gaia_dr3_catalog,
+                                                             twomass_catalog],
+                                              radius=radius)
         except:
             print(f"Error: cannot matched the star {name} with Vizier!")
             return None
         if hip_catalog in tablist.keys():
-            print("Matching HD_catalog")
+            if debug:
+                print("Matching HD_catalog")
             hip_matched = tablist[hip_catalog]
             star_type = hip_matched['SpType'][0]
             # star_type = HD_matched['SpT'][0]
         else:
             star_type = 'none'
         if gaia_dr3_catalog in tablist.keys():
-            print("Matching gaia catalog")
+            if debug:
+                print("Matching gaia catalog")
             matched = tablist[gaia_dr3_catalog]
             if len(matched) > 1:
                 # select the closest
@@ -1263,7 +1270,8 @@ def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec,
             gaia_dec = gaia_matched['DE_ICRS']
 
         if twomass_catalog in tablist.keys():
-            print("Matching twomass catalog")
+            if debug:
+                print("Matching twomass catalog")
             matched = tablist[twomass_catalog]
             if len(matched) > 1:
                 # select the closest
@@ -2102,7 +2110,7 @@ def read_starfile(starfile, star_catalogue=None,):
 
 def get_telluric_calibration(star_list=None, star_catalogue=None,
                              datadir='science_reduced', outdir='spectral_corrections', 
-                             summary_file='None',
+                             summary_file=None,
                              target_types=['CALIBSTD'],# also 'CALIBPSF'
                              static_datadir=None,
                              plot=True,
@@ -2142,7 +2150,7 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
 
     for starfile in star_list:
         # read the star fits to get the airmass
-        print("Working on: {}".format(starfile))
+        print(">>get_telluric_calibration>\nWorking on: {}".format(starfile))
         with fits.open(starfile) as hdu:
             star_header = hdu[0].header
             target_star = star_header['HIERARCH ESO OBS TARG NAME']
@@ -5063,23 +5071,19 @@ if __name__ == '__main__':
             ---------------------------------------
             example:
             
-              # get calibration files from the folder
-              eris_jhchen_utils get_telluric_calibration --datadir science_reduced --outdir cube_corrections --star_catalogue star_catalogue.csv
+              # get calibration files for all the stars in the folder
+              eris_jhchen_utils get_telluric_calibration --d science_reduced
 
               # get calibration files from a list of stars
-              eris_jhchen_utils get_telluric_calibration --star_list file1 file2 --outdir cube_corrections --star_catalogue star_catalogue.csv
+              eris_jhchen_utils get_telluric_calibration --f file1 file2 
 
                                         '''))
-    subp_get_flux_calibration.add_argument('--star_list', type=str, nargs='+', 
-                                           help='a list of star fitsfile')
-    subp_get_flux_calibration.add_argument('--star_list_file', type=str,
-                                           help='a file includes a list of star fitsfile')
-    subp_get_flux_calibration.add_argument('--datadir', help='reduced star files')
-    subp_get_flux_calibration.add_argument('--outdir', help='output directory')
-    subp_get_flux_calibration.add_argument('--star_catalogue', help='the catalogue file of stars')
-    subp_get_flux_calibration.add_argument('--plotfile', help='the plotfile for quick check')
-    subp_get_flux_calibration.add_argument('--static_datadir', default=static_datadir,
-                                           help='the directory for some static data (such as filters)')
+    subp_get_flux_calibration.add_argument('--file_list', '-f', type=str, nargs='+', 
+                                           help='the fits file of the star')
+    subp_get_flux_calibration.add_argument('--datadir', '-d', default=None, 
+                                           help='the output directory')
+    subp_get_flux_calibration.add_argument('--outdir', default='spectral_corrections', 
+                                           help='the output directory')
 
     ################################################
     # get_daily_calib
@@ -5310,14 +5314,17 @@ if __name__ == '__main__':
         print(image_list)
 
     elif args.task == 'get_telluric_calibration':
-        if args.star_list_file is not None:
-            star_list = args.star_list_file
-        else:
-            star_list = args.star_list
-        get_telluric_calibration(star_list=star_list, 
-                                 datadir=args.datadir,
-                                 star_catalogue=args.star_catalogue, 
-                                 outdir=args.outdir, static_datadir=static_datadir)
+        get_telluric_calibration(star_list=args.file_list, outdir=args.outdir,
+                                 datadir=args.datadir)
+    # elif args.task == 'get_telluric_calibration':
+        # if args.star_list_file is not None:
+            # star_list = args.star_list_file
+        # else:
+            # star_list = args.star_list
+        # get_telluric_calibration(star_list=star_list, 
+                                 # datadir=args.datadir,
+                                 # star_catalogue=args.star_catalogue, 
+    #                              outdir=args.outdir, static_datadir=static_datadir)
 
     # the quick tools
     elif args.task == 'get_daily_calib':
