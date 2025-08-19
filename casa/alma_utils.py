@@ -33,7 +33,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Patch
 
-__version__ = '0.1.3'
+__version__ = '0.1.4'
 
 const_c = 2.99792458e5 # km/s
 
@@ -411,7 +411,40 @@ def mask_to_spwstring(mask):
                 selection_string += '{}~{};'.format(*pair)
     return selection_string.strip(';')
 
-def mask_channel(vis, frequencies=[], width=0.4,):
+def select_channels(vis, frequency_ranges=[], spw=None):
+    tb = table()
+    if spw is not None:
+        spw_list = spw.split(',')
+    else:
+        spw_list = None
+    spw_specrange = {}
+
+    frequency_ranges = np.array(frequency_ranges)
+    if frequency_ranges.ndim == 1:
+        frequency_ranges = frequency_ranges.reshape(1,2)
+
+    tb.open(vis + '/SPECTRAL_WINDOW')
+    col_names = tb.getvarcol('NAME')
+    col_freq = tb.getvarcol('CHAN_FREQ') # in units Hz
+    nwindows = len(col_freq)
+    tb.close()
+    selection_string = ''
+    for spw_name in col_names.keys():
+        if spw_list is not None:
+            if str(int(spw_name[1:])-1) not in spw_list:
+                continue
+        spw_freq = col_freq[spw_name].flatten()/1e9 # converted to GHz
+        freq_mask = np.full(len(spw_freq), fill_value=False)
+        for freq_range in frequency_ranges:
+            spw_channel = np.arange(len(spw_freq))
+            # get the masked channels
+            freq_mask = freq_mask | ((spw_freq>freq_range[0]) & (spw_freq<freq_range[1]))
+        spw_selection = mask_to_spwstring(~freq_mask)
+        if spw_selection != '':
+            selection_string += "{}:{},".format(int(spw_name[1:])-1, spw_selection)
+    return selection_string.strip(',')
+
+def mask_channel(vis, frequencies=[], width=0.4, spw=None):
     """mask the spectral channels to exclude spectral lines
 
     Args:
@@ -420,6 +453,10 @@ def mask_channel(vis, frequencies=[], width=0.4,):
         width: the line width in GHz
     """
     tb = table()
+    if spw is not None:
+        spw_list = spw.split(',')
+    else:
+        spw_list = None
     spw_specrange = {}
 
     tb.open(vis + '/SPECTRAL_WINDOW')
@@ -430,6 +467,9 @@ def mask_channel(vis, frequencies=[], width=0.4,):
 
     selection_string = ''
     for spw_name in col_names.keys():
+        if spw_list is not None:
+            if str(int(spw_name[1:])-1) not in spw_list:
+                continue
         spw_freq = col_freq[spw_name].flatten()/1e9 # converted to GHz
         freq_mask = np.full(len(spw_freq), fill_value=False)
         for freq in frequencies:
@@ -648,6 +688,30 @@ def read_baselines(vis, spw=None, field=None, cell=None, imsize=None,):
     uvdist = np.hypot(u, v)
     return uvdist[uvdist>1e-6] # return only valide baselines
 
+def read_refdir(vis, return_coord=False, debug=False):
+    """read the reference direction and return the standard direction string
+    """
+    if not has_astropy:
+        print("Please install astropy to use this function")
+        return 
+    tb = table()
+    tb.open(vis+'/FIELD')
+    reference_dir = tb.getcol('PHASE_DIR').flatten()
+    if len(reference_dir) > 2:
+        reference_dir = reference_dir.reshape(2, len(reference_dir)//2)
+    tb.close()
+    rad2deg = 180./np.pi
+    if debug:
+        print("reference_dir:", reference_dir, reference_dir.shape)
+    # if reference_dir
+    ref_coord = SkyCoord(reference_dir[0]*rad2deg, reference_dir[1]*rad2deg,
+                         unit='deg')
+    if return_coord:
+        return ref_coord
+    else:
+        direction = "J2000 " + ref_coord.to_string('hmsdms')
+    return direction
+
 ###########################################
 # imaging tools
 ####################
@@ -763,6 +827,7 @@ def quick_cube():
 # global variables
 # ALMA pipeline versions: https://almascience.nrao.edu/processing/science-pipeline
 ALMA_PIPELINEs = (
+    ['2024-09-30','2025-09-30',"6.6.1",'casa-6.6.1-17-pipeline-2024.1.0.8'],
     ['2023-09-30','2024-09-30',"6.5.4",'casa-6.5.4-9-pipeline-2023.1.0.124'],
     ['2022-09-26','2023-09-30',"6.4.1",'casa-6.4.1-12-pipeline-2022.2.0.68'],
     ['2021-05-01','2022-09-26',"6.2.1",'casa-6.2.1-7-pipeline-2021.2.0.128'],
@@ -996,7 +1061,7 @@ simalma(project='U4_20704_JWST_F277W', dry_run=False, skymodel='input.fits',
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
             usage='%(prog)s [options]',
-            prog='alma_pipeline.py',
+            prog='alma_utils.py',
             description=f"Welcome to jhchen's alma utilities {__version__}",
             epilog='Reports bugs and problems to cjhastro@gmail.com')
     parser.add_argument('--basedir', type=str, default='./',
@@ -1017,7 +1082,7 @@ if __name__ == '__main__':
             * info: generate the listobs file
 
           To get more details about each task:
-          $ alma_pipeline.py task_name --help
+          $ alma_utils.py task_name --help
         '''))
     
     ################################################
@@ -1029,7 +1094,7 @@ if __name__ == '__main__':
             --------------------------------------------------------
             Examples:
 
-              alma_pipeline.py run_pipeline -d '../raw/uid***.asdm.sdm' 
+              alma_utils.py run_pipeline -d '../raw/uid***.asdm.sdm' 
 
             '''))
     subp_run_pipeline.add_argument('-d', '--data', help='Raw data')
@@ -1048,7 +1113,7 @@ if __name__ == '__main__':
             --------------------------------------------------------
             Examples:
 
-              alma_pipeline.py restore_pipeline --project 2010.00001.S 
+              alma_utils.py restore_pipeline --project 2010.00001.S 
 
             '''))
     subp_restore_pipeline.add_argument('-p', '--project', help='Project directory')
@@ -1066,7 +1131,7 @@ if __name__ == '__main__':
             --------------------------------------------
             Examples:
 
-              alma_pipeline.py info --files *.ms 
+              alma_utils.py info --files *.ms 
 
             '''))
     subp_info.add_argument('-f', '--files', nargs='+', help='files, support widecard')

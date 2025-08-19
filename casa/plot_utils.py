@@ -358,6 +358,9 @@ def check_cal(vis='', spw='', refant='', ydatacolumn='corrected', basename=None,
         basename = os.path.basename(vis)
     outdir = os.path.join(plotdir, "checkcal-"+basename)
     os.system('mkdir -p {}'.format(outdir))
+    if ydatacolumn == 'corrected':
+        if 'CORRECTED_DATA' not in colnames:
+            raise ValueError('Did not find the corrected data columns!')
 
     tb = tbtool()
     if field == '':

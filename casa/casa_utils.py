@@ -16,29 +16,27 @@ from matplotlib import pyplot as plt
 
 version = '0.0.1'
 
-try:
-    import astropy
-    has_astropy = True
-except:
-    print("Warning: astropy is not found, many functions may not work")
-    has_astropy = False
-
+try: import astropy; has_astropy=True
+except: has_astropy=False
 
 # import tools from casa
 ## for casa 6
 try:
     from casatools import table as tbtool
+    from casatools import table
+    from casatools import msmetadata
     from casatasks import listobs, importasdm
+    has_casa6 = True
 except:
-    pass
+    has_casa6 = False
 
 ## for casa 5
 try:
     from importasdm import importasdm
     from listobs_cli import listobs_cli as listobs
+    has_casa5 = True
 except:
-    pass
-
+    has_casa5 = False
 
 
 ###########################################
@@ -94,30 +92,52 @@ def import_rawdata(rawdir='../raw', outdir='./', overwrite=False, **kwargs):
 ####################
 
 def search_fields(msfile):
-    try:
-        from casatools import msmetadata
-        msmd_local = msmetadata()
-    except:
+    """search for the fields with different usages
+
+    """
+    if not has_casa6:
         print("Failed: cannot import msmetadata from casatools!")
         return 0
+    search_dict = {'bcal':'*BANDPASS*',
+                   'gcal':'*PHASE*',
+                   'fcal':'*FLUX*',
+                   'pcal':'*POLARIZATION*'}
     fields = {}
-    msmd_local.open(msfile)
+    msmd.open(msfile)
     lookup = msmd.fieldnames()
-    fields['gcal'] = lookup[msmd.fieldsforintent('*PHASE*')[0]]
-    fields['bcal'] = lookup[msmd.fieldsforintent('*BANDPASS*')[0]]
-    fields['pcal'] = lookup[msmd.fieldsforintent('*POLARIZATION*')[0]]
-    fields['fcal'] = lookup[msmd.fieldsforintent('*FLUX*')[0]]
-    msmd_local.close()
+    for key,pattern in search_dict.items():
+        try:
+            fields[key] = lookup[msmd.fieldsforintent(pattern)[0]]
+        except:
+            fields[key] = None
+    msmd.close()
     return fields
 
 
+## helper function
+def check_data_columns(vis, debug=False):
+    #check which datacolumn to use
+    if has_casa6:
+        tb = table()
+    tb.open(vis)
+    colnames = tb.colnames()
+    tb.close()
+    if debug:
+        print(colnames)
+    cols = []
+    if 'CORRECTED_DATA' in colnames:
+      cols.append('corrected')
+    if 'DATA' in colnames:
+      cols.append('data')
+    if 'MODEL_DATA' in colnames:
+      cols.append('model')
+    return cols
 
 
 ###########################################
 # Table tools
 ####################
 
-from casatools import table, msmetadata
 
 def vis_jackknif(vis, copy=False, outdir=None):
     """make jackknifed image with only noise"""
@@ -169,17 +189,18 @@ def read_spwinfo(vis):
 
     return list(spw_specrange.values())
 
-def read_spw(vis, norm=1e9, spw_nchans=None, spw_desc='FULL_RES'):
+def read_spw(vis, norm=1e9, spw_nchans=None, spw_desc=None):
     """read the spw details
 
     Params:
         norm: the normalization factor, default is 1e9 converting the default Hz to GHz
+        spw_desc: for example using spw_desc='FULL_RES' to select full resolution windows
+                  from ALMA
     """
-    tb = table()
+    tb = tbtool()
     tb.open(os.path.join(vis + '/SPECTRAL_WINDOW'))
     col_names = tb.getvarcol('NAME')
     col_freq = tb.getvarcol('CHAN_FREQ')
-    col_spwIDs = tb.getvarcol('ASSOC_SPW_ID')
     tb.close()
     
     spw_dict = {}
@@ -190,9 +211,8 @@ def read_spw(vis, norm=1e9, spw_nchans=None, spw_desc='FULL_RES'):
         if spw_desc is not None:
             selected = selected & (spw_desc in col_names[key][0])
         if selected:
-            spw_id = col_spwIDs[key].flatten()[0] -1
             spw_freq = col_freq[key].flatten()/norm
-            spw_dict[spw_id] = spw_freq
+            spw_dict[key] = spw_freq
     return spw_dict
 
 def search_spw(spw_dict, freqs=[], mode='range'):
@@ -271,19 +291,6 @@ def read_intent(vis, unique=True):
         intents_valid = np.unique(intents_valid).tolist()
     return intents_valid
 
-
-def search_fields(msfile):
-    fields = {}
-    msmd.open(msfile)
-    lookup = msmd.fieldnames()
-    fields['gcal'] = lookup[msmd.fieldsforintent('*PHASE*')[0]]
-    fields['bcal'] = lookup[msmd.fieldsforintent('*BANDPASS*')[0]]
-    fields['pcal'] = lookup[msmd.fieldsforintent('*POLARIZATION*')[0]]
-    fields['fcal'] = lookup[msmd.fieldsforintent('*FLUX*')[0]]
-    fields['science'] = lookup[msmd.fieldsforintent('*TARGET*')[0]]
-    msmd.close()
-    return fields
-
 def flagchannels(vis):
     """this function used to generate the channels to be flagged
     Useful to flag the edge channels 
@@ -301,14 +308,11 @@ if has_astropy:
         tb.open(vis+'/FIELD')
         reference_dir = tb.getcol('REFERENCE_DIR').flatten()
         tb.close()
-        
         rad2deg = 180./np.pi
-        ref_coord = SkyCoord(reference_dir[0]*rad2deg, reference_dir[1]*rad2deg, 
-                                          unit="deg")
+        ref_coord = SkyCoord(reference_dir[0]*rad2deg, reference_dir[1]*rad2deg, unit='deg')
         direction = "J2000 " + ref_coord.to_string('hmsdms')
         if return_coord:
             return ref_coord
-
         return direction
 
 
