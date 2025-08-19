@@ -20,12 +20,12 @@ Todo:
     * For module TODOs
 
 History:
-    2022-02-16: first release to handle the datacube from ALMA
+    2022-02-16: first release to handle the datacube from ALMA, v0.1
 
 
 """
 
-__version__ = '0.0.1'
+__version__ = '0.1.2'
 
 
 import os
@@ -49,6 +49,7 @@ from astropy.wcs import utils as wcs_utils
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy import coordinates
 from astropy.stats import sigma_clipped_stats
+from astropy.convolution import convolve, Gaussian2DKernel
 
 # Filtering warnings
 from astropy.wcs import FITSFixedWarning
@@ -63,7 +64,7 @@ from photutils.detection import find_peaks
 from astropy.modeling import models, fitting
 
 # try to import other utils
-from spec_utils import convert_spec, Spectrum
+# from spec_utils import convert_spec, Spectrum
 
 ##############################
 ######### Cube ###############
@@ -92,7 +93,11 @@ class Cube(BaseCube):
             beams: the beam shapes the units of [arcsec, arcsec, deg]. 
                 It can be one dimension or two dimension (for each channel)
         """
-        self.data = data
+        if isinstance(data, u.Quantity):
+            self.data = data.data
+            unit = data.unit
+        else:
+            self.data = data
         self.mask = mask
         self.name = name
         self.reference = reference
@@ -139,6 +144,8 @@ class Cube(BaseCube):
             # return fullwcs.sub(['longitude','latitude','spectral'])
             # return fullwcs.sub(['longitude','latitude','cubeface'])
             return fullwcs.sub([1,2,3])
+        elif (fullwcs is not None) and (fullwcs.naxis == 3):
+            return fullwcs
         else:
             raise ValueError('Unsupprted wcs!')
         return fullwcs
@@ -157,8 +164,13 @@ class Cube(BaseCube):
         return u.Unit('')
     @unit.setter
     def unit(self, unit):
-        self._unit = u.Unit(unit)
-        self._header.update({'BUNIT': self._unit.to_string()})
+        if self.unit != u.Unit(''):
+            print('unit converting factor"', self.unit.to(unit))
+            self.data = self.data * self.unit.to(unit)
+            self._unit = u.Unit(unit)
+            self._header.update({'BUNIT': self._unit.to_string()})
+        else:
+            self._unit = u.Unit(unit)
     @property
     def cube(self):
         return self.data*self.unit
@@ -167,17 +179,7 @@ class Cube(BaseCube):
         if self._chandata is not None:
             return self._chandata
         else:
-            # read the chandata from the header
-            # the fits standard start with index 1
-            if 'CD3_3' in self.header.keys():
-                cdelt3 = self.header['CD3_3']
-            else: 
-                cdelt3 = self.header['CDELT3']
-            # because wcs.slice with change the reference channel, the generated ndarray should 
-            # start with 1 
-            chandata = (self.header['CRVAL3'] + (np.arange(1, self.header['NAXIS3']+1)-self.header['CRPIX3']) * cdelt3)
-            if 'CUNIT3' in self.header.keys():
-                chandata = chandata*u.Unit(self.header['CUNIT3'])
+            chandata = get_chandata(header=self.header)
             self._chandata = chandata
             return chandata
     @chandata.setter
@@ -224,19 +226,62 @@ class Cube(BaseCube):
         the units should be [arcsec, arcsec, degree]
         """
         self._beam = beam
-        header_beams = self.beam * np.array(1/3600., 1/3600, 1) # convert arcsec to deg
+        # convert arcsec to deg
+        header_beams = self.beam * np.array([1/3600., 1/3600, 1]) 
         self._header.update({'BMAJ':header_beams[0], 'BMIN':header_beams[1], 
-                             'PA':header_beams[2]})
+                             'BPA':header_beams[2]})
     @property
     def pixel_sizes(self):
         if self.header is not None:
             # Return the pixel size encoded in the header
             # In casa, it is in the units of deg, thus the returned value is pixel to deg
-            pixel2arcsec_ra = (abs(self.header['CDELT1'])*u.Unit(self.header['CUNIT1'])).to(u.arcsec).value
-            pixel2arcsec_dec = (abs(self.header['CDELT2'])*u.Unit(self.header['CUNIT2'])).to(u.arcsec).value
+            try:
+                delt_unit1 = u.Unit(self.header['CUNIT1'])
+            except:
+                delt_unit1 = u.deg
+
+            if 'CDELT1' in self.header:
+                pixel2arcsec_ra = (abs(self.header['CDELT1'])*delt_unit1).to(u.arcsec)
+            elif 'CD1_1' in self.header:
+                pixel2arcsec_ra = (abs(self.header['CD1_1'])*delt_unit1).to(u.arcsec)
+            else:
+                print("Don't find valid pixel size in ra")
+                pixel2arcsec_ra = 1
+            try:
+                delt_unit2 = u.Unit(self.header['CUNIT2'])
+            except:
+                delt_unit2 = u.deg
+            if 'CDELT2' in self.header:
+                pixel2arcsec_dec = (abs(self.header['CDELT2'])*delt_unit2).to(u.arcsec)
+            elif 'CD2_2' in self.header:
+                pixel2arcsec_dec = (abs(self.header['CD2_2'])*delt_unit2).to(u.arcsec)
+            else:
+                print("Don't find valid pixel size in dec")
+                pixel2arcsec_dec = 1
+
         else:
             pixel2arcsec_ra, pixel2arcsec_dec = 1, 1
-        return np.array([pixel2arcsec_ra, pixel2arcsec_dec])
+        # return np.array([pixel2arcsec_ra, pixel2arcsec_dec])
+        return u.Quantity([pixel2arcsec_ra, pixel2arcsec_dec])
+    @property
+    def pixel_beam(self):
+        if self.beam is None:
+            warnings.warn('No beam infomation has been found!')
+            return None
+        try:
+            bmaj, bmin, bpa = self.beam
+            pixel_sizes = self.pixel_sizes
+            x_scale = 1/pixel_sizes[0].to(u.arcsec).value
+            y_scale = 1/pixel_sizes[1].to(u.arcsec).value
+            bmaj_pixel = np.sqrt((bmaj*np.cos(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmaj*np.sin(bpa/180*np.pi)*y_scale)**2)
+            bmin_pixel = np.sqrt((bmin*np.sin(bpa/180*np.pi)*x_scale)**2 
+                                 + (bmin*np.cos(bpa/180*np.pi)*y_scale)**2)
+            pixel_beam = [bmaj_pixel, bmin_pixel, bpa]
+        except:
+            pixel_beam = None
+        return pixel_beam
+
     @property
     def shape(self):
         return self.data.shape
@@ -260,6 +305,8 @@ class Cube(BaseCube):
     def get_frequency(self, unit='GHz', reference=None):
         return convert_spec(self.chandata, unit)
     def get_velocity(self, unit='km/s', reference=None):
+        if reference is None:
+            reference = self.reference
         return convert_spec(self.chandata, unit, reference=reference)
     def pixelcoods2sky(self, pixel_coords):
         #covert from pixel to skycoords
@@ -285,6 +332,7 @@ class Cube(BaseCube):
     
         Args:
             pixel_coord (list): the pixel coordinate [x, y]
+            pixel_aperture (list): the pixel aperture coded as [maj, min, theta]
         """
         datashape = self.shape
         # make cutout image and calculate aperture
@@ -296,16 +344,32 @@ class Cube(BaseCube):
             else:
                 # collapse the whole datacube into one spectrum
                 spectrum = np.sum(np.sum(self.cube, axis=1), axis=1) * self.unit
+        if sky_aperture is not None:
+            if not isinstance(sky_aperture, SkyEllipticalAperture):
+                if isinstance(sky_aperture, (list, tuple)):
+                    sky_aperture = SkyEllipticalAperture(sky_coord, *sky_aperture)
+                elif isinstance(sky_aperture, u.Quantity):
+                    sky_aperture = SkyEllipticalAperture(sky_coord, sky_aperture, 
+                                                         sky_aperture, 0*u.deg)
+                else:
+                    raise ValueError("Unsupported sky_aperture!")
+            pixel_aperture = sky_aperture.to_pixel(self.wcs.celestial)
+        if pixel_aperture is not None:
+            if not isinstance(pixel_aperture, EllipticalAperture):
+                if isinstance(pixel_aperture, [list, tuple]):
+                    pixel_aperture = EllipticalAperture(pixel_coord, *pixel_aperture)
+                elif isinstance(pixel_aperture, [float, int]):
+                    pixel_aperture = EllipticalAperture(pixel_coord, *pixel_aperture)
+                else:
+                    raise ValueError("Unsupported pixel_aperture!")
 
-        if pixel_coord is not None:
-            if pixel_aperture is not None:
-                aperture = EllipticalAperture(pixel_coord, *pixel_aperture)
-                aper_mask = aperture.to_mask().to_image(self.imagesize).astype(bool)
-                aper_mask_3D = np.repeat(aper_mask[None,:,:], self.nchan, axis=0)
-                data_selected = self.cube[aper_mask_3D]
-                spectrum = np.sum(data_selected.reshape((self.nchan, np.sum(aper_mask))), axis=1)*self.unit
-            else:
-                spectrum = self.cube[:,pixel_coord[1], pixel_coord[0]]*self.unit
+            aper_mask = pixel_aperture.to_mask().to_image(self.imagesize
+                                                          ).astype(bool)
+            aper_mask_3D = np.repeat(aper_mask[None,:,:], self.nchan, axis=0)
+            data_selected = self.cube[aper_mask_3D]
+            spectrum = np.sum(data_selected.reshape((self.nchan, np.sum(aper_mask))), axis=1)*self.unit
+        else:
+            spectrum = self.cube[:,pixel_coord[1], pixel_coord[0]]*self.unit
             
         if plot:
             if ax is None:
@@ -313,16 +377,28 @@ class Cube(BaseCube):
                 ax = fig.add_subplot(111)
             ax.step(self.chandata, spectrum, where='mid')
             ax.set_xlabel(self.chandata.unit)
-            ax.set_ylabel('Flux [Jy]')
+            try:
+                ax.set_ylabel(spectrum.unit.to_string())
+            except:
+                pass
             ax_top = ax.twiny()
             ax_top.step(np.arange(self.nchan), spectrum, where='mid', alpha=0)
         return self.chandata, spectrum*self.unit
-    def collapse_cube(self, chans='', chanunit=None, return_header=False, 
+    def extract_slit_spectrum(self, center=None, length=None, width=None, step=1, theta=0, 
+                              plot=False):
+        return extract_slit_spectra(self.data, specdata=self.specdata, pixel_center=center, 
+                                    length=length, width=wdith, 
+                                    step=step, theta=theta, plot=plot)
+    def collapse_cube(self, chans='', frequency_range=None, velocity_range=None, 
+                      chanunit=None, return_header=False, 
                       reference=None, moment=0, mask=None):
         """collapse the cube to make one channel image
 
         Args:
             chans (str): follow the format of casa, like "20~30;45~90"
+            frequency_range: [100,200] or np.array([100,200])*u.GHz,
+                             if there is no unit, is will be assumed to 
+                             be the same as chandata
 
         Return:
             class::Image
@@ -342,6 +418,29 @@ class Cube(BaseCube):
                 # casa includes the last channel with the chan selection rules
                 selected_indices.append(list(range(chan_range[0], chan_range[1]+1))) 
             selected_indices = [item for sublist in selected_indices for item in sublist]
+        if frequency_range is not None:
+            if not self.chandata.unit.is_equivalent('Hz'):
+                raise ValueError('channel data is not equivalent to frequency')
+            if isinstance(frequency_range, u.Quantity):
+                frequency_range = frequency_range.to(self.chandata.unit).value
+            if isinstance(self.chandata, u.Quantity):
+                freq_value = self.chandata.value
+            else:
+                freq_value = self.chandata
+            freq_selection = (freq_value > frequency_range[0]) & (freq_value < frequency_range[1])
+            selected_indices = np.where(freq_selection)[0].tolist()
+        if velocity_range is not None:
+            if not self.chandata.unit.is_equivalent('m/s'):
+                raise ValueError('channel data is not equivalent to velocity')
+            if isinstance(velocity_range, u.Quantity):
+                velocity_range = velocity_range.to(self.chandata.unit).value
+            if isinstance(self.chandata, u.Quantity):
+                vel_value = self.chandata.value
+            else:
+                vel_value = self.chandata
+            vel_selection = (vel_value > velocity_range[0]) & (vel_value < velocity_range[1])
+            selected_indices = np.where(vel_selection)[0].tolist()
+
         chandata_selected = self.chandata[selected_indices]
         dchan_selected = calculate_diff(self.chandata)[selected_indices]
         chan_selected = self.chandata[selected_indices]
@@ -382,12 +481,29 @@ class Cube(BaseCube):
         header_sliced.set('NAXIS1',shape_sliced[2])
         header_sliced.set('NAXIS2',shape_sliced[1])
         header_sliced.set('NAXIS3',shape_sliced[0])
+        try:
+            header_sliced.set('CUNIT3', self.header_sliced['CUNIT3'])
+        except:
+            pass
+        for key, value in self.header.items():
+            if key not in header_sliced:
+                header_sliced.set(key, value)
         return Cube(data=cube_sliced, header=header_sliced, beam=self.beam)
     def find_3Dstructure(self, **kwargs):
         if isinstance(self.cube, u.Quantity):
             return find_3Dstructure(self.cube.value, **kwargs)
         else:
             return find_3Dstructure(self.cube, **kwargs)
+    def extract_pv_diagram(self, reference=None, pixel_center=None, 
+                           length=20, width=10, theta=0, **kwargs):
+        if self.chandata.unit.is_equivalent('km/s'):
+            velocity = self.get_velocity().to(u.km/u.s).value
+        else:
+            try: velocity = self.get_velocity(reference=reference)
+            except: raise ValueError("Not reference to get the velocity!")
+        return extract_pv_diagram(self.data, velocity.to(u.km/u.s).value, 
+                                  pixel_center=pixel_center, length=length, width=width,
+                                  theta=theta, **kwargs)
     def writefits(self, filename, overwrite=False):
         """write datacube into fitsfile
 
@@ -434,14 +550,20 @@ class Cube(BaseCube):
         hdu_list.append(fits.PrimaryHDU(data=self.data, header=header))
         hdus = fits.HDUList(hdu_list)
         hdus.writeto(filename, overwrite=overwrite)
-    def readfits(self, fitscube, extname='Primary', debug=False):
+    def readfits(self, fitscube, extname='Primary', stokes=0, debug=False):
         """read general fits file
         """
         with fits.open(fitscube) as cube_hdu:
             if debug:
                 print(cube_hdu.info())
             cube_header = cube_hdu[extname].header
-            cube_data = cube_hdu[extname].data 
+            naxis = cube_header['NAXIS'] 
+            if naxis == 4:
+                cube_data = cube_hdu[extname].data[stokes]
+            elif naxis == 3:
+                cube_data = cube_hdu[extname].data
+            else:
+                raise ValueError('Fits is not datacube!')
             # if 'BUNIT' in cube_header.keys():
                 # cube_unit = u.Unit(cube_header['BUNIT'])
                 # cube_data = cube_data * cube_unit
@@ -465,7 +587,7 @@ class Cube(BaseCube):
 ###   stand alone functions   ###
 #################################
 
-def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None):
+def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None, corret_beam=False):
     """read the fits file
     """
     with fits.open(fitscube) as cube_hdu:
@@ -477,7 +599,7 @@ def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None):
             beams_data = cube_hdu['beams'].data
             cube_beam = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
         except: cube_beam = None
-        if False: # convert the units
+        if corret_beam: # convert the units
             if '/beam' in cube_header['BUNIT']: # check whether it is beam^-1
                 pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
                 pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT2']).to(u.arcsec))       
@@ -485,6 +607,36 @@ def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None):
                 beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
                 cube_data = cube_data / beamsize[None,:,None,None] * u.beam
     return Cube(data=cube_data[stokes], header=cube_header, beam=cube_beam, name=name)
+
+def get_chandata(header=None, wcs=None, output_unit=None):
+    """a general way to read the spectral axis from the header
+    """
+    if header is None:
+        try:
+            header = wcs.to_header()
+            header['NAXIS3'],header['NAXIS2'],header['NAXIS1'] = wcs.array_shape
+        except:
+            raise ValueError("Please provide valid header or wcs!")
+    header_keys = list(header.keys())
+    if 'CDELT3' in header_keys:
+        cdelt3 = header['CDELT3']
+    elif 'CD3_3' in header_keys:
+        cdelt3 = header['CD3_3']
+    elif 'PC3_3' in header_keys:
+        cdelt3 = header['PC3_3']
+    else:
+        print("No valid CDELT for the spectral axis, assuming CDELT3=1!")
+        cdelt3 = 1
+    # because wcs.slice with change the reference channel, the generated ndarray should 
+    # start with 1 
+    chandata = (header['CRVAL3'] + (np.arange(1, header['NAXIS3']+1)-header['CRPIX3']) * cdelt3)
+    if 'CUNIT3' in header_keys:
+        chandata = chandata*u.Unit(header['CUNIT3'])
+        if output_unit is not None:
+            chandata = chandata.to(u.Unit(output_unit)).value
+    else:
+        print("CUNIT3 is not fount, skip...")
+    return chandata
 
 def calculate_beamsize(beams, debug=False):
     """quick function to calculate the beams size
@@ -527,7 +679,6 @@ def find_3Dstructure(data, sigma=2.0, std=None, minsize=9, opening_iters=1,
 
     To use this function, the image should not be oversampled! If so, increase the minsize is recommended
 
-    #TODO: ad support for bianry_opening and binary_dilation
     """
     s3d = np.array([[[0,0,0],[0,1,0],[0,0,0]],
                             [[0,1,0],[1,1,1],[0,1,0]], 
@@ -606,143 +757,6 @@ def gaussian1D(x, params):
         amp, mean, sigma, cont = params
     return amp / ((2*np.pi)**0.5*sigma) * np.exp(-0.5*(x-mean)**2/sigma**2) + cont
 
-def chi2_cost(params, vel, spec, std):
-    """calculate the chi square
-
-    Args:
-        params: the required parameters of the function
-
-    """
-    return np.sum((spec-gaussian1D(vel, params))**2/std**2)
-
-def fit_gaussian1D(vel, spec, std, vsig0=100, amp_bounds=[0, np.inf], vel_bounds=[-1000,1000], 
-            sigma_bouds=[20,2000], cont_bounds=[0, np.inf], debug=False, fitcont=False,):
-    """fit one spectrum in the velocity convension
-
-    Args:
-        vel: velocity
-        spec: spectrum data
-        std: the error or standard deviation of the spectrum
-        vsig0: initial guess for the velocity dispersion
-    """
-    # guess the initial parameters
-    ## amplitude
-    spec_selection = spec > np.percentile(spec, 85)
-    ## central velocity
-    vel0 = np.median(vel[spec_selection])
-    ## amplitude
-    amp0 = np.mean(spec[spec_selection])
-    if fitcont: ## continuum
-        cont = np.median(spec[~spec_selection])
-        initial_guess = [amp0, vel0, vsig0, cont]
-        bounds = [amp_bounds, vel_bounds, sigma_bouds, cont_bounds]
-    else:
-        initial_guess = [amp0, vel0, vsig0]
-        bounds = [amp_bounds, vel_bounds, sigma_bouds]
-    args = vel, spec, std
-    result = optimize.minimize(chi2_cost, initial_guess, args=args,
-                bounds=bounds)
-    # make profile of the initial guess and best-fit.
-    guess = gaussian1D(vel, initial_guess)
-    bestfit = gaussian1D(vel, result.x)
-    if debug:
-        plt.clf()
-        plt.step(vel, spec, color='black', where='mid')
-        plt.plot(vel, guess, linestyle='dashed',color='blue')
-        plt.plot(vel, bestfit, color='red')
-        plt.show(block=False)
-        plt.pause(0.01)
-    # calculate chi2
-    chi2 = chi2_cost(result.x, *args)
-    return result.x, bestfit, chi2
-    # fitobj = Fitspectrum()
-    # fitobj.fitparams = result.x
-    # if fitcont:
-        # fitobj.fitnames = ('amplitude', 'mean', 'sigma', 'continuum')
-    # else:
-        # fitobj.fitnames = ('amplitude', 'mean', 'sigma')
-    # fitobj.bestfit = bestfit
-    # fitobj.fitfunc = lambda a: gaussian1D(a, result.x)
-    # fitobj.specchan = vel
-    # fitobj.specdata = spec
-    # fitobj.chi2 = chi2
-    # return fitobj
-
-def fitcube(vel, cube, snr_limit=5, std=1, minaper=1, maxaper=4, debug=False,
-          vlow=-1000, vup=1000, return_fitcube=False, fitcont=False):
-    """run gaussian fitting for all the pixels
-
-    Args:
-    """
-    cube_shape = cube.shape
-    # set up 3D array to hold the best fit parameters
-    # including: amp, v_mean, v_sigma, cont, snr, aper,  
-    fitmaps = np.full((6, cube_shape[-2], cube_shape[-1]), fill_value=np.nan)
-    if return_fitcube:
-        fitcube = np.zeros_like(cube)
-    
-    # loop over all pixels in the cube and fit 1d spectra
-    for y in range(0, cube_shape[-2]):
-        for x in range(0, cube_shape[-1]):
-            # foundfit is 0 until a fit is found
-            foundfit = False
-            # loop over the range of adaptive binning vakues
-            for aper in range(minaper, maxaper+1):
-                # if foundfit is still zero, then attempt a fit.
-                if not foundfit:
-                    # deal with the edges of the cube
-                    sz = cube_shape
-                    xlo = x - aper
-                    xhi = x + aper
-                    ylo = y - aper
-                    yhi = y + aper
-                    # deal with the edges
-                    if xlo <= 0: xlo = 0
-                    if xhi > sz[2]: xhi = sz[2]
-                    if ylo <= 0: ylo = 0
-                    if yhi >= sz[1]: yhi = sz[1]
-                    
-                    # average the spectra within the aperture
-                    spec = np.mean(cube[:,ylo:yhi,xlo:xhi], axis=(1,2))
-
-                    if not np.isnan(np.sum(spec)):
-                        vel_wing = (vel < vlow) | (vel > vup)
-                        cont = np.median(spec[vel_wing])
-                        if std is None:
-                            std = np.std(spec[vel_wing])                            
-                        
-                        # get chi^2 of straight line fit
-                        chi2_sline = np.sum((spec-cont)**2 / std**2)
-
-                        # do a 1D Gaussian profile fit of the line
-                        paramsfit, bestfit, chi2 = fit_gaussian1D(vel, spec, std, debug=debug, fitcont=fitcont)
-
-                        # calculate the chi^2 of the Gaussian profile fit
-                        chi2_gaussian = np.sum((spec-bestfit)**2 / std**2)
-
-                        # calculate the S/N of the fit by comparing the chi^2 values.  sqrt(delta_chi^2)=S/N
-                        snr = (chi2_sline - chi2_gaussian)**0.5
-
-                        # if the S/N is above threshold, store the fit parameters and set foundfit=1
-                        if snr >= snr_limit:
-                            if debug:
-                                print(f'fit found at {(x,y)} with aper={aper} and S/N={snr}')
-                            foundfit = 1
-                            if len(paramsfit) == 3:
-                                fitmaps[0:3, y, x] = paramsfit # v, I, sigma
-                            elif len(paramsfit) == 4:
-                                fitmaps[0:4, y, x] = paramsfit # v, I, sigma, continuum
-                            fitmaps[4, y, x] = snr
-                            fitmaps[5, y, x] = aper
-                            if return_fitcube:
-                                fitcube[:,y,x] = bestfit
-                        else:
-                            if debug:
-                                print(f'no fit found at {(x,y)} with aperture size {aper} and S/N={snr}')
-    if return_fitcube:
-        return fitcube, fitmaps
-    return fitmaps
-
 def calculate_diff(v):
     """approximate the differential v but keep the same shape
     """
@@ -757,6 +771,192 @@ def calculate_diff(v):
     v_expanded[2:-2] = 0.5*v_expanded[2:-2]
     return np.abs(np.diff(v_expanded))
 
+def convert_spec(spec_in, unit_out, reference=None, mode='radio'):
+    """convert the different spectral axis
+
+    Args:
+        spec_in (astropy.Quantity): any valid spectral data with units
+        unit_out (str or astropy.Unit): valid units for output spectral axis
+        reference: the reference frequency or wavelength, with units
+
+    Return:
+    """
+    unit_in = spec_in.unit
+    if not isinstance(unit_out, u.Unit):
+        unit_out = u.Unit(unit_out)
+    if spec_in.unit.is_equivalent(unit_out):
+        return spec_in.to(unit_out)
+    if reference is not None:
+        if not isinstance(reference, u.Quantity):
+            reference = reference * unit_in
+        if reference.unit.is_equivalent('m'):
+            refwave = reference
+            reffreq = (const.c/refwave).to(u.GHz)
+        elif reference.unit.is_equivalent('Hz'):
+            reffreq = reference
+            refwave = (const.c/reffreq).to(u.um)
+    else:
+        reffreq, refwave = None, None
+    if spec_in.unit.is_equivalent('m'): # this is velocity
+        if unit_out.is_equivalent('Hz'):
+            return (const.c/spec_in).to(unit_out)
+        elif unit_out.is_equivalent('km/s'):
+            if mode=='radio':
+                return ((spec_in-refwave)/spec_in*const.c).to(unit_out)
+            elif mode=='optical':
+                return ((spec_in-refwave)/refwave*const.c).to(unit_out)
+    if spec_in.unit.is_equivalent('Hz'):
+        if unit_out.is_equivalent('m'):
+            return (const.c/spec_in).to(unit_out)
+        elif unit_out.is_equivalent('km/s'):
+            if mode=='radio':
+                return ((reffreq-spec_in)/reffreq*const.c).to(unit_out)
+            elif mode=='optical':
+                return ((reffreq/spec_in-1)*const.c).to(unit_out)
+    if spec_in.unit.is_equivalent('km/s'): # this is velocity
+        if unit_out.is_equivalent('m'):
+            if mode=='radio':
+                return (refwave/(1-spec_in/const.c)).to(unit_out)
+            elif mode=='optical':
+                return (spec_in/const.c*refwave+refwave).to(unit_out)
+        elif unit_out.is_equivalent('Hz'):
+            if mode=='radio':
+                return (reffreq*(1-spec_in/const.c)).to(unit_out)
+            elif mode=='optical':
+                return (reffreq/(spec_in/const.c+1)).to(unit_out)
+
+def extract_pv_diagram(datacube, velocity=None, pixel_center=None,
+               vmin=-1000, vmax=1000,
+               length=10, width=2, theta=0, debug=False, plot=False, pixel_size=1):
+    """generate the PV diagram of the cube
+
+    Args:
+        datacube: the 3D data [velocity, y, x]
+        pixel_center: the center of aperture
+        lengthth: the length of the aperture, in x axis when theta=0
+        width: the width of the aperture, in y axis when theta=0
+        theta: the angle in degree, from positive x to positive y axis
+    """
+    # nchan, ny, nx = datacube.shape
+    # extract data within the velocity range 
+    if velocity is not None:
+        vel_selection = (velocity > vmin) & (velocity < vmax)
+        datacube = datacube[vel_selection]
+        velocity = velocity[vel_selection]
+    cubeshape = datacube.shape
+    aper = RectangularAperture(pixel_center, length, width, theta=theta/180*np.pi)
+    s1,s2 = aper.to_mask().get_overlap_slices(cubeshape[1:])
+    # cutout the image
+    sliced_cube = datacube[:,s1[0],s1[1]]
+    # rotate the cube to make the aperture with theta=0
+    sliced_cube_rotated = ndimage.rotate(sliced_cube, aper.theta/np.pi*180, axes=[1,2], reshape=True, prefilter=False, order=0, cval=np.nan)
+    # sum up the central plain (x axis) within the height
+    nchan, nynew, nxnew = sliced_cube_rotated.shape
+    # define the new aperture on the rotated sub-cube
+    aper_rotated = RectangularAperture([0.5*(nxnew-1), 0.5*(nynew-1)], length, width, theta=0)
+
+    hi_start = np.round(nynew/2.-width/2.).astype(int)
+    width_slice = np.s_[hi_start:hi_start+width]
+    sliced_pvmap = np.nansum(sliced_cube_rotated[:,width_slice,:], axis=1)
+    if debug: # debug plot 
+        fig = plt.figure(figsize=(12,5))
+        ax1 = plt.subplot2grid((2, 4), (0, 0), rowspan=2, colspan=2)
+        ax2 = plt.subplot2grid((2, 4), (0, 2), colspan=2)
+        ax3 = plt.subplot2grid((2, 4), (1, 2), colspan=2)
+        ax1.imshow(np.sum(datacube,axis=0),origin='lower')
+        aper.plot(ax=ax1)
+        ax2.imshow(np.sum(sliced_cube_rotated, axis=0), origin='lower')
+        aper_rotated.plot(ax=ax2)
+        ax3.imshow(sliced_pvmap.T, origin='lower')
+    if plot:
+        fig = plt.figure(figsize=(12,6))
+        # ax = fig.subplots(1,2)
+        ax1 = plt.subplot2grid((2, 4), (0, 0), rowspan=2, colspan=2)
+        ax2 = plt.subplot2grid((2, 4), (0, 2), rowspan=2, colspan=2)
+        vmin, vmax = -1*np.nanstd(sliced_cube), 4*np.nanmax(sliced_cube)
+        ax1.imshow(np.sum(datacube, axis=0), origin='lower', vmin=vmin, vmax=vmax, cmap='magma')
+        aper.plot(ax=ax1, color='white', linewidth=4)
+        # show the pv-diagram
+        # ax[1].imshow(sliced_pvmap, origin='lower', cmap='magma', extent=extent)
+        positions = np.linspace(-0.5*length, 0.5*length, nxnew)
+        if velocity is None:
+            velocity = np.linspace(-1,1,nchan)
+        vmesh, pmesh = np.meshgrid(velocity,positions)
+        ax2.pcolormesh(vmesh, pmesh, sliced_pvmap.T, cmap='magma')
+        ax2.set_xlabel('Velocity [km/s]')
+    return sliced_pvmap.T
+
+def extract_slit_spectra(datacube, specdata=None, pixel_center=None, 
+                         length=10, width=2, step=2, theta=0, plot=False):
+    """extract the spectrum along the slit
+
+    Args:
+        datacube: the 3D data [velocity, y, x]
+        pixel_center: the center of aperture
+        lengthth: the length of the aperture, in x axis when theta=0
+        width: the width of the aperture, in y axis when theta=0
+        theta: the angle in degree, from positive x to positive y axis
+    """
+    nchan, ny, nx = datacube.shape
+    # caculate the pixel_centers along the slit
+    nstep = int(0.5*length/step) # steps in both sides
+    theta_radian = np.radians(theta)
+    positions_positive = []
+    positions_negative = []
+    for i in range(nstep):
+        xi = pixel_center[0] + i*step*np.cos(theta_radian)
+        yi = pixel_center[1] + i*step*np.sin(theta_radian)
+        positions_positive.append([xi, yi])
+        # the opposite direction
+        xi = pixel_center[0] - i*step*np.cos(theta_radian)
+        yi = pixel_center[1] - i*step*np.sin(theta_radian)
+        positions_negative.append([xi, yi])
+    positions = positions_positive + positions_negative[::-1]
+    apertures = RectangularAperture(positions, step, width, theta=theta_radian)
+    spectra = np.zeros([len(apertures), nchan])
+    for i,aper in enumerate(apertures):
+        aper_mask = aper.to_mask().to_image([ny, nx]).astype(bool)
+        aper_mask_3D = np.repeat(aper_mask[None,:,:], nchan, axis=0)
+        data_selected = datacube[aper_mask_3D]
+        spectrum = np.sum(data_selected.reshape((nchan, np.sum(aper_mask))), axis=1)
+        spectra[i,:] = spectrum
+    if plot:
+        fig = plt.figure(figsize=(12,3))
+        ax1 = plt.subplot2grid((1, 3), (0, 0), rowspan=1, colspan=1)
+        ax2 = plt.subplot2grid((1, 3), (0, 1), rowspan=1, colspan=2)
+        ax1.imshow(np.sum(datacube, axis=0), origin='lower', cmap='magma')
+        for aper in apertures:
+            aper.plot(ax=ax1, color='white', linewidth=1)
+        for spec in spectra:
+            if specdata is not None:
+                ax2.step(specdata, spec, where='mid', alpha=0.3)
+            else:
+                ax2.plot(spec, alpha=0.3)
+    return spectra
+        
+def cubechan_stat(datacube, n_boostrap=100, aperture=None, aperture_shape=None):
+    cubesize = datacube.shape
+    nchan = cubesize[-3]
+    imagesize = cubesize[-2:]
+    std_ref = np.zeros(nchan)
+    # create ramdon aperture
+    if aperture_shape is not None:
+        pixel_x = np.random.random(n_boostrap) * imagesize[1] # 1 for x axis
+        pixel_y = np.random.random(n_boostrap) * imagesize[0] # 0 for y axis
+        pixel_coords_boostrap = np.vstack([pixel_x, pixel_y]).T
+        apertures_boostrap = EllipticalAperture(pixel_coords_boostrap, *aperture_shape)
+        for chan in range(nchan):
+            chan_map = np.ma.masked_invalid(datacube[0, chan])
+            noise_boostrap = aperture_photometry(chan_map, apertures_boostrap, 
+                                                 mask=chan_map.mask)
+            std_ref[chan] = np.std(noise_boostrap['aperture_sum'])
+    else: # create pixel level std reference
+        for chan in range(nchan):
+            chan_map = np.ma.masked_invalid(datacube[0, chan])
+            std_ref[chan] = np.ma.std(chan_map[~chan_map.mask])
+        
+    return std_ref
+
 #################################
 ###      quick functions      ###
 #################################
@@ -769,8 +969,13 @@ def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None,
     Args:
      fitscube: the datacube fits file
      sky_center: the sky coordinate of the center
+     sky_radius: the sky radius, default with unit of arcsec
+     pixel_center: the pixel coordinate of the center
+                   default: the image center
     """
-    cube = Cube.read(fitscube)
+    cube = Cube()
+    cube.readfits(fitscube)
+    # cube.read_ALMA(fitscube)
     # convert the sky coordinate to pixel coordinate
     if sky_center is not None:
         if not isinstance(sky_center, coordinates.SkyCoord):
@@ -783,17 +988,21 @@ def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None,
     if sky_radius is not None:
         if isinstance(sky_radius, str):
             sky_radius = u.Quantity(sky_radius)
-        if isinstance(sky_radius, u.Quantity):
+        elif isinstance(sky_radius, u.Quantity):
             sky_radius = sky_radius.to(u.arcsec)
-        pixel2arcsec_ra, pixel2arcsec_dec = cube.pixel_sizes
+        else:
+            sky_radius = sky_radius * u.arcsec
+        pixel2arcsec_ra, pixel2arcsec_dec = cube.pixel_sizes.value
         # here we only use the pixel scale in ra
-        pixel_radius = sky_radius/pixel2arcsec_ra
+        pixel_radius = np.round(sky_radius.to(u.arcsec).value/pixel2arcsec_ra).astype(int)
     if isinstance(chans, str):
         chans = np.array(chans.split('~')).astype(int)
     # convert the pixel coordinates to bltr
-    if pixel_center is not None:
-        bottom_left = pixel_center - pixel_radius
-        top_right = pixel_center + pixel_radius
+    if pixel_radius is not None:
+        if pixel_center is None:
+            pixel_center = [cube.header['CRPIX1'], cube.header['CRPIX2']]
+        bottom_left = np.round(pixel_center).astype(int) - pixel_radius
+        top_right = np.round(pixel_center).astype(int) + pixel_radius
         bltr = [*bottom_left, *top_right]
 
     # convert bltr to slice
@@ -802,7 +1011,7 @@ def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None,
     if chans is None:
         subcube = cube.subcube(np.s_[:,ylow:yup,xlow:xup])
     else:
-        subcube = cube.subcube(np.s_[chans[0]:chans[1],ylow:yup,xlow:xup])
+        subcube = cube.subcube(np.s_[chans[0]:chans[1]+1,ylow:yup+1,xlow:xup+1])
     subcube.writefits(outfile, overwrite=overwrite)
 
 

@@ -13,6 +13,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
 import astropy.constants as const
+from astropy.modeling import fitting, models
+import warnings
 
 class Database(object):
     """A small database of frequently used spectral lines
@@ -61,6 +63,9 @@ class Database(object):
         self.HNC = OrderedDict([('HNC_1-0', 90.66356800*u.GHz), ('HNC_2-1', 181.32475800*u.GHz), 
                        ('HNC_3-2', 271.98114200*u.GHz), ('HNC_4-3', 362.63030300*u.GHz),
                        ('HNC_5-4', 453.26992200*u.GHz), ('HNC_6-5', 543.89755400*u.GHz)])
+        self.HCO_plus = OrderedDict([('HCO_plus_1-0', 89.1885247*u.GHz), ('HCO_plus_2-1', 178.3750563*u.GHz), 
+                       ('HCO_plus_3-2', 267.5576259*u.GHz), ('HCO_plus_4-3', 356.734223*u.GHz),
+                       ('HCO_plus_5-4', 445.9028721*u.GHz), ('HCO_plus_6-5', 535.061581*u.GHz)])
         self.Other = OrderedDict([('CN_1-0_multi', 113.490982*u.GHz), ('CS_2-1', 97.9809533*u.GHz),
                          ('CS_3-2', 146.9690287*u.GHz), ('CS_4-3', 195.9542109*u.GHz),
                          ('CS_5-4', 244.9355565*u.GHz), ('CS_6-5', 293.9120865*u.GHz),
@@ -68,72 +73,118 @@ class Database(object):
                          ('CS_9-8', 440.8032320*u.GHz), ('CS_10-9', 489.7509210*u.GHz)])
         self.Special = OrderedDict([('CH+', 835.08*u.GHz), ('OH+(1-0)', 1033.1*u.GHz)])
 
-        # Optical lines, all wavelength in air, the CRC standard
-        self.Balmer_series = OrderedDict([('H-alpha', 6564.61*u.AA), ('H-beta', 4862.68*u.AA), 
-                                          ('H-gamma', 4341.69*u.AA), ('H-delta', 4102.89*u.AA), 
+        # Optical lines, all wavelength in vaccum
+        # for Hydrogen,Helium and Lithium lines: https://zenodo.org/records/1232309
+        self.Lyman_series = OrderedDict([('Ly-alpha', 1215.7*u.AA), ('Ly-beta', 1025.7*u.AA), 
+                                          ('Ly-gamma', 972.54*u.AA), ('Lyman-limit', 911.75*u.AA)])
+        self.Balmer_series = OrderedDict([('H-alpha', 6564.603*u.AA), ('H-beta', 4862.708*u.AA), 
+                                          ('H-gamma', 4341.692*u.AA), ('H-delta', 4102.891*u.AA), 
                                           ('Balmer-limit', 3646.04*u.AA)])
-        # self.Paschen_series = OrderedDict([('Pa-alpha', 1874.5*u.nm), ('Pa-beta', 1281.4*u.nm),
-                                           # ('Pa-gamma', 1093.5*u.nm), ('Paschen-limit', 820.1*u.nm)])
-        # # self.Brackett_series = OrderedDict([('Br-alpha', 4052.5*u.nm), 
-                                            # ('Br-beta', 2625.9*u.nm), 
-                                            # ('Brackett-limit', 1458.0*u.nm)])
-        # self.Helium = OrderedDict([('HeII', 303.783*u.AA),
-                                   # ('HeII1640', 1640*u.AA), 
-                                   # ('HeII4686', 4686*u.AA)])
+        self.Paschen_series = OrderedDict([('Pa-alpha', 1875.73*u.nm), ('Pa-beta', 1281.61*u.nm),
+                                           ('Pa-gamma', 1094.15*u.nm), ('Pa-delta', 1005.32*u.nm),
+                                           ('Paschen-limit', 820.1*u.nm)])
+        self.Brackett_series = OrderedDict([('Br-alpha', 4052.28*u.nm), 
+                                            ('Br-beta', 2625.92*u.nm), 
+                                            ('Brackett-limit', 1458.0*u.nm)])
+        self.Helium = OrderedDict([('HeI3889', 3889*u.AA), 
+                                   ('HeII', 303.783*u.AA),
+                                   ('HeII1640', 1640.41*u.AA), 
+                                   ('HeII4686', 4685.7*u.AA),
+                                   ('HeII5876', 5875.8*u.AA),])
+        # optical line from SDSS: https://classic.sdss.org/dr6/algorithms/linestable.php
         self.Optical_lines = OrderedDict([
-                                          # ('[OII]', 3728*u.AA), 
-                                          # ('[OIII4364]',4364*u.AA),
+                                          ('Mg II]2795', 2795.528*u.AA),
+                                          ('Mg II]2802', 2802.705*u.AA),
+                                          ('[OII]3727', 3727.092*u.AA), 
+                                          ('[OII]3730', 3729.875*u.AA), 
+                                          ('[OIII4364]',4364.436*u.AA),
                                           ('[OIII4960]', 4960.295*u.AA), 
                                           ('[OIII5008]', 5008.239*u.AA),
-                                          # ('[OI]', 6302*u.AA), 
+                                          ('[OI]6302', 6302.046*u.AA), 
+                                          ('[OI]6365', 6365.536*u.AA), 
                                           ('[NII]6549', 6549.86*u.AA), 
                                           ('[NII]6585', 6585.27*u.AA), 
                                           ('[SII]6718', 6718.29*u.AA), 
-                                          ('[SII]6732', 6732.68*u.AA)])
+                                          ('[SII]6732', 6732.67*u.AA)])
 
-        self.Optical_obsorption = OrderedDict([('Na_D1', 5890*u.AA), ('Na_D2', 5896*u.AA)])
+        self.Optical_obsorption = OrderedDict([('-Na_D1', 5890*u.AA), ('-Na_D2', 5896*u.AA),
+                                               ('-CaII8500', 8500.36*u.AA), ('-CaII8544', 8544.44*u.AA), 
+                                               ('-CaII8664', 8664.52*u.AA)])
  
 class Spectrum(object):
     """the data structure to handle spectrum
     """
-    def __init__(self, specchan=None, specdata=None, reffreq=None, refwave=None, z=None):
+    def __init__(self, specchan=None, specdata=None, reffreq=None, refwave=None, 
+                 z=None):
         """ initialize the spectrum
         """
+        self.default_frequency_unit = 'GHz'
+        self.default_wavelength_unit = 'nm'
         self.specchan = specchan
         self.specdata = specdata
-        self.reffreq = reffreq
-        self.refwave = refwave
-        if self.reffreq is None:
-            if self.refwave is not None:
-                self.reffreq = (const.c/self.refwave).to(u.GHz)
-        if self.refwave is None:
-            if self.reffreq is not None:
-                self.refwave = (const.c/self.reffreq).to(u.um)
-        if self.reffreq is not None:
-            self.specvel = self.velocity(reffreq=reffreq)
-        else:
-            self.specvel = None
-        if z is not None:
-            self.to_restframe(z)
+        self._reffreq = reffreq
+        self._refwave = refwave
+        self.z = z
+    @property
+    def reffreq(self):
+        if self._reffreq is not None:
+            return self._reffreq
+        elif self._refwave is not None:
+            return (const.c/self.refwave).to(self.default_frequency_unit)
+    @reffreq.setter
+    def reffreq(self, reffreq):
+        self._reffreq = reffreq
+    @property
+    def refwave(self):
+        if self._refwave is not None:
+            return self._refwave
+        elif self._reffreq is not None:
+            return (const.c/self.reffreq).to(self.default_wavelength_unit)
+    @refwave.setter
+    def refwave(self, refwave):
+        self._refwave = refwave
+
     @property
     def channels(self):
         return list(range(len(self.specchan)))
     @property
     def unit(self):
-        return self.specchan.unit
+        if isinstance(self.specchan, u.Quantity):
+            return self.specchan.unit
+        else: 
+            return None
+    @unit.setter
+    def unit(self, unit):
+        self.specchan = self.specchan*unit
 
-    def wavelength(self, units=u.um):
-        return convert_spec(self.specchan, units)
+    def wavelength(self, units=u.um, reference=None):
+        if reference is None:
+            reference = self.reffreq
+        return convert_spec(self.specchan, units, reference=reference)
 
-    def frequency(self, units=u.GHz):
-        return convert_spec(self.specchan, units)
+    def frequency(self, units=u.GHz, reference=None):
+        if reference is None:
+            reference = self.reffreq
+        return convert_spec(self.specchan, units, reference=reference)
 
-    def to_restframe(self, z):
-        self.restfreq = convert_spec(self.specchan, 'GHz')*(z+1)
-        self.restwave = convert_spec(self.specchan, 'um')/(z+1)
+    def to_restframe(self, z=None):
+        if z is None:
+            z = self.z
+        if is_equivalent(self.unit, u.Hz):
+            return convert_spec(self.specchan, 'GHz')*(z+1)
+        elif is_equivalent(self.unit, u.m):
+            return convert_spec(self.specchan, 'um')/(z+1)
+        else: # should left velocity specchan, no need to convert
+            return self.specchan
 
     def velocity(self, reference=None):
-        return convert_spec(self.specchan, 'km/s', reference)
+        if reference is None:
+            reference = self.reffreq
+        if reference is not None:
+            return convert_spec(self.specchan, 'km/s', reference)
+        else:
+            warnings.warn("No valid reference found for the conversion!")
+            return None
 
     def convert_specchan(self, unit_out, refwave=None, reffreq=None):
         """convert the units of the specdata 
@@ -162,69 +213,51 @@ class Spectrum(object):
     def plot(self, ax=None, **kwargs):
         plot_spectra(self.specchan, self.specdata, ax=ax, **kwargs)
 
-    def fit_gaussian(self, plot=False, ax=None, **kwargs):
+    def fit_gaussian(self, data_boundary=None,
+                     channel_boundary=None, **kwargs):
         """fitting the single gaussian to the spectrum
         """
-        fit_p = fitting.LevMarLSQFitter()
-        spec_selection = self.specdata > np.percentile(self.specdata, 85)
-        amp0 = np.mean(self.specdata[spec_selection])
-        if self.specvel is not None:
-            # fit a gaussian at the vel=0
-            ## central velocity
-            vel0 = np.median(self.specvel[spec_selection])
-            p_init = models.Gaussian1D(amplitude=amp0, mean=vel0, 
-                                       stddev=50*u.km/u.s)
-                    # bounds={"mean":np.array([-1000,1000])*u.km/u.s, 
-                            # "stddev":np.array([0., 1000])*u.km/u.s,})
-            specchan = self.specvel
+        specchan = self.specchan
+        velocity = self.velocity()
+        specdata = self.specdata
+        if isinstance(specdata, u.Quantity):
+            specdata = specdata.data
+        if velocity is not None:
+            print("fitting velocity space")
+            return fit_gaussian1D(velocity.data, specdata, **kwargs)
         else:
-            # will try to fit a gaussian in the centre of the spectrum
-            mean0 = np.median(self.specchan[spec_selection])
-            p_init = models.Gaussian1D(amplitude=amp0, mean=mean0, 
-                                       stddev=5*np.median(np.diff(self.specchan)))
-            specchan = self.specchan
-        p = fit_p(p_init, specchan, self.specdata)
-        specfit = p(self.specchan)
-        if plot:
-            if ax is None:
-                fig = plt.figure(figsize=(7,6))
-                ax = fig.add_subplot(111)
-                ax.step(specchan, self.specdata, label='data')
-                ax.plot(specchan, specfit, label='mode')
-        fitobj = Fitspectrum()
-        fitobj.fitparams = p.param_sets.flatten()
-        fitobj.fitnames = p.param_names
-        fitobj.bestfit = specfit
-        fitobj.specchan = specchan
-        fitobj.specdata = self.specdata
-        fitobj.fitfunc = p
-        fitobj.chi2 = None #TODO #np.sum((bestfit - self.specdata)**2/std**2)
-        return fitobj
+            if isinstance(specchan, u.Quantity):
+                specchan = specchan.data
+            return fit_gaussian1D(specchan, specdata, **kwargs)
 
 class Fitspectrum():
     """the data structure to store the fitted spectrum
     """
+    __slots__ = ['specchan','specdata','fitdata','bestfit','params','chi2']
     def __init__(self):
         """
         Args:
-            fitparams: the fitted parameters
-            bestfit: the best fit
             specchan: the spectrum axis
             specdata: the data axis
+            params: the parameter names
+            bestfit: the best-fit value parameters
             chi2: the fitted chi2
         """
-        self.fitparams = None
-        self.fitnames = None
-        self.bestfit = None
-        self.fitfunc = None
         self.specchan = None
         self.specdata = None
+        self.fitdata = None
+        self.params = None
+        self.bestfit = None
         self.chi2 = None
     def plot(self, ax=None):
         if ax is None:
             fig, ax = plt.subplots(1,1)
         ax.step(self.specchan, self.specdata, where='mid', color='k')
-        ax.step(self.specchan, self.bestfit, where='mid', color='red', alpha=0.8)
+        ax.step(self.specchan, self.fitdata, where='mid', color='red', alpha=0.8)
+
+########################################
+###### stand alone functions ###########
+########################################
 
 def convert_spec(spec_in, unit_out, reference=None, mode='radio'):
     """convert the different spectral axis
@@ -232,8 +265,9 @@ def convert_spec(spec_in, unit_out, reference=None, mode='radio'):
     Args:
         spec_in (astropy.Quantity): any valid spectral data with units
         unit_out (str or astropy.Unit): valid units for output spectral axis
-        reffreq: reference frequency, with units
-        refwave: reference wavelength, with units
+        reference: the reference frequency or wavelength, with units
+
+    Return:
     """
     unit_in = spec_in.unit
     if not isinstance(unit_out, u.Unit):
@@ -313,7 +347,7 @@ def array_mapping(vals1, array1, array2):
     """
     return (vals1 - array1[0])/(array1[-1]- array1[0]) * (array2[-1]-array2[0])
 
-def print_lines(z=0.0, family=None, unit='GHz', limits=None, reference=None, 
+def print_lines(z=0.0, family=None, unit=None, limits=None, reference=None, 
                 mode='radio'):
     '''
     Parameters
@@ -322,7 +356,6 @@ def print_lines(z=0.0, family=None, unit='GHz', limits=None, reference=None,
         output format, either in frequency (freq) or wavelength (wave)
     '''
     db = Database()
-    unit = u.Unit(unit)
     if limits is not None:
         limits = np.array(limits)
     if family is None:
@@ -330,21 +363,35 @@ def print_lines(z=0.0, family=None, unit='GHz', limits=None, reference=None,
         print("all, CO, CO_isotop, H2O, dense_gas, optical")
     if family == 'simple':
         family_select = [db.CO_family, dbC_ion]
+        if unit is None:
+            unit = u.Unit('GHz')
+    if family == 'CO':
+        family_select = [db.CO_family]
+        if unit is None:
+            unit = u.Unit('GHz')
     elif family == 'water':
         family_select = [db.H2O]
+        if unit is None:
+            unit = u.Unit('GHz')
     elif family == 'all' or family=='full':
         family_select = [db.CO_family, db.CO_13C, db.CO_18O, db.CO_17O, 
-                         db.C_ion, db.H2O, db.HCN, db.HNC, db.Special, db.Other]
+                         db.C_ion, db.H2O, db.HCN, db.HNC, db.HCO_plus, db.Special, db.Other]
+        if unit is None:
+            unit = u.Unit('GHz')
     else:
         family_select = []
 
     if family is not None:
         if 'optical' in family:
+            family_select.append(db.Lyman_series)
             family_select.append(db.Balmer_series)
             family_select.append(db.Paschen_series)
             family_select.append(db.Brackett_series)
+            family_select.append(db.Helium)
             family_select.append(db.Optical_lines)
             family_select.append(db.Optical_obsorption)
+        if unit is None:
+            unit = u.Unit('nm')
 
     for fs in family_select:
         for name, value in fs.items():
@@ -444,3 +491,54 @@ def air_to_vac(lam_air):
     if isinstance(lam_air, u.Quantity):
         lam_air = lam_air.to(u.AA).value
     return lam_air*wave_convert(lam_air)*u.AA
+
+def fit_gaussian1D(specchan, specdata, guess=None, bounds=None, 
+                   plot=False, ax=None, debug=False):
+    """fit a single gaussian, with the dimensionless data
+
+    Args:
+        specchan: channel data, can be wavelength, frequency, velocity
+        specdata: data
+        guess: the initial guess for [amplitude, mean, sigma]
+        bounds: the boundary for [(amp_min, amp_max), (mean_min, mean_max), 
+                                  (sigma_min, sigma_max)]
+    """
+    specchan = np.array(specchan)
+    specdata = np.array(specdata)
+    if guess is not None:
+        amp0, mean0, sigma0 = guess
+    else:
+        amp0 = mean0 = sigma0 = None
+    spec_selection = specdata > np.percentile(specdata, 85)
+    if amp0 is None:
+        amp0 = 1.5*np.mean(specdata[spec_selection])
+    if mean0 is None:
+        mean0 = np.median(specchan[spec_selection])
+    if sigma0 is None:
+        sigma0 = np.abs(np.median(np.diff(specchan)))
+    if bounds is None:
+        fit_p = fitting.LevMarLSQFitter()
+        fit_bounds = {}
+    else:
+        fit_p = fitting.TRFLSQFitter()
+        fit_bounds = {'amplitude':bounds[0], 'mean':bounds[1], 'stddev':bounds[2]}
+    if debug:
+        print(f"Initial guess: {amp0, mean0, sigma0}")
+        print(f"Bounds: {bounds}")
+    p_init = models.Gaussian1D(amplitude=amp0, mean=mean0, 
+                               stddev=sigma0,
+                               bounds=fit_bounds)
+    p = fit_p(p_init, specchan, specdata)
+    specfit = p(specchan)
+    fitobj = Fitspectrum()
+    fitobj.specchan = specchan
+    fitobj.specdata = specdata
+    fitobj.params = p.param_names
+    fitobj.fitdata = specfit
+    fitobj.bestfit = p.param_sets
+    fitobj.chi2 = None #TODO #np.sum((bestfit - self.specdata)**2/std**2)
+    if plot:
+        fitobj.plot(ax=ax)
+    return fitobj
+
+

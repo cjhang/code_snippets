@@ -1,9 +1,20 @@
 #!/usr/bin/env python
 
-# A collection of general and simple python toolbox 
+"""
+A collection of general and simple python functions 
 
-# A basic rules for these utilities is that they should be simple and stand
-# alone without any other requirements except standard library
+A basic rules for these utilities is that they should be simple and 
+has a minimal requirement for other python libraries
+
+Author: Jianhang Chen, cjhastro@gmail.com / https://cjhang.github.io
+
+Requirement:
+    numpy
+    matplotlib
+
+History:
+    2024-06-15: Firstly add the history track
+"""
 
 import os
 import sys
@@ -255,8 +266,8 @@ def image_slider(func, args, slider_kwargs=None, slider_height=0.1, xlabel=None,
     for i,item in enumerate(slider_kwargs.items()):
         key, value = item
         ax_param = fig.add_axes([0.65, bottom_pad-i*0.5*slider_height, 0.25, 0.5*slider_height])
-        arg_default = value[0]
-        arg_range = value[1]
+        arg_default = value['default']
+        arg_range = value['range']
         ax_slider = Slider(ax=ax_param, label=key, orientation='horizontal', 
                            valinit = arg_default, valmin=arg_range[0], valmax=arg_range[1])
         args_default[key] = arg_default
@@ -294,5 +305,3 @@ def image_slider(func, args, slider_kwargs=None, slider_height=0.1, xlabel=None,
     for a in slider_kwargs.keys():
         final_kwargs[a] = args_slider[a].val
     return final_kwargs
-
-

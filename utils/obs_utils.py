@@ -22,6 +22,7 @@ version = '0.0.1'
 
 # import all the required packages
 import numpy as np
+import os
 from matplotlib import pylab as plt
 
 from astropy import units as u
@@ -29,9 +30,10 @@ from astropy.coordinates import get_sun,get_moon, AltAz, SkyCoord, EarthLocation
 from astropy.time import Time
 from astropy.cosmology import Planck18 as cosm
 import astropy.constants as const
-from scipy import special
+from scipy import special, interpolate
 from astropy.modeling import models
 from astropy.io import fits
+from astropy.table import Table
 
 def flux_to_luminosity(flux=None, luminosity=None, z=None, obsfreq=None, restfreq=None, 
                        obswave=None, restwave=None, luminosity_unit=None, flux_unit=None):
@@ -191,12 +193,73 @@ def KS_law_FIR(SFR=None, FIR=None):
     if FIR is not None:
         return 4.5e-44*FIR
 
-def dust_to_MH2(S_dust=None, freq_obs=None, z=None, beta=1.8, alpha_dust=6.7e19, delta_gd=150):
+def dust_to_MH2(S_dust=None, freq_obs=None, z=None, beta=1.8, Td=25, alpha_dust=6.7e19, delta_gd=150, 
+                convention='Tacconi2020', debug=False):
     """convert the measure dust flux to the gas mass
     """
+    if convention == 'Tacconi2020':
+        luminosity_dist = cosm.luminosity_distance(z)
+        M_H2 = (S_dust*luminosity_dist**2).to(u.mJy*u.Gpc**2).value*(1+z)**(-3-beta)*(freq_obs/352/u.GHz)**(-2-beta)*(6.7e19/alpha_dust)*(delta_gd/150)
+        return (M_H2*1e10*u.M_sun).to(u.M_sun)
+    if convention == 'Scoville2016':
+        alpha_dust_with_unit = alpha_dust * u.erg/u.s/u.Hz/u.M_sun
+        luminosity_dist = cosm.luminosity_distance(z)
+        freq_rest = freq_obs * (1+z)
+        ref_T = (const.h*353*u.GHz/const.k_B).to(u.K)
+        obs_T = (const.h*freq_rest/const.k_B).to(u.K)
+        Td = Td*u.K
+        k_corr = (353*u.GHz/freq_rest)**(3+beta)*(np.exp(obs_T/Td)-1)/(np.exp(ref_T/Td)-1)
+        if debug:
+            print('k_corr', k_corr)
+        L_v_850um = (4*np.pi*S_dust*k_corr*luminosity_dist**2/(1+z)).to(u.erg/u.s/u.Hz)
+        M_H2 = (L_v_850um / alpha_dust_with_unit).to(u.M_sun)
+        return M_H2
+
+
+def CO_to_MH2(flux=None, dv=1, freq_obs=None, z=None, alpha_co=4.36, 
+              Rj1=None, transition='4-3', debug=False):
+    """convert CO into gas mass
+
+    Args:
+        flux: the measured flux, [with units equivalent to Jy if dv is set]
+        dv: the velocity of the channel width, if flux is integrated over
+            the velocity (with units of Jy*km/s), the dv can be set to 1
+    """
+    alpha_co_with_unit = alpha_co*u.Msun/(u.K*u.km/u.s*u.pc**2)
+    CO_ladder = [1,1.3, 1.8, 2.4]
+    #restfreq = {'1-0':115.27*u.GHz, '2-1':230.54*u.GHz, '3-2': 345.80*u.GHz,
+    #            '4-3':461.04*u.GHz, '5-4':576.27*u.GHz, '6-5': 691.47*u.GHz}
     luminosity_dist = cosm.luminosity_distance(z)
-    M_H2 = (S_dust*luminosity_dist**2).to(u.mJy*u.Gpc**2).value*(1+z)**(-3-beta)*(freq_obs/352/u.GHz)**(-2-beta)*(6.7e19/alpha_dust)*(delta_gd/150)
-    return (M_H2*1e10*u.M_sun).to(u.M_sun)
+    flux2L_prime = const.c**2/(2*const.k_B) * dv * luminosity_dist**2 / (1+z)**3 / freq_obs**2
+    if Rj1 is None:
+        Rj1 = CO_ladder[int(transition[-1])]
+    if debug:
+        print('transition={transition}; Rj1={Rj1};')
+    L_co_prime = flux * flux2L_prime
+    L_co10_prime = L_co_prime * Rj1
+    M_H2 = L_co10_prime * alpha_co_with_unit
+    return M_H2.to(u.M_sun)
+
+def CI_to_MH2(flux, dv=1, freq_obs=None, z=None, alpha_ci=18.7, Q_10=0.48, X_CI=1.6e-5,):
+    """convert the CI(1-0) flux into molecular mass
+    The equation is followed Dune et al. 2022.
+    
+    Args:
+        flux * dv show be in the units of Jy km/s
+    """
+    luminosity_dist = cosm.luminosity_distance(z)
+    flux2L_prime = const.c**2/(2*const.k_B) * dv * luminosity_dist**2 / (1+z)**3 / freq_obs**2
+    L_prime = (flux * flux2L_prime).to(u.K*u.km/u.s*u.pc**2)
+    if alpha_ci is not None:
+        alpha_ci_with_unit = alpha_ci * u.M_sun/(u.K*u.km/u.s*u.pc**2)
+        return (alpha_ci_with_unit * L_prime).to(u.M_sun)
+    else:
+        return 9.51e-5/X_CI/Q_10*L_prime.value*u.M_sun
+
+    # luminosity_dist = cosm.luminosity_distance(z).to(u.Mpc).value
+    # flux_value = (flux*dv).to(u.Jy*u.km/u.s).value
+    # return 0.0127/X_CI/Q_10*(luminosity_dist**2/(1+z))*flux_value*u.M_sun
+
 
 def flux_CO(M_H2=None, SFR=None, FIR=None, z=None, Re=None, alpha_CO=4.3, transition='1-0'):
     """return CO flux base on total molecular mass
@@ -386,6 +449,66 @@ def plot_altitude(target_list={}, observatory=None, utc_offset=0, obs_time=None,
         ax.plot(moon.az/180*np.pi, np.cos(moon.alt), 'k--', label='moon')
     ax.set_ylim(0, 1)
 
+    plt.show()
+
+def ABmag2flux(mag):
+    "AB magnitude to flux in Jy"
+    return 10**((8.9 - mag)/2.5)
+
+#####################################################
+#  plot functions
+
+def read_alma_pwv(pwv=None):
+    pwv_list = np.array([0.5,1.0,1.5,2.0,2.5])
+    tab_pwv = Table.read(os.path.join(os.path.expanduser('~'),
+                         'Data/telescopes/ALMA/pwv_0.5_1.0_1.5_2_2.5.dat'), 
+                         names=['frequency','0.5','1.0','1.5','2.0','2.5'],
+                         format='ascii')
+    return tab_pwv
+
+def get_alma_transmission(freq, pwv=0.5):
+    """
+    Args:
+        freq: frequency, in GHz
+        pwv: precipate water vapor level: 0.5,1.0,1.5,2.0,2.5
+    """
+    tab_pwv = read_alma_pwv()
+    x_freq = tab_pwv['frequency']
+    y_pwv = tab_pwv[str(pwv)]
+    cubicinterpolator = interpolate.CubicSpline(x_freq, y_pwv)
+    return cubicinterpolator(freq)
+
+
+def plot_alma_spw(freq_range=[90, 1000], lines=None, lines_names=None,
+                  pwv=1.0, show_alma_bands=True):
+    tab_pwv = read_alma_pwv()
+    freq_selection = (tab_pwv['frequency']>freq_range[0]) & (tab_pwv['frequency']<freq_range[1])
+    fig, ax = plt.subplots(1,1)
+    x_freq = tab_pwv['frequency'][freq_selection]
+    y_pwv = tab_pwv[str(pwv)][freq_selection]
+    ax.plot(x_freq, y_pwv, color='black', alpha=0.5)
+    height = 1.2*np.max(y_pwv)
+    if show_alma_bands:
+        band_list = {'Band3':[84, 116], 'Band4':[125, 163], 'Band5':[163, 211], 
+                     'Band6':[211, 275], 'Band7':[275, 373], 'Band8':[385, 500], \
+                     'Band9':[602, 720], 'Band10':[787, 950]}
+        for name, freq in band_list.items():
+            if (freq[0] > freq_range[0]) | (freq[1] < freq_range[1]):
+                ax.broken_barh(([freq[0], np.diff(freq)[0]],), 
+                              np.array([0, 1])*height, 
+                              facecolor='lightblue', edgecolor='grey', \
+                              linewidth=1, alpha=0.2)
+            if (freq[0] > freq_range[0]) & (freq[1] < freq_range[1]):
+                ax.text(np.mean(freq), 0.9*height, name, fontsize=8, 
+                        ha='center', va='center', alpha=0.5, )
+    for line, name in zip(lines, lines_names):
+        ax.text(line, 0.55*height, name, ha='center', va='center', rotation='vertical')
+        ax.vlines(line, 0, 0.5*height, lw=4)
+                
+    ax.set_xlim(freq_range[0], freq_range[1])
+    ax.set_ylim(0, height)
+    ax.set_xlabel('Frequency')
+    ax.set_ylabel('Transmission')
     plt.show()
 
 
