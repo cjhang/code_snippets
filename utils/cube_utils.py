@@ -48,7 +48,7 @@ from astropy.wcs import WCS
 from astropy.wcs import utils as wcs_utils
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy import coordinates
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats, sigma_clip
 from astropy.convolution import convolve, Gaussian2DKernel
 
 # Filtering warnings
@@ -956,6 +956,104 @@ def cubechan_stat(datacube, n_boostrap=100, aperture=None, aperture_shape=None):
             std_ref[chan] = np.ma.std(chan_map[~chan_map.mask])
         
     return std_ref
+
+def fill_mask(data, mask=None, step=1, debug=False):
+    """Using iterative median to filled the masked region
+    In each cycle, the masked pixel is set to the median value of all the values in the 
+    surrounding region (in cubic 3x3 region, total 8 pixels)
+    Inspired by van Dokkum+2023 (PASP) and extended to support 3D datacube
+   
+    This implementation are pure python code, so it is relatively
+    slow if the number of masked pixels are large
+    <TODO>: rewrite this extension with c
+
+    Args:
+        data (ndarray): the input data
+        mask (ndarray): the same shape as data, with masked pixels are 1 (True)
+                        and the rest are 0 (False)
+    """
+    if isinstance(data, np.ma.MaskedArray):
+        mask = data.mask
+        data = data.data
+    elif mask is None:
+        data = np.ma.masked_invalid(data)
+        mask = data.mask
+        data = data.data
+    # skip the filling if there are too little data
+    if debug:
+        print("data and mask:",data.size, np.sum(mask))
+        print(f"mask ratio: {1.*np.sum(mask)/data.size}")
+    if 1.*np.sum(mask)/data.size > 0.2:
+        logging.warning(f"skip median filling, too inefficient...")
+        data[mask] = np.median(data[~mask])
+        return data
+    ndim = data.ndim
+    data_filled = data.copy().astype(float)
+    data_filled[mask==1] = np.nan
+    data_shape = np.array(data.shape)
+    up_boundaries = np.repeat(data_shape,2).reshape(len(data_shape),2)-1
+    mask_idx = np.argwhere(mask > 0)
+    while np.any(np.isnan(data_filled)):
+        for idx in mask_idx:
+            idx_range = np.array([[i-step,i+1+step] for i in idx])
+            # check if reaches low boundaries, 0
+            if np.any(idx_range < 1):  
+                idx_range[idx_range < 0] = 0
+            # check if reach the upper boundaries
+            if np.any(idx_range > up_boundaries):
+                idx_range[idx_range>up_boundaries] = up_boundaries[idx_range>up_boundaries]
+            ss = tuple(np.s_[idx_range[i][0]:idx_range[i][1]] for i in range(ndim))
+            data_filled[tuple(idx)] = np.nanmedian(data_filled[ss])
+    return data_filled
+
+def fill_spectral_mask(cube, spectral_mask, padding=2, sigma=5., debug=False):
+    """fill the data cube along with the spectral axis. It is a faster approach
+    than the fill_mask in the 3D datacube, specified in the spectral axis
+
+    Args:
+        cube (ndarray): the 3D datacube
+        spectral_mask (ndarray): the 1D spectral array show the masked channels
+        padding (int): the padding region around the mask to calculate the median
+                       value
+        sigma (int, float): the sigma value for clipping the padding region
+
+    Return:
+        ndarray, same as input cube
+    """
+    nchan, ny, nx = cube.shape
+    cube_filled = cube.copy()
+    idx_masked = np.where(spectral_mask)[0]
+    # find all the consecutive masked channels and combine they
+    mask_idx_group = []
+    idx_low = 0
+    idx_up = 0
+    for idx in idx_masked:
+        if idx < idx_up+1:
+            continue
+        idx_low = idx
+        idx_up = idx+1
+        while idx_up in idx_masked:
+            idx_up += 1
+        mask_idx_group.append([idx_low, idx_up])
+    if debug:
+        print(f"Masking indices groups: {mask_idx_group}")
+    # refilled the masked region with the median of nearby regions
+    for idx_group in mask_idx_group:
+        idx_near_low = np.max([idx_group[0]-padding, 0])
+        idx_near_up = np.min([idx_group[1]+padding, nchan])
+        if debug:
+            print(f"Masking sub-idx group {idx_group}")
+            print(f"Replacing the value from {idx_near_low}:{idx_group[0]} and {idx_group[1]}:{idx_near_up}")
+        # cube_near = np.hstack([cube[idx_group[0]-padding:idx_group[0]]
+                    # cube[idx_group[1]:idx_group[1]+padding]])
+        cube_near = cube[list(range(idx_near_low, idx_group[0]))+
+                         list(range(idx_group[1], idx_near_up))]
+        near_background = sigma_clip(cube_near, sigma=sigma, axis=0)
+        median_near_cube = np.repeat(np.nanmedian(near_background, axis=0)[None,:,:], 
+                                     idx_group[1]-idx_group[0], axis=0)
+        cube_filled[idx_group[0]:idx_group[1],:,:] = median_near_cube
+    return cube_filled
+
 
 #################################
 ###      quick functions      ###
