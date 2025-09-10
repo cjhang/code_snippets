@@ -101,13 +101,13 @@ class Grid:
             return (self.z, self.y, self.x)
 
 class Grid1D(Grid):
-    def __init__(self, size=None, pixelsize=1, center=0.):
+    def __init__(self, data=None, size=None, pixelsize=1, center=0.):
         super().__init__()
+        self._x = data
         self.ndim = 1
         self.size = size
         self.pixelsize = pixelsize
         self.center = center
-        self._x = None
     def _create_grid(self):
         return (np.arange(self.size) - self.size*0.5 + 0.5) * self.pixelsize + self.center
     @property
@@ -425,8 +425,7 @@ class Line1D(Model):
         super().__init__(name=name)
         self.m = Parameter(m)
         self.b = Parameter(b)
-    def evaluate(self, grid_1d):
-        x = grid_1d.x
+    def evaluate(self, x):
         return self.m.value * x + self.b.value
 
 class ScaleUncertainty(Model):
@@ -515,19 +514,6 @@ class Sersic2D(Model):
         z = ((x_maj / self.reff.value) ** expon + (x_min / b) ** expon) ** inv_expon
         return self.amplitude.value * np.exp(-bn * (z ** (1 / self.n.value) - 1.0))
 
-def blackbody_nu(nu, temperature):
-    """
-    Args:
-        nu: frequency, in Hz
-        temperature: in Kelvin
-        
-    Return:
-     Bv(v, T): erg/u.s/u.sr/u.cm**2/u.Hz 
-    """
-    const_h = const.h.cgs.value
-    const_c = const.c.cgs.value
-    k_B = const.k_B.cgs.value
-    return 2*const_h*nu**3 / const_c**2 / (np.exp(const_h*nu/(k_B*temperature))-1)
 
 def blackbody_lambda(lam, temperature):
     """
@@ -707,7 +693,6 @@ def calculate_diff(models, grid, data):
     """
     pass
 
-
 def emcee_log_probability(theta, models, grid, data):
     models.update_parameters(theta)
     params_priors = models.get_priors()
@@ -721,11 +706,21 @@ def emcee_log_probability(theta, models, grid, data):
     obs = data['data']
     try: obs_err = data['data_err']
     except: obs_err = 0
-    sigma2 = var_err**2 + obs_err**2 #+ err2_addition
-    
+    # check special models working on the data side
+    for m in models.models:
+        if isinstance(m, ScaleUncertainty):
+            log_f = m.factor.value
+            err2_addition = model**2*np.exp(2*log_f)
+        else:
+            err2_addition = 0
+    sigma2 = var_err**2 + obs_err**2 + err2_addition
+   
     # interpolate the model grid to the observed coordinates
     if obs.ndim == 1:
-        model_interp = interpolate.interpn(grid.grid, model, var)
+        if np.sum(grid.grid - var) > 1e-6*len(var):
+            model_interp = interpolate.interpn(grid.grid, model, var)
+        else:
+            model_interp = model
     if obs.ndim == 2:
         model_interp = interpolate.interpn(
                 grid.grid, model, 
@@ -1144,6 +1139,56 @@ def check_regular_grid(arr,):
 ###############################################
 #### test functions
 ###############################################
+
+def test_line1d_fitting(plot=False):
+    m_true = -1
+    b_true = 4
+    f_true = 0.5
+    N = 50
+    x = np.sort(10 * np.random.rand(N))
+    grid1d = Grid1D(data=x)
+    yerr = 0.1 + 0.5 * np.random.rand(N) # with 0.5 variation
+    y = m_true * x + b_true
+    y += np.abs(f_true * y) * np.random.randn(N)
+    y += yerr * np.random.randn(N)
+
+    # fit in a wrapper way
+    line_model = Line1D(m=Parameter(-0.8, limits=[-5.,0.5]), 
+                        b=Parameter(2, limits=[0., 10.]))
+    # scale_uncertainty_model = ScaleUncertainty(factor=Parameter(0, limits=[-10.,1.0]))
+    # models = Models([line_model, scale_uncertainty_model])
+    models = Models([line_model])
+    initial_guess = models.get_parameters().values()
+    # models = Models([line_model,])
+    paramters = models.get_parameters()
+    data = {'var':grid1d.x, 'data':y, 'data_err':yerr}
+    star = time.time()
+    fitter_mcmc = EmceeFitter(models, grid1d, data)
+    max_steps = 20000
+    # fitter_mcmc.run(progress=True, steps=max_steps)
+    fitter_mcmc.auto_run(progress=True, max_steps=max_steps)
+    end = time.time()
+    
+    samples = fitter_mcmc.samples(flat=True)
+    best_fit_mcmc = np.percentile(samples, 50, axis=0)
+    best_fit_mcmc_low = best_fit_mcmc - np.percentile(samples, 16, axis=0)
+    best_fit_mcmc_up = np.percentile(samples, 84, axis=0) - best_fit_mcmc
+    best_fit_mcmc_err = list(zip(best_fit_mcmc_low, best_fit_mcmc_up))
+    print("Noiseless Truth:", [m_true, b_true, f_true])
+    print("Initial guess:", initial_guess)
+    print('Best fit mcmc:', best_fit_mcmc)
+    print('Best fit mcmc (error):', best_fit_mcmc_err)
+ 
+    if plot:
+        fig, ax = plt.subplots(1,1, figsize=(4, 3))
+        models.update_parameters(dict(zip(models.get_parameters(), best_fit_mcmc)))
+        fit_data_mcmc = models.create_model(grid1d)
+        ax.errorbar(x, y, yerr=yerr, linestyle='none', marker='o', capsize=4)
+        ax.plot(x, fit_data_mcmc, label='bestfit')
+        # show the confidence region
+
+        plt.show()
+
 def test_gaussian1d_fitting(plot=False):
     grid1d = Grid1D(size=100, pixelsize=0.5)
     grid_orig = Grid1D(size=50, pixelsize=1)
