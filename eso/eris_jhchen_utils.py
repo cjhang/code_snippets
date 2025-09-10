@@ -17,7 +17,7 @@ History:
     - 2024-08-15: add support for drifts correction, v0.7
     - 2024-09-05: add support for flux calibration, v0.8
 """
-__version__ = '0.8.21'
+__version__ = '0.8.26'
 
 # import the standard libraries
 import os 
@@ -39,6 +39,7 @@ import argparse
 import numpy as np
 import scipy
 from scipy import ndimage, optimize, stats, interpolate
+from scipy.ndimage import convolve1d
 import astropy.table as table
 import astropy.units as units
 import astropy.units as u
@@ -141,7 +142,7 @@ def save_metadata(metadata, metafile='metadata.csv'):
             else:
                 if '/' in metafile:
                     subprocess.run(['mkdir', '-p', os.path.dirname(metafile)])
-            metadata.sort(['Release Date'])
+            metadata.sort(['TPL.START'])
             metadata.write(metafile, format='csv')
     except:
         raise ValueError('Unsupported metadata!')
@@ -828,7 +829,7 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
                 static_pool=None, esorex='esorex', stdstar_type='PSF',
                 objname=None, band=None, spaxel=None, exptime=None, 
                 dpr_tech='IFU', dpr_catg='SCIENCE', prog_id=None, ob_id=None,
-                tpl_start=None,
+                tpl_start=None, overwrite=False,
                 sky_tweak=1, product_depth=2,
                 dry_run=False, debug=False):
     """calibrate the science target or the standard stars
@@ -888,66 +889,77 @@ def auto_jitter(metadata=None, raw_pool=None, outdir='./', calib_pool='calibPool
             print(" >> skipped, no valid data found!")
             logging.warning(f"skipped {objname}({ob_id}+{tpl_start}) with {band}+{spaxel}+{exptime}, no valid data")
             return
+        meta_tab.sort(['TPL.START'])
 
+        # check if there is existing jitter file, used for costomization
         if dpr_catg == 'SCIENCE' or dpr_catg == 'ACQUISITION':
             auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_jitter.sof')
-            with open(auto_jitter_sof, 'w+') as openf:
-                # write OBJ
-                n_obj = 0
-                n_sky = 0
-                for item in meta_tab[meta_tab['DPR.CATG'] == dpr_catg]:
-                    if item['DPR.TYPE'] == 'OBJECT':
-                        openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} OBJ\n")
-                        n_obj += 1
-                    elif item['DPR.TYPE'] == 'SKY':
-                        openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_OBJ\n")
-                        n_sky += 1
-                if n_sky < 1: 
-                    jitter_sky_option = ['--tbsub=false', '--sky_tweak=0', '--aj-method=7']
-                else:
-                    jitter_sky_option = ['--tbsub=true', '--sky_tweak=1']
-                if n_obj < 1:
-                    print(f" >> skipped, on find {n_obj} science frame.")
-                    logging.warning(f"skipped {objname}({ob_id}) with {band}+{spaxel}+{exptime}, only find {n_obj} science frame and {n_sky} sky frame")
-                    return
-
         elif dpr_catg == 'CALIB': 
-            calib_meta_tab = meta_tab[meta_tab['DPR.CATG'] == 'CALIB']
-            if stdstar_type == 'PSF':
-                psf_calib = [True if 'PSF' in item['DPR.TYPE'] else False for item in calib_meta_tab]
-                if np.sum(psf_calib) < 1:
-                    logging.warning("No PSF star found!")
-                    return
-                auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_{stdstar_type}_jitter.sof')
+            auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_{stdstar_type}_jitter.sof')
+        has_auto_jitter_sof = False 
+        if os.path.isfile(auto_jitter_sof) and not overwrite:
+            has_auto_jitter_sof = True
+
+        if not has_auto_jitter_sof:
+            if dpr_catg == 'SCIENCE' or dpr_catg == 'ACQUISITION':
+                auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_jitter.sof')
                 with open(auto_jitter_sof, 'w+') as openf:
-                    for item in calib_meta_tab[psf_calib]:
-                        if 'SKY' in item['DPR.TYPE']:
-                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_PSF_CALIBRATOR\n")
-                        else:
-                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} PSF_CALIBRATOR\n")
-            elif stdstar_type == 'STD':
-                std_calib = [True if 'STD' in item['DPR.TYPE'] else False for item in calib_meta_tab]
-                if np.sum(std_calib) < 1:
-                    logging.warning("No STD star found!")
-                    return
-                auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_{stdstar_type}_jitter.sof')
-                with open(auto_jitter_sof, 'w+') as openf:
-                    for item in calib_meta_tab[std_calib]:
-                        if 'SKY' in item['DPR.TYPE']:
-                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_STD\n")
-                        else:
-                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} STD\n")
-        with open(auto_jitter_sof, 'a+') as openf:    
-            openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
-            openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
-            openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
-            openf.write(f"{calib_pool}/eris_ifu_dark_master_dark.fits MASTER_DARK\n")
-            openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
-            # openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
-            # openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
-            #if (dpr_catg == 'CALIB') and (stdstar_type == 'STD'):
-            #    if band in ['H_low', 'J_low', 'K_low']:
-            #        openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
+                    # write OBJ
+                    n_obj = 0
+                    n_sky = 0
+                    for item in meta_tab[meta_tab['DPR.CATG'] == dpr_catg]:
+                        if item['DPR.TYPE'] == 'OBJECT':
+                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} OBJ\n")
+                            n_obj += 1
+                        elif item['DPR.TYPE'] == 'SKY':
+                            openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_OBJ\n")
+                            n_sky += 1
+                    if n_sky < 1: 
+                        jitter_sky_option = ['--tbsub=false', '--sky_tweak=0', '--aj-method=7']
+                    else:
+                        jitter_sky_option = ['--tbsub=true', '--sky_tweak=1']
+                    if n_obj < 1:
+                        print(f" >> skipped, on find {n_obj} science frame.")
+                        logging.warning(f"skipped {objname}({ob_id}) with {band}+{spaxel}+{exptime}, only find {n_obj} science frame and {n_sky} sky frame")
+                        return
+
+            elif dpr_catg == 'CALIB': 
+                calib_meta_tab = meta_tab[meta_tab['DPR.CATG'] == 'CALIB']
+                if stdstar_type == 'PSF':
+                    psf_calib = [True if 'PSF' in item['DPR.TYPE'] else False for item in calib_meta_tab]
+                    if np.sum(psf_calib) < 1:
+                        logging.warning("No PSF star found!")
+                        return
+                    auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_{stdstar_type}_jitter.sof')
+                    with open(auto_jitter_sof, 'w+') as openf:
+                        for item in calib_meta_tab[psf_calib]:
+                            if 'SKY' in item['DPR.TYPE']:
+                                openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_PSF_CALIBRATOR\n")
+                            else:
+                                openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} PSF_CALIBRATOR\n")
+                elif stdstar_type == 'STD':
+                    std_calib = [True if 'STD' in item['DPR.TYPE'] else False for item in calib_meta_tab]
+                    if np.sum(std_calib) < 1:
+                        logging.warning("No STD star found!")
+                        return
+                    auto_jitter_sof = os.path.join(outdir, f'{dpr_catg}_{stdstar_type}_jitter.sof')
+                    with open(auto_jitter_sof, 'w+') as openf:
+                        for item in calib_meta_tab[std_calib]:
+                            if 'SKY' in item['DPR.TYPE']:
+                                openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} SKY_STD\n")
+                            else:
+                                openf.write(f"{raw_pool}/{item['DP.ID']}.{fits_suffix} STD\n")
+            with open(auto_jitter_sof, 'a+') as openf:    
+                openf.write(f"{calib_pool}/eris_ifu_distortion_distortion.fits DISTORTION\n")
+                openf.write(f"{calib_pool}/eris_ifu_wave_map.fits WAVE_MAP\n")
+                openf.write(f"{calib_pool}/eris_ifu_flat_master_flat.fits MASTER_FLAT\n")
+                openf.write(f"{calib_pool}/eris_ifu_dark_master_dark.fits MASTER_DARK\n")
+                openf.write(f"{static_pool}/eris_oh_spec.fits OH_SPEC\n")
+                # openf.write(f"{calib_pool}/eris_ifu_distortion_slitlet_pos.fits SLITLET_POS\n")
+                # openf.write(f"{static_pool}/EXTCOEFF_TABLE.fits EXTCOEFF_TABLE\n")
+                #if (dpr_catg == 'CALIB') and (stdstar_type == 'STD'):
+                #    if band in ['H_low', 'J_low', 'K_low']:
+                #        openf.write(f"{static_pool}/RESPONSE_WINDOWS_{band}.fits RESPONSE\n")
     if not dry_run:
         if dpr_catg == 'SCIENCE':
             subprocess.run([*esorex_cmd_list, f'--output-dir={outdir}', 
@@ -1143,12 +1155,13 @@ def reduce_eris(metafile=None, datadir=None, outdir=None,
                                 tpl_start=tpl_time, ob_id=ob_id, 
                                 esorex=esorex, dpr_catg=cat, 
                                 stdstar_type=stdstar_type, product_depth=2,
+                                overwrite=overwrite,
                                 dry_run=dry_run)
                 except:
                     # subprocess.run(['rm','-rf', daily_ob_outdir])
                     # subprocess.run(['touch', daily_ob_outdir+'/failed'])
-                    logging.warning(f"> Error: found in runing {date}: {target} on {tpl_time}")
-                    logging.warning(f">>       with {ob_id}+{band}+{spaxel}+{exptime}s")
+                    logging.error(f"> Error: found in runing {date}: {target} on {tpl_time}")
+                    logging.error(f">>       with {ob_id}+{band}+{spaxel}+{exptime}s")
 
 
 #####################################
@@ -1252,7 +1265,7 @@ def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec,
             star_type = hip_matched['SpType'][0]
             # star_type = HD_matched['SpT'][0]
         else:
-            star_type = 'none'
+            star_type = 'unknown'
         if gaia_dr3_catalog in tablist.keys():
             if debug:
                 print("Matching gaia catalog")
@@ -1324,7 +1337,7 @@ def query_star_VizieR(name=None, skycoord=None, band=None, radius=20*u.arcsec,
                                        ra_name='RAJ2000', dec_name='DEJ2000')
             if len(HD_matched) < 1:
                 print(f"{name} is not found in HD catalog!")
-                star_type = None
+                star_type = 'unknown'
             else:
                 star_type = HD_matched['SpT']
 
@@ -1402,7 +1415,7 @@ def guess_star_temperature(star_type, debug=False):
         star_dist = eval(star_classified['dist'])
         star_stage = dist_roman[star_classified['stage']]
     except:
-        return None
+        return -99
     if debug:
         print(star_classified)
         print(f'star is type:{star_group}, dist:{star_dist}, stage:{star_stage}')
@@ -2002,7 +2015,8 @@ def get_corrections(wavelength, spectrum, T_star, band_2mass=None, magnitude_2ma
                 if plot:
                     ax[0].plot(wavelength[line_mask], absorb_line(wavelength[line_mask]), 'r')
     else:
-        raise ValueError("Failed to correct the star obsorption lines! Unkown star!")
+        print("Unkonwn star, skipping the obsorption line correction...")
+        # raise ValueError("Failed to correct the star obsorption lines! unknown star!")
     blackbody_star = models.BlackBody(temperature=T_star*u.K, 
                                       scale=1.0*u.W/u.m**2/u.um/u.sr)
     transmission = spec_corrected/blackbody_star(wavelength*u.um) #* bb_zero_point)
@@ -2108,7 +2122,7 @@ def read_starfile(starfile, star_catalogue=None,):
             'tpl_start': tpl_start,
             }
 
-def get_telluric_calibration(star_list=None, star_catalogue=None,
+def get_telluric_calibration(star_list=None, star_catalogue='star_catalogue.csv',
                              datadir='science_reduced', outdir='spectral_corrections', 
                              summary_file=None,
                              target_types=['CALIBSTD'],# also 'CALIBPSF'
@@ -2140,8 +2154,14 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
     if star_list is not None:
         if isinstance(star_list, str):
             star_list = np.loadtxt(star_list, dtype=str, delimiter=',')
+    star_cat_table = None
     if star_catalogue is not None:
-        star_catalogue = table.Table.read(star_catalogue, format='csv')
+        if os.path.isfile(star_catalogue):
+            star_cat_table = table.Table.read(star_catalogue, format='csv')
+    if star_cat_table is None:
+        star_cat_table = table.Table(
+            names=('name','type', 'temperature', 'Jmag', 'Hmag', 'Kmag'), 
+            dtype=('S8','S8','f8','f8','f8','f8'))
     if star_list is None:
         if datadir is None:
             raise ValueError("Please either provide the list of star fits files or the datadir!")
@@ -2166,26 +2186,80 @@ def get_telluric_calibration(star_list=None, star_catalogue=None,
         elif 'J' in band: band_2mass = 'J'; band_starMag = 'Jmag'
         elif 'H' in band: band_2mass = 'H'; band_starMag = 'Hmag'
         print('Name', target_star)
-        if star_catalogue is not None:
-            star_info = star_catalogue[star_catalogue['name']==target_star]
-            magnitude_2mass = star_info[band_2mass]
+        if target_star in star_cat_table['name']:
+            star_info_cat = star_cat_table[star_cat_table['name']==target_star]
         else:
-            star_info = query_star_VizieR(name=target_star)
-            if star_info is None:
-                print(f"Warning: failed in matching the star, faied on {target_star}!")
-                continue
-            magnitude_2mass = star_info[band_starMag][0]
-            star_type = star_info['type'][0]
-            T_star = guess_star_temperature(star_type)
-            print(f'star_type={star_type}, T_star={T_star}, {band} Magnitude:{magnitude_2mass}')
-            if T_star is None:
-                print(f"Warning: failed in interpreting the temperature of the star, faied on {starfile}")
-                continue
-        if len(star_info) < 1:
-            logging.warning(f'No info found for star {target_star}')
+            star_info_cat = None
+        try:
+            star_info_online = query_star_VizieR(name=target_star)
+        except:
+            star_info_online = None
+        if (star_info_cat is None) and (star_info_online is None):
+            print("Error: failed in get the star information, either online and within catalogue")
+            print(f"Faied on {target_star}!")
+            star_cat_table.add_row([target_star, 'unknown', -99, -99, -99, -99])
             continue
+        # try to get the star magnitude
+        magnitude_2mass = -99
+        T_star = -99
+        star_type = 'unknown'
+        if star_info_cat is not None:
+            if star_info_cat[band_starMag] > 0:
+                magnitude_2mass = star_info_cat[band_starMag][0]
+            if star_info_cat['temperature'] > 0:
+                T_star = star_info_cat['temperature']
+            if star_info_cat['type'] != 'unknown':
+                star_type = star_info_cat['type'][0]
+        if star_info_online is not None:
+            if magnitude_2mass < 0:
+                if star_info_online[band_starMag][0] > 0:
+                    magnitude_2mass = star_info_online[band_starMag][0]
+            if (star_type == 'unknown'):
+                if (star_info_online['type'][0] != 'unknown'):
+                    star_type = star_info_online['type'][0]
+            # if T_star < 0:
+                # if star_info_online['temperature'] > 0:
+                    # T_star = star_info_online['temperature']
+        if T_star < 0:
+            if star_type != 'unknown':
+                T_star = guess_star_temperature(star_type)
+
+        if star_info_cat is not None:
+            star_info_cat['type'] = star_type 
+            star_info_cat['temperature'] = T_star
+            star_info_cat[band_starMag] = magnitude_2mass
+            star_cat_table[star_cat_table['name']==target_star] = star_info_cat
+        else: # add new row
+            star_cat_table.add_row([target_star, star_type, T_star, -99, -99, -99])
+            star_cat_table[star_cat_table['name']==target_star][band_starMag] = magnitude_2mass
+        star_cat_table.write(star_catalogue, format='csv', overwrite=True)
+        if (T_star < 0) or (magnitude_2mass < 0):
+            logging.error(f'star_type={star_type}, T_star={T_star}, {band_2mass}={magnitude_2mass} is not valid for star {target_star}')
+            continue
+
+        # if star_catalogue is not None:
+            # star_info = star_catalogue[star_catalogue['name']==target_star]
+            # magnitude_2mass = star_info[band_2mass]
+        # else:
+            # star_info_online = query_star_VizieR(name=target_star)
+            # if star_info is None:
+                # print(f"Warning: failed in matching the star, faied on {target_star}!")
+                # continue
+            # magnitude_2mass = star_info[band_starMag][0]
+            # star_type = star_info['type'][0]
+            # T_star = guess_star_temperature(star_type)
+            # print(f'star_type={star_type}, T_star={T_star}, {band} Magnitude:{magnitude_2mass}')
+            # if T_star is None:
+                # print(f"Warning: failed in interpreting the temperature of the star, faied on {starfile}")
+                # continue
+        # if len(star_info) < 1:
+            # logging.warning(f'No info found for star {target_star}')
+            # continue
         star_basenname = f'{target_star}_{tpl_start}_{band}_{spaxel}_airmass{star_airmass:.2f}'
         star_plotfile = os.path.join(outdir, star_basenname+'_qa.pdf')
+        if os.path.isfile(star_plotfile):
+            if not overwrite:
+                continue
         star_pdf_plotfile = PdfPages(star_plotfile)
         # wave_extract, spec_extract = fit_star(starfile, extract_spectrum=True, 
                                               # plot=True, plotfile=star_pdf_plotfile) 
@@ -2318,7 +2392,7 @@ def correct_cube(fitscube, wavelength=None, transmission=None, zp=None,
     with fits.open(fitscube) as hdu:
         header = hdu['PRIMARY'].header
         cube_header = hdu['DATA'].header
-        cube_unit = units.Unit(cube_header['BUNIT'])
+        cube_unit = units.Unit(cube_header['BUNIT'].lower())
         cube_wavelength = get_wavelength(cube_header)
         cube = hdu['DATA'].data
         if not cube_unit.is_equivalent('adu/s'):
@@ -2483,39 +2557,91 @@ def construct_wcs(header, data_shape=None):
             wcs_mock.wcs.ctype = 'RA', 'DEC', 'Wavelength'
             wcs_mock.array_shape = [ndim, ysize, xsize]
 
-def mask_spectral_lines(wavelength, redshift=0, line_width=1000,):
+def mask_spectral_lines(wavelength, z=None, lines=None, line_width=1000,):
     """mask spectral lines
 
     Args:
-        wavelength (ndarray): wavelength in um
+        wavelength (ndarray): wavelength in um. It is in observed frame if z is setted, 
+                              otherwise, it will be treated as restframe (default z=0)
         redshift (float): redshift
         line_width (float): velocity width in km/s
     """
     line_dict = {
-         'Halpha': 6564.61 * units.AA, 
-         'NII6548': 6549.86 * units.AA, 
-         'NII6583': 6585.27 * units.AA, 
-         'SII6717': 6718.29 * units.AA, 
-         'SII6731': 6732.67 * units.AA, 
-         'Hbeta': 4862.68 * units.AA, 
-         'OIII4959': 4960.295 * units.AA, 
-         'OIII5007': 5008.240 * units.AA,
+         'Halpha': 0.656461, 
+         # 'NII6548': 0.654986, 
+         # 'NII6583': 0.658527, 
+         'SII6717': 0.671829, 
+         'SII6731': 0.673267, 
+         'Hbeta': 0.486268, 
+         'OIII4959': 0.4960295, 
+         'OIII5007': 0.5008240,
          }
+
+    if lines is None:
+        lines = line_dict.values()
     wave_masked = np.full_like(wavelength, fill_value=False)
-    for line_name in line_dict:
-        line_wave = (line_dict[line_name] * (1.0 + redshift)).to(units.um).value
+    if z is None:
+        return wave_masked
+    for line in lines:
+        line_wave_obs = line * (1.0 + z)
         #line_width = 800.0 # km/s
         line_mask = np.logical_and(
-            (wavelength >= (line_wave - (line_width/2.0/3e5)*line_wave)),
-            (wavelength <= (line_wave + (line_width/2.0/3e5)*line_wave))
-        )
+            wavelength >= line_wave_obs * (1 - line_width/2.0/3e5),
+            wavelength <= line_wave_obs * (1 + line_width/2.0/3e5))
         wave_masked = np.logical_or(wave_masked, line_mask)
     return wave_masked
+
+def fill_mask_spectral(cube, spectral_mask, padding=2, sigma=5., debug=False):
+    nchan, ny, nx = cube.shape
+    cube_filled = cube.copy()
+    idx_masked = np.where(spectral_mask)[0]
+    # find all the consecutive masked channels and combine they
+    mask_idx_group = []
+    idx_low = 0
+    idx_up = 0
+    for idx in idx_masked:
+        if idx < idx_up+1:
+            continue
+        idx_low = idx
+        idx_up = idx+1
+        while idx_up in idx_masked:
+            idx_up += 1
+        mask_idx_group.append([idx_low, idx_up])
+    if debug:
+        print(f"Masking indices groups: {mask_idx_group}")
+    # refilled the masked region with the median of nearby regions
+    for idx_group in mask_idx_group:
+        idx_near_low = np.max([idx_group[0]-padding, 0])
+        idx_near_up = np.min([idx_group[1]+padding, nchan])
+        if debug:
+            print(f"Masking sub-idx group {idx_group}")
+            print(f"Replacing the value from {idx_near_low}:{idx_group[0]} and {idx_group[1]}:{idx_near_up}")
+        # cube_near = np.hstack([cube[idx_group[0]-padding:idx_group[0]]
+                    # cube[idx_group[1]:idx_group[1]+padding]])
+        cube_near = cube[list(range(idx_near_low, idx_group[0]))+
+                         list(range(idx_group[1], idx_near_up))]
+        near_background = astro_stats.sigma_clip(cube_near, sigma=sigma, axis=0)
+        median_near_cube = np.repeat(np.nanmedian(near_background, axis=0)[None,:,:], 
+                                     idx_group[1]-idx_group[0], axis=0)
+        cube_filled[idx_group[0]:idx_group[1],:,:] = median_near_cube
+    return cube_filled
+
+def fill_invalid(data, mask=None, fill_value=0, axis=0):
+    """filled the invalid pixel/spaxel 
+    """
+    data_copy = np.ma.masked_array(data, mask=mask)
+    data_masked = np.ma.masked_invalid(data_copy)
+    nanfix_kernel = Gaussian1DKernel(2).array
+    data_masked_convolved = convolve1d(data_masked.filled(fill_value), 
+                                       nanfix_kernel, axis=axis)
+    data_copy[data_masked.mask] = data_masked_convolved[data_masked.mask]
+    return data_copy
 
 def clean_cube(datacube, mask=None, signal_mask=None, 
                sigma_clip=True, sigma=5.0,
                median_filter=False, median_filter_size=(5,3,3),
-               median_subtract=True, median_subtract_row=False, median_subtract_col=False,
+               median_subtract=True, median_subtract_row=False, 
+               median_subtract_col=False,
                channel_chunk=None):
     """clean the datacubes
 
@@ -2612,9 +2738,55 @@ def clean_cube(datacube, mask=None, signal_mask=None,
         # datacube_masked -= spec_median_filled[:,np.newaxis, np.newaxis]
 
     # apply global median subtraction by default
-    datacube_masked -= np.median(stats.sigmaclip(datacube_signal_masked.compressed(), low=sigma, high=sigma)[0])
+    datacube_masked -= np.median(stats.sigmaclip(datacube_signal_masked.compressed(), 
+                                                 low=sigma, high=sigma)[0])
       
     return datacube_masked
+
+def clean_cube2(cube, wavelength, z=None, lines=None, line_width=600, padding=40,
+                median_subtract_row=True, sigma=3, fill_skylines=False, 
+                sigma_clip=True):
+    """background subtraction with line protection
+
+    Args:
+        cube (ndarray): the 3D datacube
+        wavelength (ndarray): wavelength in um. It is in observed frame if z is setted, 
+                              otherwise, it will be treated as restframe (default z=0)
+        z (float): redshift
+        line_width (float): velocity width in km/s, 
+    """
+
+    if False:
+        sky_lines_mask = get_sky_lines_mask(wavelength)
+        cube_sky_line_filled = fill_mask_spectral(cube, sky_lines_mask, padding=2, 
+                                                  sigma=sigma)
+    else:
+        cube_sky_line_filled = cube
+
+    # calculated the filled cube with protected lines
+    spectral_mask = mask_spectral_lines(wavelength, z=z, line_width=line_width)
+    cube_filled = fill_mask_spectral(cube_sky_line_filled, spectral_mask, 
+                                     padding=padding, sigma=sigma)
+    clipped = astro_stats.sigma_clip(cube_filled, sigma=3, axis=2) # clip along rows
+    median_rows = np.nanmedian(clipped, axis=2) # do medians on rows
+    median_cube = np.repeat(median_rows[:,:, np.newaxis], cube.shape[2], axis=2) # make it 3D by repeating along the x axis
+    if sigma_clip:
+        # apply sigma_clip along the spectral axis
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', AstropyWarning)
+            # first apply a global masking, masking outliers with S/N of 10*sigma
+            # with a single exposure, it is very unlikely that the signal will have
+            # such large S/N
+            cube_full_masked = astro_stats.sigma_clip(cube, sigma=10, 
+                                                      maxiters=5, masked=True)
+            # then apply a strick clipping on the channels without signals.
+            cube_free_masked = astro_stats.sigma_clip(cube_filled, 
+                                        sigma=sigma, maxiters=2, masked=True)
+            outlier_mask = (cube_full_masked.mask | cube_free_masked.mask)
+        cube_outlier_masked = fill_invalid(cube, mask=outlier_mask) 
+        cube[outlier_mask] = cube_outlier_masked[outlier_mask]
+    cube = cube - median_cube
+    return cube
 
 def get_sky_lines_mask(wavelength, esorex='esorex', sky_mask_min=1.0):
     """apply sigma-clip on the sky lines
@@ -2831,18 +3003,7 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
         wave_scale = np.mean(padded_cube_size[1:]) # mean size of the x and y shape
         wave_min, wave_max = np.min(wavelength), np.max(wavelength)
         wavelength_norm = (wavelength - wave_min)/wave_max*wave_scale
-          
-        # (deprecated), the weighting is now taking care by the coverage
-        # # handle the weighting
-        # if weighting is None:
-            # # treat each dataset equally
-            # try:
-                # # get the weighting by the exposure time
-                # weighting = compute_weighting_eris(cube_list)
-            # except:
-                # # otherwise treat every observation equally
-                # weighting = np.full(ncubes, fill_value=1./ncubes)
- 
+
         for i in range(ncubes):
             # get the offset, we need to multiply -1 to inverse the shifts
             # as the calculation of pixel shifts is the (x0-xi, y0-yi) 
@@ -2899,23 +3060,45 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
             cube_wavelength_norm = (cube_wavelength-wave_min)/wave_max*wave_scale
             cube_nchan, cube_ny, cube_nx = cube_data.shape
         
-            if z is not None:
-                # with redshift, we can mask the signals, here are the H-alpha and [N II]
-                wave_mask = mask_spectral_lines(cube_wavelength, redshift=z, line_width=line_width)
-                cube_wave_mask = np.repeat(wave_mask, cube_ny*cube_nx).reshape(
-                                           len(cube_wavelength), cube_ny, cube_nx)
-            else:
-                cube_wave_mask = None
+#             if z is not None:
+                # # with redshift, we can mask the signals, here are the H-alpha and [N II]
+                # wave_mask = mask_spectral_lines(cube_wavelength, redshift=z, line_width=line_width)
+                # cube_wave_mask = np.repeat(wave_mask, cube_ny*cube_nx).reshape(
+                                           # len(cube_wavelength), cube_ny, cube_nx)
+            # else:
+                # cube_wave_mask = None
             
-            # mask the outliers and subtract median noise, see clean_cube for details
-            # needs to be cautious in preveting removing possible signal 
-            cube_data_masked = clean_cube(cube_data, mask=cube_mask, signal_mask=cube_wave_mask, 
-                                          sigma_clip=sigma_clip, sigma=sigma, median_subtract=False)
-            # simple alternative is:
-            # cube_data_masked = astro_stats.sigma_clip(cube_data, sigma=5)
+            # # mask the outliers and subtract median noise, see clean_cube for details
+            # # needs to be cautious in preveting removing possible signal 
+            # cube_data_masked = clean_cube(cube_data, mask=cube_mask, signal_mask=cube_wave_mask, 
+                                          # sigma_clip=sigma_clip, sigma=sigma, median_subtract=False)
+            # # simple alternative is:
+            # # cube_data_masked = astro_stats.sigma_clip(cube_data, sigma=5)
+            # cube_data = cube_data_masked.filled(0)
+            # cube_mask = cube_data_masked.mask
 
-            cube_data = cube_data_masked.filled(0)
-            cube_mask = cube_data_masked.mask
+
+            if True:
+                # sky line removing with sigma_clip and convolving
+                cube_sky_lines_mask = get_sky_lines_mask(cube_wavelength)
+                cube_skyline_fixed = fill_mask_spectral(cube_data, cube_sky_lines_mask)
+                # apply stronger mask on the sky lines
+                # sky_line_cube_mask = np.zeros_like(cube_data).astype(bool)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', AstropyWarning)
+                    mean, median, std = astro_stats.sigma_clipped_stats(
+                            cube_skyline_fixed[cube_sky_lines_mask], 
+                            sigma=3, maxiters=5,)
+                sky_chan_data = cube_data[cube_sky_lines_mask].copy()
+                sky_chan_data[(sky_chan_data < -2.*std) | (sky_chan_data > 2*std)] = 0
+                cube_skyline_fixed[cube_sky_lines_mask] = sky_chan_data
+                nanfix_kernel = Gaussian1DKernel(2)
+                cube_skyline_fixed = convolve1d(cube_skyline_fixed, nanfix_kernel.array, axis=0)
+                cube_data[cube_sky_lines_mask] = cube_skyline_fixed[cube_sky_lines_mask]
+
+            # background subtraction with line protection
+            if True:
+                cube_data = clean_cube2(cube_data, cube_wavelength, z=z)
 
             # follow two steps
             # step 1: get the pixel level shifts
@@ -2974,33 +3157,33 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
     with np.errstate(divide='ignore', invalid='ignore'):
         data_combined = data_combined / (coverage_combined) 
 
-    if z is not None:
-        wave_mask = mask_spectral_lines(wavelength, redshift=z, line_width=line_width)
-        wave_mask = np.repeat(wave_mask, padded_cube_size[1]*padded_cube_size[2]).reshape(
-                              *padded_cube_size)
-        print('final wave_mask shape',wave_mask.shape)
-    else:
-        wave_mask = None
-    sky_lines_mask = get_sky_lines_mask(wavelength)
-    if sky_lines_mask is not None:
-        # apply stronger mask on the sky lines
-        # get the statistics with skyline masked
-        sky_line_cube_mask = np.zeros_like(data_combined).astype(bool)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', AstropyWarning)
-            mean, median, std = astro_stats.sigma_clipped_stats(data_combined[~sky_lines_mask],
-                                                                sigma=3, maxiters=5,)
-        sky_chan_data = data_combined[sky_lines_mask].copy()
-        sky_chan_data[(sky_chan_data < -2.*std) | (sky_chan_data > 2*std)] = np.nan
-        data_combined[sky_lines_mask] = sky_chan_data
+    # if z is not None:
+        # wave_mask = mask_spectral_lines(wavelength, z=z, line_width=line_width)
+        # wave_mask = np.repeat(wave_mask, padded_cube_size[1]*padded_cube_size[2]).reshape(
+                              # *padded_cube_size)
+        # print('final wave_mask shape',wave_mask.shape)
+    # else:
+        # wave_mask = None
+    # sky_lines_mask = get_sky_lines_mask(wavelength)
+    # if sky_lines_mask is not None:
+        # # apply stronger mask on the sky lines
+        # # get the statistics with skyline masked
+        # sky_line_cube_mask = np.zeros_like(data_combined).astype(bool)
+        # with warnings.catch_warnings():
+            # warnings.simplefilter('ignore', AstropyWarning)
+            # mean, median, std = astro_stats.sigma_clipped_stats(
+                    # data_combined[~sky_lines_mask], sigma=3, maxiters=5,)
+        # sky_chan_data = data_combined[sky_lines_mask].copy()
+        # sky_chan_data[(sky_chan_data < -2.*std) | (sky_chan_data > 2*std)] = np.nan
+    #     data_combined[sky_lines_mask] = sky_chan_data
         #sky_line_cube_mask[sky_lines_mask] = np.nan#(sky_chan_data)
         #data_combined[sky_line_cube_mask] = np.nan
 
-    data_combined = clean_cube(data_combined,
-                               signal_mask=wave_mask, 
-                               sigma_clip=sigma_clip, sigma=sigma,
-                               median_subtract=median_subtract)
-    data_combined = data_combined.filled(np.nan)
+    # data_combined = clean_cube(data_combined,
+                               # signal_mask=wave_mask, 
+                               # sigma_clip=sigma_clip, sigma=sigma,
+                               # median_subtract=median_subtract)
+    # data_combined = data_combined.filled(np.nan)
     if savefile is not None:
         # save the combined data
         hdr = first_wcs.to_header()
@@ -3149,6 +3332,7 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
     """search file in the archive -- datadir
 
     """
+
     date_matcher = re.compile(r'(\d{4}-\d{2}-\d{2})')
     if ob_list is not None:
         if isinstance(ob_list, str):
@@ -3174,19 +3358,18 @@ def search_archive(datadir, target=None, target_type=None, band=None, spaxel=Non
             target_type_list = []
     else:
         target_type_list = ['SCIENCE','CALIBPSF','CALIBSTD', 'CALIB']
-    dates = []
-    for sub_dir in os.listdir(datadir):
-        if date_matcher.match(sub_dir):
-            dates.append(sub_dir)
+    datadir_with_dates = []
+    if isinstance(datadir, str):
+        datadir = [datadir]
+    for datadir_i in datadir:
+        for sub_dir in os.listdir(datadir_i):
+            if date_matcher.match(sub_dir):
+                datadir_with_dates.append(os.path.join(datadir_i, sub_dir))
+    if len(datadir_with_dates) < 0:
+        datadir_with_dates = datadir
     image_list = []
     image_exp_list = []
     image_arcname_list = []
-    if len(dates) > 0:
-        datadir_with_dates = []
-        for date in dates:
-            datadir_with_dates.append(os.path.join(datadir, date))
-    else:
-        datadir_with_dates = [datadir]
     for data_folder in datadir_with_dates:
         for obs in os.listdir(data_folder):
             obs_match = match_obs_folder(obs)
@@ -3288,10 +3471,97 @@ def summarise_eso_files(filelist, outfile=None):
     else:
         return summary_tab
 
+def fit_gaussian_2d(image, amp=None, x0=None, y0=None, xsigma=None, ysigma=None,
+                    theta=None, bounds=None, return_fitimage=False,
+                    basename='', plot=False, plotfile=None):
+    """costumized 2d gaussian fitting
+    
+    Args:
+        image: 2d image
+        p_init: the initial guess of the gaussian: [amp, x0, y0, xsigma, ysigma, theta]
+                x0, y0 xsigma, ysigma: in the unit of pixel
+                theta in unit of radian
+        bounds: the boundaries of all the parameters
+    """
+    yshape, xshape = image.shape
+    margin_padding = int(0.05*(yshape+xshape))
+    norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
+                                   margin_padding:-margin_padding], 98)
+    sigma2FWHM = np.sqrt(8*np.log(2))
+    image_median = np.nanmedian(image)
+    image_normed = (image - image_median) / norm_scale 
+    center_ref = np.array([xshape*0.5, yshape*0.5])
+    # make initial guess
+    if amp is None: amp = 1.
+    if x0 is None: x0 = center_ref[0]
+    if y0 is None: y0 = center_ref[1]
+    if xsigma is None: xsigma = 1
+    if ysigma is None: ysigma = 1
+    if theta is None: theta = 0
+    # prepare for fitting
+    p_init = [amp/norm_scale, x0-center_ref[0], y0-center_ref[1], xsigma, ysigma, theta]
+    if bounds == None:
+        bounds = [[-10, 10], [-0.5*xshape,0.5*xshape], [-0.5*yshape,0.5*yshape], 
+                  [1/sigma2FWHM,0.5*xshape/sigma2FWHM], 
+                  [1/sigma2FWHM,0.5*yshape/sigma2FWHM],
+                  [-np.pi*0.5,np.pi*0.5]]
+    # ygrid, xgrid = (np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None])
+    xgrid, ygrid = np.meshgrid((np.arange(0, xshape) - center_ref[0]),
+                               (np.arange(0, yshape) - center_ref[1]))
+    rgrid = np.sqrt(xgrid**2 + ygrid**2)
+    rms = 1
+
+    def _cost(params, xgrid, ygrid):
+        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
+        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid)
+                       )**2/(rgrid**2+(5+rms)**2))
+    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), 
+                                     method='L-BFGS-B',
+                                     bounds=bounds)
+    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
+    best_fit = [amp_fit*norm_scale, x0_fit+center_ref[0], y0_fit+center_ref[1], 
+                xsigma_fit, ysigma_fit, beta_fit]
+    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
+   
+    if plot:
+        vmax = np.nanpercentile(image_normed[20:-20, 20:-20], 95)
+        vmin = np.nanpercentile(image_normed[20:-20, 20:-20], 5)
+        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 3)
+        ax1 = fig.add_subplot(gs[0,0])
+        im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax1)
+        ax1.plot(x0_fit+32, y0_fit+32, 'x', color='red')
+        ax1.plot(32, 32, 'x', color='grey')
+        ax2 = fig.add_subplot(gs[0,1])
+        ax2.set_title(basename, fontsize=8)
+        im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax2)
+        ax3 = fig.add_subplot(gs[0,2])
+        im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
+        cbar = plt.colorbar(im, ax=ax3)
+        if plotfile is not None:
+            plotfile.savefig(fig, bbox_inches='tight')
+            plt.close()
+        if plot:
+            plt.show()
+        else:
+            plt.close()
+    if return_fitimage:
+        return gaussian_2d(res_minimize.x, xgrid, ygrid) * norm_scale
+    else:
+        return best_fit
+ 
 def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                       interactive=False, basename=None, outfile=None, plotfile=None,
                       is_fitted=False, is_failed=False, fitted_dict={}):
     """two dimentional Gaussian fit
+
+    Args:
+        starfits: the fits file for stars
+        x0, y0: the initial guess for the center
+        plotfile: the file to plot the fitting results
 
     """
     if basename is None:
@@ -3465,87 +3735,6 @@ def fit_star_position(starfits, x0=None, y0=None, pixel_size=1, plot=False,
             print("best_fit", best_fit)
         return best_fit
 
-def fit_gaussian_2d(image, amp=None, x0=None, y0=None, xsigma=None, ysigma=None,
-                    theta=None, bounds=None, return_fitimage=False,
-                    basename='', plot=False, plotfile=None):
-    """costumized 2d gaussian fitting
-    
-    Args:
-        image: 2d image
-        p_init: the initial guess of the gaussian: [amp, x0, y0, xsigma, ysigma, theta]
-                x0, y0 xsigma, ysigma: in the unit of pixel
-                theta in unit of radian
-        bounds: the boundaries of all the parameters
-    """
-    yshape, xshape = image.shape
-    margin_padding = int(0.05*(yshape+xshape))
-    norm_scale = 2*np.percentile(image[margin_padding:-margin_padding,
-                                   margin_padding:-margin_padding], 98)
-    sigma2FWHM = np.sqrt(8*np.log(2))
-    image_median = np.nanmedian(image)
-    image_normed = (image - image_median) / norm_scale 
-    center_ref = np.array([xshape*0.5, yshape*0.5])
-    # make initial guess
-    if amp is None: amp = 1.
-    if x0 is None: x0 = center_ref[0]
-    if y0 is None: y0 = center_ref[1]
-    if xsigma is None: xsigma = 1
-    if ysigma is None: ysigma = 1
-    if theta is None: theta = 0
-    # prepare for fitting
-    p_init = [amp/norm_scale, x0-center_ref[0], y0-center_ref[1], xsigma, ysigma, theta]
-    if bounds == None:
-        bounds = [[-10, 10], [-0.5*xshape,0.5*xshape], [-0.5*yshape,0.5*yshape], 
-                  [1/sigma2FWHM,0.5*xshape/sigma2FWHM], 
-                  [1/sigma2FWHM,0.5*yshape/sigma2FWHM],
-                  [-np.pi*0.5,np.pi*0.5]]
-    # ygrid, xgrid = (np.mgrid[0:yshape,0:xshape] - center_ref[:,None,None])
-    xgrid, ygrid = np.meshgrid((np.arange(0, xshape) - center_ref[0]),
-                               (np.arange(0, yshape) - center_ref[1]))
-    rgrid = np.sqrt(xgrid**2 + ygrid**2)
-    rms = 1
-
-    def _cost(params, xgrid, ygrid):
-        # return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-        return np.sum((image_normed - gaussian_2d(params, xgrid, ygrid)
-                       )**2/(rgrid**2+(5+rms)**2))
-    res_minimize = optimize.minimize(_cost, p_init, args=(xgrid, ygrid), 
-                                     method='L-BFGS-B',
-                                     bounds=bounds)
-    amp_fit, x0_fit, y0_fit, xsigma_fit, ysigma_fit, beta_fit = res_minimize.x
-    best_fit = [amp_fit*norm_scale, x0_fit+center_ref[0], y0_fit+center_ref[1], 
-                xsigma_fit, ysigma_fit, beta_fit]
-    xfwhm_fit, yfwhm_fit = xsigma_fit*sigma2FWHM, ysigma_fit*sigma2FWHM
-   
-    if plot:
-        vmax = np.nanpercentile(image_normed[20:-20, 20:-20], 99)
-        vmin = np.nanpercentile(image_normed[20:-20, 20:-20], 1)
-        fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
-        fig = plt.figure(figsize=(12, 6))
-        gs = gridspec.GridSpec(2, 3)
-        ax1 = fig.add_subplot(gs[0,0])
-        im = ax1.imshow(image_normed, origin='lower', vmax=vmax, vmin=vmin)
-        cbar = plt.colorbar(im, ax=ax1)
-        ax1.plot(x0_fit+32, y0_fit+32, 'x', color='red')
-        ax2 = fig.add_subplot(gs[0,1])
-        ax2.set_title(basename, fontsize=8)
-        im = ax2.imshow(fit_image, origin='lower', vmax=vmax, vmin=vmin)
-        cbar = plt.colorbar(im, ax=ax2)
-        ax3 = fig.add_subplot(gs[0,2])
-        im = ax3.imshow(image_normed - fit_image, origin='lower', vmax=vmax, vmin=vmin)
-        cbar = plt.colorbar(im, ax=ax3)
-        if plotfile is not None:
-            plotfile.savefig(fig, bbox_inches='tight')
-            plt.close()
-        if plot:
-            plt.show()
-        else:
-            plt.close()
-    if return_fitimage:
-        return gaussian_2d(res_minimize.x, xgrid, ygrid) * norm_scale
-    else:
-        return best_fit
- 
 def fit_star_position_legacy(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                       interactive=False, basename=None, outfile=None, plotfile=None,
                       ):
@@ -3810,14 +3999,15 @@ def construct_drift_file(tpl_start_list, datadir, plot=False, driftfile=None,
         print("Nothing to return")
 
 def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite=True, 
-                      fitcode=0, category='PSF_CALIBRATOR'):
+                      fitcode=0, force_refit=False, category='PSF_CALIBRATOR'):
     """fit the PSF stars in the summary table
 
     Args:
         summary_table: the summary_table for each target
         plotfile: the filename of the output plotfile
         interactive: interactive fitting
-        mode: available modes: 'all', 'fitted', 'unfitted', 'failed'
+        fitcode: available code: 0:'unfitted', '1':'fitted', '-1':'failed'
+        force_refit: refit and ignore the existing fitting code
     """
     if isinstance(summary_table, str):
         writefile = summary_table
@@ -3826,6 +4016,7 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
         writefile = None
 
     if plotfile is not None:
+        n_new_plot = 0
         from matplotlib.backends.backend_pdf import PdfPages
         pdf_file = PdfPages(plotfile)
     else:
@@ -3842,11 +4033,12 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
         is_failed = 0
         code_fit = item['fitted']
         fitted_dict = {}
-        if code_fit < 0:
-            is_failed = 1
-        if code_fit > 0:
-            is_fitted = 1
-            fitted_dict = {'x':item['Xref'], 'y':item['Yref']}
+        if not force_refit:
+            if code_fit < 0:
+                is_failed = 1
+            if code_fit > 0:
+                is_fitted = 1
+                fitted_dict = {'x':item['Xref'], 'y':item['Yref']}
         print(f'Working on psf star: {item["ob_id"]}+{item["tpl_start"]}...')
         # logging.info('Fitting star {}'.format(item[]))
         if interactive:
@@ -3854,6 +4046,7 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
                                            plotfile=pdf_file, 
                                            is_fitted=is_fitted, is_failed=is_failed,
                                            fitted_dict=fitted_dict)
+            n_new_plot += 1
             if fit_result == -1: 
                 is_failed = 1
             elif fit_result == 0:
@@ -3866,6 +4059,7 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
                     fit_star_position_legacy(item['filename'], interactive=False,
                                       plot=True, plotfile=pdf_file)
             is_fitted = True
+            n_new_plot += 1
         if is_fitted:
             item['Xref'] = xpix
             item['Yref'] = ypix
@@ -3875,6 +4069,8 @@ def fit_eris_psf_star(summary_table, plotfile=None, interactive=False, overwrite
 
     if plotfile is not None:
         pdf_file.close()
+        if n_new_plot == 0:
+            subprocess.run(['rm', '-rf', plotfile])
 
     if writefile is not None:
         if overwrite:
@@ -4360,6 +4556,39 @@ def run_eris_pipeline(datadir='science_raw', outdir='science_reduced',
                     esorex=esorex, overwrite=overwrite, debug=debug, 
                     dry_run=dry_run)
         logging.info(f"<")
+
+def quick_drifts_fitting(datadir, name=None, band=None, spaxel=None, 
+                         target_type='SCIENCE', filename=None, plotfile=None, 
+                         interactive=1, overwrite=False):
+    """A shortcut of drifts fitting
+    """
+    if filename is None:
+        filename = "{name}_{band}_{spaxel}_drifts.csv"
+    if plotfile is None:
+        plotfile = filename[:-4]+'_plot.pdf'
+        existing_plotfiles = glob.glob(plotfile[:-4]+'*.pdf')
+        n_existing_plotfiles = len(existing_plotfiles)
+        if overwrite:
+            for fn in existing_plotfiles:
+                subprocess.run(['rm', '-rf', fn])
+            n_existing_plotfiles = 0
+        if len(existing_plotfiles) > 0:
+            plotfile = plotfile[:-4]+str(n_existing_plotfiles)+'.pdf'
+    file_list,_,_ = search_archive(datadir, target=name, band=band, spaxel=spaxel, 
+                                   target_type='SCIENCE')
+    target_summary = summarise_eso_files(file_list)
+    construct_drift_file(target_summary['tpl_start'], datadir=datadir, 
+                         driftfile=filename)
+    if overwrite:
+        force_refit = True
+        fitcode = None
+    else:
+        force_refit = False
+        fitcode = 0
+    fit_eris_psf_star(filename, plotfile=plotfile, interactive=interactive, 
+                      fitcode=fitcode, force_refit=force_refit)
+    interpolate_drifts(filename)
+    print(f"Finding drifts file: {filename} and QA {plotfile}")
 
 def quick_combine_legacy(datadir=None, target=None, offsets=None, excludes=None, band=None,
                   spaxel=None, drifts=None, outdir='./', esorex='esorex', z=None, 
@@ -4862,6 +5091,7 @@ if __name__ == '__main__':
           * get_daily_calib: quick way to get dalily calibration files
           * run_eris_pipeline: quickly reduce science data with raw files
           * quick_combine: quickly combine reduced science data
+          * quick_drifts_fitting: quickly derive the drifts from PSF stars
           * quick_pv_diagram: quickly get the pv diagram of the datacube
 
           To get more details about each task:
@@ -5082,6 +5312,9 @@ if __name__ == '__main__':
                                            help='the fits file of the star')
     subp_get_flux_calibration.add_argument('--datadir', '-d', default=None, 
                                            help='the output directory')
+    subp_get_flux_calibration.add_argument('--star_catalogue',
+                                           default='star_catalogue.csv', 
+                                           help='the star catalogue file')
     subp_get_flux_calibration.add_argument('--outdir', default='spectral_corrections', 
                                            help='the output directory')
 
@@ -5164,7 +5397,7 @@ if __name__ == '__main__':
 
               eris_jhchen_utils quick_combine --datadir science_reduced --target bx482 --band K_middle --spaxel 25mas --drifts drifts_file --suffix test1 --outdir combined --z 2.2571 --weak_signal
                                         '''))
-    subp_quick_combine.add_argument('--datadir', help='The data dierectory')
+    subp_quick_combine.add_argument('--datadir', nargs='+', help='The data directories')
     subp_quick_combine.add_argument('--target', help='The target name')
     subp_quick_combine.add_argument('--offsets', help='The txt offsets file')
     subp_quick_combine.add_argument('--filelist', help='The files to be included')
@@ -5193,6 +5426,29 @@ if __name__ == '__main__':
                                     help='The combine recipe to be used, set to "eris_ifu_combine" to use the pipeline\'s default combine recipe')
     subp_quick_combine.add_argument('--overwrite', action='store_true', help='Overwrite exiting fits file')
 
+
+    ################################################
+    # quick drifts fitting 
+    subp_quick_drifts_fitting = subparsers.add_parser('quick_drifts_fitting',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent('''\
+            quickly derive the drifts from the begining and end PSF star 
+            ------------------------------------------------------------
+            example:
+
+                eris_jhchen_utils quick_drifts_fitting -d science_reduced -n bx482 -b K_middle -s 100mas -f bx482_100mas_drifts.csv --interactive 
+            '''))
+    subp_quick_drifts_fitting.add_argument('-d', '--datadir', nargs='+', help='The data dierectories')
+    subp_quick_drifts_fitting.add_argument('-t', '--target', help='The name of target')
+    subp_quick_drifts_fitting.add_argument('-b', '--band', help='The band')
+    subp_quick_drifts_fitting.add_argument('-s', '--spaxel', help='The spaxel scale')
+    subp_quick_drifts_fitting.add_argument('-f', '--filename', help='The spaxel scale')
+    subp_quick_drifts_fitting.add_argument('--target_type', default="SCIENCE", 
+                                       help='the type of the target, can be SCIENCE, CALIBPSF, CALIBSTD')
+    subp_quick_drifts_fitting.add_argument('--plotfile', default=None, 
+                                       help='The QA file with the fitting results')
+    subp_quick_drifts_fitting.add_argument('--interactive', action='store_true', help='Turn on the interactive fitting') 
+    subp_quick_drifts_fitting.add_argument('--overwrite', action='store_true', help='Re-fitting all the PSF stars') 
 
     ################################################
     # quick pv diagram
@@ -5315,6 +5571,7 @@ if __name__ == '__main__':
 
     elif args.task == 'get_telluric_calibration':
         get_telluric_calibration(star_list=args.file_list, outdir=args.outdir,
+                                 star_catalogue=args.star_catalogue, 
                                  datadir=args.datadir)
     # elif args.task == 'get_telluric_calibration':
         # if args.star_list_file is not None:
@@ -5355,6 +5612,11 @@ if __name__ == '__main__':
                       overwrite=args.overwrite, recipe=args.recipe,
                       outdir=args.outdir, drifts=args.drifts, suffix=args.suffix,
                       )
+    elif args.task == 'quick_drifts_fitting':
+        quick_drifts_fitting(args.datadir, name=args.target, band=args.band, 
+                             spaxel=args.spaxel, filename=args.filename, 
+                             target_type=args.target_type, plotfile=args.plotfile,
+                             interactive=args.interactive, overwrite=args.overwrite)
     elif args.task == 'quick_pv_diagram':
         if args.sigma_clip <= 0:
             sigma_clip = False
