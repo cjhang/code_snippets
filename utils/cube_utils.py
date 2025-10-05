@@ -356,9 +356,9 @@ class Cube(BaseCube):
             pixel_aperture = sky_aperture.to_pixel(self.wcs.celestial)
         if pixel_aperture is not None:
             if not isinstance(pixel_aperture, EllipticalAperture):
-                if isinstance(pixel_aperture, [list, tuple]):
+                if isinstance(pixel_aperture, (list, tuple)):
                     pixel_aperture = EllipticalAperture(pixel_coord, *pixel_aperture)
-                elif isinstance(pixel_aperture, [float, int]):
+                elif isinstance(pixel_aperture, (float, int)):
                     pixel_aperture = EllipticalAperture(pixel_coord, *pixel_aperture)
                 else:
                     raise ValueError("Unsupported pixel_aperture!")
@@ -549,7 +549,7 @@ class Cube(BaseCube):
             # hdu_list.append(fits.BinTableHDU.from_columns([c1,c2,c3], name='BEAMS'))
         hdu_list.append(fits.PrimaryHDU(data=self.data, header=header))
         hdus = fits.HDUList(hdu_list)
-        hdus.writeto(filename, overwrite=overwrite)
+        hdus.writeto(filename, overwrite=overwrite, output_verify='fix')
     def readfits(self, fitscube, extname='Primary', stokes=0, debug=False):
         """read general fits file
         """
