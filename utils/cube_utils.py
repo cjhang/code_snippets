@@ -538,9 +538,13 @@ class Cube(BaseCube):
         header.update({'history':'created by cube_utils.Cube',})
         hdu_list = []
         # write the beams
-        beam = self.beam
-        header.update({'BMAJ':beam[0]/3600., 'BMIN':beam[1]/3600., 
-                       'BPA':self.beam[2]})
+        try:
+            beam = self.beam
+            header.update({'BMAJ':beam[0]/3600., 'BMIN':beam[1]/3600., 
+                           'BPA':self.beam[2]})
+        except:
+            print('No valid beam has been written.')
+            pass
         # if ndim_beam == 2:
             # beams_T = self._beams.T
             # c1 = fits.Column(name='BMAJ', array=beams_T[0], format='D', unit='arcsec') # double float
@@ -563,7 +567,7 @@ class Cube(BaseCube):
             elif naxis == 3:
                 cube_data = cube_hdu[extname].data
             else:
-                raise ValueError('Fits is not datacube!')
+                raise ValueError(f'Fits is not datacube! naxis={naxis}')
             # if 'BUNIT' in cube_header.keys():
                 # cube_unit = u.Unit(cube_header['BUNIT'])
                 # cube_data = cube_data * cube_unit
@@ -742,7 +746,7 @@ def make_moments(data, chandata, moment=0, mask=None):
             moment_image = np.sum(data*(chandata[:,None,None]-M1[None,:,:])**moment*dchan[:,None,None], axis=0)/M0
     return moment_image
 
-def gaussian1D(x, params):
+def gaussian_1d(params, x):
     """ 1-D gaussian function with/withou continuum
 
     Args:
@@ -755,7 +759,8 @@ def gaussian1D(x, params):
         cont = 0
     elif len(params) == 4: # fit the continuum
         amp, mean, sigma, cont = params
-    return amp / ((2*np.pi)**0.5*sigma) * np.exp(-0.5*(x-mean)**2/sigma**2) + cont
+    # return amp / ((2*np.pi)**0.5*sigma) * np.exp(-0.5*(x-mean)**2/sigma**2) + cont
+    return amp * np.exp(-0.5*(x-mean)**2/sigma**2) + cont
 
 def calculate_diff(v):
     """approximate the differential v but keep the same shape
@@ -1006,7 +1011,8 @@ def fill_mask(data, mask=None, step=1, debug=False):
             data_filled[tuple(idx)] = np.nanmedian(data_filled[ss])
     return data_filled
 
-def fill_spectral_mask(cube, spectral_mask, padding=2, sigma=5., debug=False):
+def fill_spectral_mask(cube, spectral_mask, padding=2, sigma=5., 
+                       fill='median', debug=False):
     """fill the data cube along with the spectral axis. It is a faster approach
     than the fill_mask in the 3D datacube, specified in the spectral axis
 
@@ -1054,13 +1060,34 @@ def fill_spectral_mask(cube, spectral_mask, padding=2, sigma=5., debug=False):
         cube_filled[idx_group[0]:idx_group[1],:,:] = median_near_cube
     return cube_filled
 
-
+def _test_fill_spectral_mask(plot=True):
+    n_size = 200
+    rng = np.random.default_rng(1994)
+    channel = np.arange(n_size) 
+    noise = rng.random(n_size) - 0.5
+    signal = gaussian_1d([4, 0.4*n_size, 2], channel)
+    spec = signal + noise
+    mask_idx = [0,1,2,10,11,79,80,81,82,140,150,170,171]
+    masked_array = np.zeros_like(spec).astype(bool)
+    masked_array[[mask_idx]] = True
+    spec_masked = spec.copy()
+    spec_masked[masked_array] = np.nan
+    spec_filled = fill_spectral_mask(spec_masked[:,None,None], masked_array, debug=True).reshape(n_size)
+    if plot:
+        plt.step(channel, spec, label='origin', color='black', lw=0.5, linestyle='--', alpha=0.2)
+        plt.step(channel, spec_masked, color='black', alpha=0.6, lw=2, label='masked')
+        plt.step(channel, spec_filled, color='tab:blue', alpha=0.6, lw=4, label='masked_filled')
+        plt.step(channel, masked_array, color='red', alpha=0.6, lw=1, label='mask')
+        plt.legend()
+        plt.show()
+ 
 #################################
 ###      quick functions      ###
 #################################
 
 def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None, 
             pixel_center=None, pixel_radius=None, bltr=None, chans=None,
+            extname='Primary',
             overwrite=True):
     """split a subcube from a big cube
 
@@ -1072,16 +1099,18 @@ def subcube(fitscube, outfile=None, sky_center=None, sky_radius=None,
                    default: the image center
     """
     cube = Cube()
-    cube.readfits(fitscube)
+    cube.readfits(fitscube, extname=extname,)
     # cube.read_ALMA(fitscube)
     # convert the sky coordinate to pixel coordinate
     if sky_center is not None:
         if not isinstance(sky_center, coordinates.SkyCoord):
             if ':' in sky_center or 'm' in sky_center:
-                sky_center = SkyCoord(sky_center, unit=(u.hourangle, u.deg))
+                sky_center = coordinates.SkyCoord(
+                        sky_center, unit=(u.hourangle, u.deg))
             else:
                 ra, dec = sky_center.split(" ")
-                sky_center = SkyCoord(float(ra), float(dec), unit='deg')
+                sky_center = coordinates.SkyCoord(
+                        float(ra), float(dec), unit='deg')
             pixel_center = cube.skycoords2pixels(sky_center)
     if sky_radius is not None:
         if isinstance(sky_radius, str):
@@ -1170,6 +1199,7 @@ if __name__ == '__main__':
 
             '''))
     subp_subcube.add_argument('--fitscube', type=str, help='The input fits datacube')
+    subp_subcube.add_argument('--extname', type=str, help='The input fits datacube')
     subp_subcube.add_argument('--outfile', type=str, help='The output file name')
     subp_subcube.add_argument('--bltr', type=int, nargs='+', help='The pixel coordinate of [bottom left, top_right], e.g. 10 10 80 80')
     subp_subcube.add_argument('--sky_center', type=str, help='The sky coordinate of the center,  e.g. "1:12:43.2 +31:12:43" or "1h12m43.2s +1d12m43s" or "23.5 -34.2"')
@@ -1195,6 +1225,7 @@ if __name__ == '__main__':
 
     if args.task == 'subcube':
         subcube(args.fitscube, outfile=args.outfile, 
+                extname=args.extname,
                 sky_center=args.sky_center, sky_radius=args.sky_radius,
                 pixel_center=args.pixel_center, pixel_radius=args.pixel_radius,
                 bltr=args.bltr,

@@ -26,7 +26,7 @@ import os
 from matplotlib import pylab as plt
 
 from astropy import units as u
-from astropy.coordinates import get_sun,get_moon, AltAz, SkyCoord, EarthLocation
+from astropy.coordinates import get_body, AltAz, SkyCoord, EarthLocation
 from astropy.time import Time
 from astropy.cosmology import Planck18 as cosm
 import astropy.constants as const
@@ -37,12 +37,13 @@ from astropy.table import Table
 
 def flux_to_luminosity(flux=None, luminosity=None, z=None, obsfreq=None, restfreq=None, 
                        obswave=None, restwave=None, luminosity_unit=None, flux_unit=None):
-    """convert the integrated flux into luminosity
+    r"""convert the integrated flux into luminosity
     ref: Solomon+2005, ARAA
 
-    \nu_0 L(\nu_0) = 4\pi D_L^2 \nu_{obs} S(\nu_{obs})
-    dv = d\nu * c / \nu0
-    L_co = 4\pi/c D_L^2 \nu_{rest}/(1+z) S_co
+    .. math::
+        \nu_0 L(\nu_0) = 4\pi D_L^2 \nu_{obs} S(\nu_{obs})
+        dv = d\nu * c / \nu0
+        L_co = 4\pi/c D_L^2 \nu_{rest}/(1+z) S_co
 
     Args:
         flux: the integrated flux, in [Jy km/s] or [K km/s]
@@ -117,10 +118,12 @@ def brightness_to_luminosity(intensity=None, luminosity_prime=None, z=None, Omeg
         return intensity*(u.K*u.km/u.s)
 
 def flux_to_T(flux=None, temperature=None, Omega=None, bmaj=None, bmin=None, lamb=None, freq=None):
-    """convert between brightness temperature and flux density
+    r"""convert between brightness temperature and flux density
     ref: https://science.nrao.edu/facilities/vla/proposing/TBconv
-    T = \frac{\lambda^2}{2k_B\Omega} S
-    \Omega = \pi bmaj*bmin/(4\ln2)
+    
+    ..math::
+        T = \frac{\lambda^2}{2k_B\Omega} S
+        \Omega = \pi bmaj*bmin/(4\ln2)
 
     flux: in equivalent to Jy/beam
     """
@@ -356,8 +359,12 @@ def sigma_CO(sigma_SFR=None, z=None, Omega_sb=None, alpha_CO=4.3, transition='1-
     # return (sigma_flux_angular*area_to_beam).to(u.Jy*u.km/u.s/u.arcsec**2)
     return (sigma_flux_angular).to(u.Jy*u.km/u.s/u.arcsec**2)
 
-def sersic_profile(r, n=None, Re=None, Ie=None, Itot=None):
-    # from 2005PASA...22..118G
+def sersic_profile(r, n=None, Re=None, Ie=None, Itot=None, I0=None):
+    # from Graham2005, 2005PASA...22..118G
+    # the units of Ie is erg/s/cm2/area, area is the unit**2 of Re
+    if I0 is not None:
+        bn = special.gammaincinv(2*n, 0.5)
+        Ie = I0/np.exp(bn)
     if Itot is not None:
         G2n = special.gamma(2 * n)
         bn = special.gammaincinv(2*n, 0.5)
@@ -426,7 +433,7 @@ def plot_altitude(target_list={}, observatory=None, utc_offset=0, obs_time=None,
     if show_sun:
         ax.plot(delta_hours, sun.alt, 'r', label='sun')
     if show_moon:
-        moon = get_moon(obstimes).transform_to(altaz_frames)
+        moon = get_body('moon', obstimes).transform_to(altaz_frames)
         ax.plot(delta_hours, moon.alt, 'k--', label='moon')
 
     ax.fill_between(delta_hours.to('hr').value, -90, 90, sun.alt < -0*u.deg, 
@@ -445,7 +452,7 @@ def plot_altitude(target_list={}, observatory=None, utc_offset=0, obs_time=None,
     if show_sun:
         ax.plot(sun.az/180*np.pi, np.cos(sun.alt), 'r.', label='sun')
     if show_moon:
-        moon = get_moon(obstimes).transform_to(altaz_frames)
+        moon = get_body("moon", obstimes).transform_to(altaz_frames)
         ax.plot(moon.az/180*np.pi, np.cos(moon.alt), 'k--', label='moon')
     ax.set_ylim(0, 1)
 
@@ -461,7 +468,7 @@ def ABmag2flux(mag):
 def read_alma_pwv(pwv=None):
     pwv_list = np.array([0.5,1.0,1.5,2.0,2.5])
     tab_pwv = Table.read(os.path.join(os.path.expanduser('~'),
-                         'Data/telescopes/ALMA/pwv_0.5_1.0_1.5_2_2.5.dat'), 
+                         'work/data/telescopes/ALMA/pwv_0.5_1.0_1.5_2_2.5.dat'), 
                          names=['frequency','0.5','1.0','1.5','2.0','2.5'],
                          format='ascii')
     return tab_pwv

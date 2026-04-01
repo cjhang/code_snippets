@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
 import astropy.constants as const
+from astropy import stats as astro_stats
 from astropy.modeling import fitting, models
 import warnings
 
@@ -258,6 +259,20 @@ class Fitspectrum():
 ########################################
 ###### stand alone functions ###########
 ########################################
+def gaussian_1d(params, x):
+    """a simple 1D gaussian function
+    Args:
+        params: all the free parameters
+                [amplitude, center, sigma, cont]
+        x: variable
+    """
+    n_param = len(params)
+    amp, x0, sigma = params[:3]
+    if n_param == 4:
+        cont = params[3]
+    else:
+        cont = 0
+    return amp * np.exp(-0.5*(x-x0)**2/sigma**2) + cont
 
 def convert_spec(spec_in, unit_out, reference=None, mode='radio'):
     """convert the different spectral axis
@@ -346,65 +361,6 @@ def array_mapping(vals1, array1, array2):
     """mapping the values from array2 at the position of vals1 relative to array1
     """
     return (vals1 - array1[0])/(array1[-1]- array1[0]) * (array2[-1]-array2[0])
-
-def print_lines(z=0.0, family=None, unit=None, limits=None, reference=None, 
-                mode='radio'):
-    '''
-    Parameters
-    ----------
-    format : str
-        output format, either in frequency (freq) or wavelength (wave)
-    '''
-    db = Database()
-    if limits is not None:
-        limits = np.array(limits)
-    if family is None:
-        print("Specify the spectral line family:")
-        print("all, CO, CO_isotop, H2O, dense_gas, optical")
-    if family == 'simple':
-        family_select = [db.CO_family, dbC_ion]
-        if unit is None:
-            unit = u.Unit('GHz')
-    if family == 'CO':
-        family_select = [db.CO_family]
-        if unit is None:
-            unit = u.Unit('GHz')
-    elif family == 'water':
-        family_select = [db.H2O]
-        if unit is None:
-            unit = u.Unit('GHz')
-    elif family == 'all' or family=='full':
-        family_select = [db.CO_family, db.CO_13C, db.CO_18O, db.CO_17O, 
-                         db.C_ion, db.H2O, db.HCN, db.HNC, db.HCO_plus, db.Special, db.Other]
-        if unit is None:
-            unit = u.Unit('GHz')
-    else:
-        family_select = []
-
-    if family is not None:
-        if 'optical' in family:
-            family_select.append(db.Lyman_series)
-            family_select.append(db.Balmer_series)
-            family_select.append(db.Paschen_series)
-            family_select.append(db.Brackett_series)
-            family_select.append(db.Helium)
-            family_select.append(db.Optical_lines)
-            family_select.append(db.Optical_obsorption)
-        if unit is None:
-            unit = u.Unit('nm')
-
-    for fs in family_select:
-        for name, value in fs.items():
-            value_converted = convert_spec(value, unit, reference=reference, mode=mode)
-            if unit.is_equivalent(u.m):
-                value_in_unit = (value_converted*(1+z)).value
-            if unit.is_equivalent(u.Hz):
-                value_in_unit = (value_converted/(1+z)).value
-            if limits is not None:
-                if (value_in_unit > limits[-1]) | (value_in_unit < limits[0]):
-                    continue
-            print("{}: {:.2f}{}".format(name, value_in_unit, unit.to_string()))
-    return
 
 def stacking(dlist, plot=True, norm=True, norm_func=np.mean):
     """
@@ -540,5 +496,105 @@ def fit_gaussian1D(specchan, specdata, guess=None, bounds=None,
     if plot:
         fitobj.plot(ax=ax)
     return fitobj
+
+def rebin_array(arr, bin_size, operation='sum', padding_value=None):
+    """
+    Rebins a 1D NumPy array, padding with the last value of the array if necessary.
+
+    Args:
+        arr (np.ndarray): The input 1D NumPy array.
+        bin_size (int): The number of elements to group together for each new bin.
+        operation (str): The operation to perform on the binned values.
+                         Options are 'sum' (default) or 'average'.
+
+    Returns:
+        np.ndarray: The rebinned array, after padding.
+    """
+    arr = np.array(arr)
+    
+    # Calculate how many values are needed for padding
+    remainder = len(arr) % bin_size
+    if remainder != 0:
+        padding_needed = bin_size - remainder
+        if padding_value is None:
+            padding_value = arr[-1] # the last value
+        arr = np.pad(arr, (0, padding_needed), 
+                     'constant', constant_values=padding_value)
+    
+    # Reshape and perform the specified operation
+    reshaped_arr = arr.reshape(-1, bin_size)
+
+    if operation == 'sum':
+        rebinned_arr = reshaped_arr.sum(axis=1)
+    elif operation == 'average':
+        rebinned_arr = reshaped_arr.mean(axis=1)
+    else:
+        raise ValueError("Invalid operation. Choose 'sum' or 'average'.")
+        
+    return rebinned_arr
+
+   
+########################################
+############ CMD Tools #################
+########################################
+
+def print_lines(z=0.0, family=None, unit=None, limits=None, reference=None, 
+                mode='radio'):
+    '''
+    Parameters
+    ----------
+    format : str
+        output format, either in frequency (freq) or wavelength (wave)
+    '''
+    db = Database()
+    if limits is not None:
+        limits = np.array(limits)
+    if family is None:
+        print("Specify the spectral line family:")
+        print("all, CO, CO_isotop, H2O, dense_gas, optical")
+    if family == 'simple':
+        family_select = [db.CO_family, dbC_ion]
+        if unit is None:
+            unit = u.Unit('GHz')
+    if family == 'CO':
+        family_select = [db.CO_family]
+        if unit is None:
+            unit = u.Unit('GHz')
+    elif family == 'water':
+        family_select = [db.H2O]
+        if unit is None:
+            unit = u.Unit('GHz')
+    elif family == 'all' or family=='full':
+        family_select = [db.CO_family, db.CO_13C, db.CO_18O, db.CO_17O, 
+                         db.C_ion, db.H2O, db.HCN, db.HNC, db.HCO_plus, db.Special, db.Other]
+        if unit is None:
+            unit = u.Unit('GHz')
+    else:
+        family_select = []
+
+    if family is not None:
+        if 'optical' in family:
+            family_select.append(db.Lyman_series)
+            family_select.append(db.Balmer_series)
+            family_select.append(db.Paschen_series)
+            family_select.append(db.Brackett_series)
+            family_select.append(db.Helium)
+            family_select.append(db.Optical_lines)
+            family_select.append(db.Optical_obsorption)
+        if unit is None:
+            unit = u.Unit('nm')
+
+    for fs in family_select:
+        for name, value in fs.items():
+            value_converted = convert_spec(value, unit, reference=reference, mode=mode)
+            if unit.is_equivalent(u.m):
+                value_in_unit = (value_converted*(1+z)).value
+            if unit.is_equivalent(u.Hz):
+                value_in_unit = (value_converted/(1+z)).value
+            if limits is not None:
+                if (value_in_unit > limits[-1]) | (value_in_unit < limits[0]):
+                    continue
+            print("{}: {:.2f}{}".format(name, value_in_unit, unit.to_string()))
+    return
 
 

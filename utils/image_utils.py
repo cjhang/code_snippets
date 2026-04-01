@@ -30,10 +30,8 @@ import os
 import sys
 import numpy as np
 import scipy
-import scipy.ndimage as ndimage
-import scipy.interpolate as interpolate
-from scipy import optimize
 import warnings
+from scipy import optimize, ndimage, interpolate, special
 from astropy.io import fits
 from astropy.table import Table, vstack, hstack
 from astropy import stats
@@ -42,7 +40,7 @@ from astropy import units as u
 from astropy import constants as const
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.coordinates import SkyCoord
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
 from matplotlib import patches
 from astropy.modeling import models, fitting
 from astropy import convolution 
@@ -472,7 +470,7 @@ class Image(BaseImage):
             mask = newmask | mask
         self.mask = mask
 
-    def plot(self, mode='default', color_scales=[-1,10], fig=None, ax=None,
+    def plot(self, data=None, mode='default', color_scales=[-1,10], fig=None, ax=None,
              figsize=(8,6), fontsize=14, figname=None, vmax=None, vmin=None, 
              **kwargs):
         """
@@ -491,22 +489,25 @@ class Image(BaseImage):
            vmin = color_scales[0]*std.value 
         if vmax is None:
            vmax = color_scales[1]*std.value
+        
+        if data is None:
+            data = self.image.value
 
         if mode == 'default':
-            plot_image(self.image.value, beam=self.beam, ax=ax,
+            plot_image(data, beam=self.beam, ax=ax,
                        pixel_size=self.pixel_sizes.value,
                        vmin=vmin, vmax=vmax,
                        fontsize=fontsize, **kwargs,
                        )
 
         if mode == 'pixel':
-            plot_pixel_image(self.image.value, beam=self.pixel_beam, ax=ax,
+            plot_pixel_image(data, beam=self.pixel_beam, ax=ax,
                              vmin=vmin, vmax=vmax,
                              fontsize=fontsize, **kwargs,
                              )
         if mode == 'sky':
             ax.remove()
-            ax = plot_sky_image(self.image.value, header=self.header, beam=self.beam,
+            ax = plot_sky_image(data, header=self.header, beam=self.beam,
                                 fig=fig, vmin=vmin, vmax=vmax,
                                 fontsize=fontsize, **kwargs,
                                 )
@@ -516,17 +517,21 @@ class Image(BaseImage):
         else:
             return fig, ax
 
-    def reproject(self, wcs_out=None, header_out=None, shape_out=None, **kwargs):
+    def reproject(self, wcs_out=None, header_out=None, shape_out=None, data=None, 
+                  conserve_flux=True, **kwargs):
+
         """reproject the data into another wcs system
         
         """
+        if data is None:
+            data = self.image.value
         try: import reproject
         except: raise ValueError("Package `reproject` must be installed to handle the reprojection!")
         if header_out is not None:
             data_new, footprint = reproject.reproject_adaptive(
                                     (self.image.value, self.wcs.celestial), 
                                     header_out, return_footprint=True,
-                                    conserve_flux=True, **kwargs)
+                                    conserve_flux=conserve_flux, **kwargs)
         elif wcs_out is not None:
             if shape_out is None:
                 try:
@@ -534,9 +539,9 @@ class Image(BaseImage):
                 except:
                     raise ValueError('the `shape_out` must be provide when use projection with WCS!')
             data_new, footprint = reproject.reproject_adaptive(
-                                    (self.image.value, self.wcs.celestial), wcs_out, 
+                                    (data, self.wcs.celestial), wcs_out, 
                                     shape_out=shape_out, return_footprint=True, 
-                                    conserve_flux=True, **kwargs)
+                                    conserve_flux=conserve_flux, **kwargs)
         else:
             raise ValueError("Please specify the output referece system, either the header_out or the wcs_out")
         return Image(data=data_new, header=header_out, wcs=wcs_out)
@@ -621,6 +626,8 @@ class Image(BaseImage):
             coords: the pixel coordinates of the detections
             apertures: the aperture used to measure the flux, follow the syntax of photoutils
             aperture_scale: the scale factor of the shape parameters (a and b in dets)
+                            for single-aperture method
+            segment_scale: the cutout size in unit of beams, for adaptive_aperture_photometry
 
         Example:
             
@@ -816,11 +823,164 @@ def curve_growth(image, aperture, center=None, step=0.5, mask=None,
         phot_table.add_row([r, aper.area, aper_sum[0], 0])
     return phot_table
 
+def calc_effective_radius(r, profile, tolerence=1e-4, n_sersic=None,
+                          normalization=1,
+                          r_fit_range=None, debug=False, ax=None, color='tab:orange'):
+    """calculate the effective radius with given profiles
+    """
+    # calculate the flattening radius and total flux
+    if r_fit_range is not None:
+        r_select = (r > r_fit_range[0]) & (r < r_fit_range[1])
+        r_fit = r[r_select]
+        profile_fit = profile[r_select]
+        initial_guess = [np.max(profile_fit), r_fit_range[0], 1]
+        if n_sersic is None:
+            fit_func = sersic_enclosed_profile
+            popt, pcov = optimize.curve_fit(
+                    fit_func, r_fit, profile_fit,
+                    p0=initial_guess)
+        else:
+            fit_func = lambda r, I0, Re: sersic_enclosed_profile(r, I0, Re, n_sersic)
+            popt, pcov = optimize.curve_fit(
+                    fit_func, r_fit, profile_fit,
+                    p0=initial_guess[:-1])
+
+        popt_err = np.sqrt(np.diag(pcov))
+        profile_max, profile_max_err = popt[0], popt_err[0]
+        # max_idx = np.argmax(profile < 0.5*profile_max)
+        idx_max = np.argmax(r>r_fit_range[1])
+        # use interpolation calculating r from given y
+        mono_increasing_select = np.concatenate(
+                ([True], profile[1:] > np.maximum.accumulate(profile[:-1])))
+        f_pchip = interpolate.PchipInterpolator(profile[mono_increasing_select], 
+                                                r[mono_increasing_select], 
+                                                extrapolate=False)
+        Re_list = f_pchip(0.5*(profile_max + np.array([-1,0,1])*profile_max_err))
+        Re = Re_list[1]
+        Re_err = 0.5*np.diff(Re_list).sum()
+        if debug:
+            if ax is None:
+                fig, ax = plt.subplots(1,1)
+            ax.plot(r_fit, profile_fit/normalization, 'o', color=color)
+            ax.plot(r, fit_func(r, *popt)/normalization, '-',
+                    lw=6, alpha=0.5, color=color)
+            ax.hlines(y=profile_max, xmin=0, xmax=np.max(r), 
+                      color=color, linestyle='-', lw=6, alpha=0.5)
+    else:
+        # here we use the slop to derive the effective radius
+        # its accuracy will dependents on the step size
+        slope_selection = (np.diff(profile) < tolerence)
+        if np.any(slope_selection):
+            max_idx = np.argmax(slope_selection)
+        else:
+            max_idx = len(slope_selection)
+        Re = interpolate.PchipInterpolator(
+                profile[0:max_idx], r[0:max_idx], extrapolate=False)(0.5*profile[max_idx])
+        Re_err = r[max_idx] - r[max_idx-1] # the step length
+        profile_max = profile[max_idx]
+        profile_max_err = np.nanstd(profile[max_idx:-1] - profile_max)
+    return np.array([Re, Re_err, profile_max, profile_max_err])
+   
+def create_bootstrap_image(image, n_samples=100, mask=None, 
+                           mask_value=np.nan,
+                           noise = None,
+                           pixel_mask_frac=0.1, seed=34123):
+    """create bootstraped image with randomly spatial mask
+
+    Args:
+        image: 2d image
+        n_sample: the number of bootstraped image with random masking
+        mask: the initial mask
+        pixel_mask_frac: the percentage of new masking
+        rng: the random number generator
+        mode: random_mask, noise
+    """
+    rng = np.random.default_rng(seed)
+
+    image = np.asarray(image)
+    ny, nx = image.shape
+
+    boot_image = np.broadcast_to(image, (n_samples, *image.shape)).copy()
+    if noise is not None:
+        boot_image = boot_image + rng.normal * noise
+    if pixel_mask_frac > 0:
+        rand = rng.random(boot_image.shape) 
+        boot_image[rand < pixel_mask_frac] = mask_value
+    return boot_image
+
+def sersic_enclosed_profile(r, *params):
+    """cumulative profile of sersic function
+
+    Args:
+        I0: the maximum value
+        Re: effective radius
+        n: sersic index
+    """
+    if len(params) == 3:
+        I0, Re, n = params
+    elif len(params) == 2:
+        I0, Re = params
+        n = 1
+    beta = special.gammaincinv(2*n, 0.5)
+    return I0*special.gammainc(2.0*n, beta*(r/Re)**(1.0/n))
+
+def extract_curve_of_growth(image, aperture, error=None, step=0.5, offset=None,
+                            mask=None, max_aperture=None, min_aperture=None,
+                            center=None, r_fit_range=None,
+                            debug=False, plot=False, return_table=True):
+    """extract the profile of curve of growth
+    """
+    ny, nx = image.shape
+    peak_value = np.ma.array(image, mask=mask).max()
+    a, b, theta = aperture
+    b2a = b/a
+    if max_aperture is None:
+        max_aperture = int(0.6*nx/b2a)
+    if min_aperture is None:
+        min_aperture = np.min([a,b])
+    radii = np.arange(step, max_aperture, step)
+    if center is None:
+        center = [0.5*nx-0.5, 0.5*ny-0.5]
+    if offset is not None:
+        center = np.array(center) + np.array(offset)
+
+    if True:
+        phot_table = Table(names=['r', 'area', 'flux', 'flux_err'],
+                           dtype=('f8', 'f8', 'f8', 'f8'))
+        # build all the required apertures
+        if error is None:
+            error = np.zeros_like(image)
+        for r in radii:
+            aper = EllipticalAperture(center, r, r*b2a, theta)
+            aper_sum, aper_sum_err = aper.do_photometry(image, mask=mask, 
+                                                        error=error)
+            phot_table.add_row([r, aper.area, aper_sum[0], aper_sum_err[0]])
+    if plot:
+        fig, ax = plt.subplots(1,2,figsize=(12,5))
+        im = ax[0].imshow(np.log10(np.ma.array(image,mask=mask)), origin='lower')
+        plt.colorbar(im, ax=ax[0], fraction=0.046, pad=0.04)
+        for r in radii[::10]:
+            aper = EllipticalAperture(center, r, r*b2a, theta)
+            aper.plot(ax=ax[0], color='k', alpha=0.1)
+        axins = ax[0].inset_axes(
+            [0, 0, 0.3, 0.3],
+            xlim=(center[0]-0.02*nx, center[0]+0.02*nx), 
+            ylim=(center[1]-0.02*ny, center[1]+0.02*ny), 
+            xticklabels=[], yticklabels=[])
+        axins.imshow(image, origin="lower")
+        axins.plot(center[0], center[1], 'x', color='red')
+        plt.show()
+    return phot_table
+
 def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=None, 
                                  center=None, offset=None,  
                                  tolerence=1e-4, plot=False, 
+                                 bootstrap=False, n_bootstrap=100, 
+                                 bootstrap_noise=None, pixel_mask_frac=0, 
                                  max_aperture=None, min_aperture=None,
-                                 return_table=False, flux_ratio=0.5):
+                                 return_table=False, flux_ratio=0.5,
+                                 r_fit_range=None,
+                                 debug=False,):
     """automatic adaptive aperture photometry
 
     Args:
@@ -835,15 +995,18 @@ def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=Non
         plot: the visualised the measurement
         max_aperture: the maximal aperture size to be used
         min_aperture: the minimal size of the aperture
+        profile_file: save the derived curve-of-growth profile into file
         return_table: return the measurements in a astropy table format
         flux_ratio: the flux ratio to define the size of measurement, 0.5 for Re
+        r_fit_range: the range to fit the outskirt profile
+        debug: print out more debuging info if set to true
     """
     ny, nx = image.shape
     peak_value = np.ma.array(image, mask=mask).max()
     a, b, theta = aperture
     b2a = b/a
     if max_aperture is None:
-        max_aperture = nx
+        max_aperture = int(0.6*nx/b2a)
     if min_aperture is None:
         min_aperture = np.min([a,b])
     radii = np.arange(step, max_aperture, step)
@@ -851,58 +1014,129 @@ def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=Non
         center = [0.5*nx-0.5, 0.5*ny-0.5]
     if offset is not None:
         center = np.array(center) + np.array(offset)
-    # build all the required apertures
-    phot_table = Table(names=['r', 'area', 'flux', 'flux_err'],
-                       dtype=('f8', 'f8', 'f8', 'f8'))
-    for r in radii:
-        aper = EllipticalAperture(center, r, r*b2a, theta)
-        aper_sum, aper_sum_err = aper.do_photometry(image, mask=mask, error=error)
-        # print([r, aper.area, aper_sum, aper_sum_err])
-        if len(aper_sum_err) > 0:
-            phot_table.add_row([r, aper.area, aper_sum[0], aper_sum_err[0]])
-        else:
-            phot_table.add_row([r, aper.area, aper_sum[0], 0])
-    # calculate the flattening radius and total flux
-    slope_selection = (np.diff(phot_table['flux']) < step*tolerence) & (radii[:-1]>min_aperture)
-    if np.any(slope_selection):
-        max_idx = np.argmax(slope_selection)
-    else:
-        max_idx = len(slope_selection)
 
-    # flux_table = Table(names=['r', 'area', 'flux', 'flux_err'],
-                       # dtype=('f8', 'f8', 'f8', 'f8'))
-    flux_max = phot_table['flux'][max_idx]
-    flux_max_err = np.max([phot_table['flux_err'][max_idx], tolerence*flux_max])
-    flux_max_r = radii[max_idx]
-    # calculate the radius at the give flux ratio
-    flux_r_select = ((phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err)) & 
-                     (phot_table['flux'] <= flux_ratio*(flux_max+flux_max_err)))
-    flux_r_min_index = np.where(
-            phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
-    flux_r_max_index = np.where(
-            phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
-    # ratio_flux_r = np.nanmean(radii[flux_r_select])
-    # ratio_flux_r_err = np.nanstd(radii[flux_r_select])
-    ratio_flux_r = np.mean([radii[flux_r_min_index], radii[flux_r_min_index]])
-    ratio_flux_r_err = np.max(
-            [np.diff([radii[flux_r_min_index], radii[flux_r_min_index]])[0], step])
-    # print('flux_max, flux_max_err', flux_max, flux_max_err)
-    # print('ratio_flux_r, ratio_flux_r_err', ratio_flux_r, ratio_flux_r_err)
-    if plot:
-        fig, ax = plt.subplots(1,2,figsize=(12,5))
-        ax[0].imshow(np.ma.array(image,mask=mask), origin='lower')
+    if not bootstrap:
+        phot_table = Table(names=['r', 'area', 'flux', 'flux_err'],
+                           dtype=('f8', 'f8', 'f8', 'f8'))
+        # build all the required apertures
+        if error is None:
+            image_err = np.zeros_like(image)
         for r in radii:
             aper = EllipticalAperture(center, r, r*b2a, theta)
-            aper.plot(ax=ax[0], color='k', alpha=0.3)
+            aper_sum, aper_sum_err = aper.do_photometry(image, mask=mask, 
+                                                        error=image_err)
+            phot_table.add_row([r, aper.area, aper_sum[0], aper_sum_err[0]])
+        # calculate the flattening radius and total flux
+        slope_selection = (np.diff(phot_table['flux']) < step*tolerence) & (radii[:-1]>min_aperture)
+        if np.any(slope_selection):
+            max_idx = np.argmax(slope_selection)
+        else:
+            max_idx = len(slope_selection)
+
+        # flux_table = Table(names=['r', 'area', 'flux', 'flux_err'],
+                           # dtype=('f8', 'f8', 'f8', 'f8'))
+        flux_max = phot_table['flux'][max_idx]
+        flux_max_err = np.sqrt((phot_table['flux_err'][max_idx])**2 
+                               + (tolerence*flux_max)**2)
+        flux_max_r = radii[max_idx]
+        # calculate the radius at the give flux ratio
+        flux_r_select = ((phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err)) & 
+                         (phot_table['flux'] <= flux_ratio*(flux_max+flux_max_err)))
+        flux_r_min_index = np.where(
+                phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
+        flux_r_max_index = np.where(
+                phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
+        # ratio_flux_r = np.nanmean(radii[flux_r_select])
+        # ratio_flux_r_err = np.nanstd(radii[flux_r_select])
+        ratio_flux_r = np.mean([radii[flux_r_min_index], radii[flux_r_min_index]])
+        ratio_flux_r_err = np.max(
+                [np.diff([radii[flux_r_min_index], radii[flux_r_min_index]])[0], step])
+        flux_profile = phot_table['flux']
+        flux_profile_err = phot_table['flux_err']
+    else:
+        # used when no robust error is available 
+        image_bootstrap = create_bootstrap_image(image, mask=mask, n_samples=n_bootstrap,
+                                                 pixel_mask_frac=pixel_mask_frac,
+                                                 noise=bootstrap_noise)
+        image_bootstrap_mask = np.ma.masked_invalid(image_bootstrap).mask
+        error_bootstrap = np.zeros_like(image_bootstrap)
+        n_radii = len(radii)
+        # print('n_radii', len(radii), radii[:5])
+        apert_phot_data = np.zeros((n_radii, n_bootstrap))
+        for i in range(n_radii):
+            r = radii[i]
+            aper = EllipticalAperture(center, r, r*b2a, theta)
+            aper_sum_map_results = np.array(list(map(aper.do_photometry, 
+                                                     image_bootstrap, 
+                                                     error_bootstrap,
+                                                     image_bootstrap_mask)))[:,:,0]
+            apert_phot_data[i,:] = aper_sum_map_results[:,0]
+        # get the peak values
+        radii_select = radii[:-1]>min_aperture
+        #print(radii_select)
+        #print('data',apert_phot_data[:,-5])
+        #print('slop',np.diff(apert_phot_data, axis=0)[:,-5])
+        # print(apert_phot_data)
+        #print('slope selection')
+        #print((np.diff(apert_phot_data, axis=0) < step*tolerence).shape)
+        #print((np.repeat(radii_select[:,None], n_bootstrap, axis=1)).shape)
+        # print('diff flux')
+        # print(apert_phot_data[0])
+        # print(np.diff(apert_phot_data, axis=0)[0])
+        # print(apert_phot_data[:,0])
+        # print(np.diff(apert_phot_data, axis=1)[0])
+        slope_selection = (np.diff(apert_phot_data, axis=0)/apert_phot_data[1:,:] < tolerence) & np.repeat(radii_select[:,None], n_bootstrap, axis=1)
+        flux_profile = np.median(apert_phot_data, axis=1)
+        flux_profile_err = np.std(apert_phot_data, axis=1)
+        #print('>>', (np.diff(apert_phot_data, axis=0)/np.nanmax(image) < step*tolerence)[:,-5])
+        #print('slope_selection', slope_selection[:,-5])
+        #print('slope_selection_idx', np.argmax(slope_selection, axis=0))
+        # print('apert_phot_data', apert_phot_data)
+        flux_max_bootstrap = apert_phot_data[np.argmax(slope_selection, axis=0), 
+                                             np.arange(n_bootstrap)]
+        flux_max = np.median(flux_max_bootstrap)
+        flux_max_err = np.std(flux_max_bootstrap)
+        flux_max_r = np.median(radii[np.argmax(slope_selection, axis=0)])
+        # print('flux_max', flux_max_bootstrap)
+        # print('flux_max_r', radii[np.argmax(slope_selection, axis=0)])
+        # get the radius of the half flux radius
+        # print('radius half flux', np.argmax(apert_phot_data >= 0.5*flux_max_bootstrap[None,:], axis=0))
+        ratio_flux_r_bootstrap = radii[np.argmax(apert_phot_data >= 0.5*flux_max_bootstrap[None,:], 
+                                                 axis=0)]
+        # print('ratio_flux_r_bootstrap', ratio_flux_r_bootstrap)
+        ratio_flux_r = np.median(ratio_flux_r_bootstrap)
+        ratio_flux_r_err = np.std(ratio_flux_r_bootstrap)
+        # construct the table
+        phot_table = Table([radii, np.pi*radii*b2a, flux_profile, flux_profile_err],
+                           names=['r', 'area', 'flux', 'flux_err'])
+    if debug:
+        pass
+        # print('phot_table')
+        # print(phot_table['flux'])
+    if plot:
+        fig, ax = plt.subplots(1,2,figsize=(12,5))
+        im = ax[0].imshow(np.log10(np.ma.array(image,mask=mask)), origin='lower')
+        plt.colorbar(im, ax=ax[0], fraction=0.046, pad=0.04)
+        for r in radii[::10]:
+            aper = EllipticalAperture(center, r, r*b2a, theta)
+            aper.plot(ax=ax[0], color='k', alpha=0.1)
 
         aper = EllipticalAperture(center, ratio_flux_r, ratio_flux_r*b2a, theta)
         aper.plot(color='red', ax=ax[0], alpha=0.8)
         aper = EllipticalAperture(center, flux_max_r, flux_max_r*b2a, theta)
         aper.plot(color='black', ax=ax[0], alpha=0.8)
         ax[1].errorbar(radii, phot_table['flux'], yerr=phot_table['flux_err'])
+        ax[1].vlines(x=flux_max_r, ymin=0, ymax=flux_max, color='black')
         ax[1].vlines(x=ratio_flux_r, ymin=0, ymax=flux_ratio*flux_max, color='red')
         ax[1].text(ratio_flux_r, flux_ratio*flux_max, f'{flux_ratio}', color='red')
-        ax[1].vlines(x=flux_max_r, ymin=0, ymax=flux_max, color='black')
+        # add inner plot to show the center
+        axins = ax[0].inset_axes(
+            [0, 0, 0.3, 0.3],
+            xlim=(center[0]-0.02*nx, center[0]+0.02*nx), 
+            ylim=(center[1]-0.02*ny, center[1]+0.02*ny), 
+            xticklabels=[], yticklabels=[])
+        axins.imshow(image, origin="lower")
+        axins.plot(center[0], center[1], 'x', color='red')
         plt.show()
     if return_table:
         return phot_table, [ratio_flux_r, ratio_flux_r_err, flux_max, flux_max_err]
@@ -950,12 +1184,15 @@ def petrosian_photometry(image, aperture, center=None,  step=0.5, mask=None,
     # return
     return pp.r_half_light, pp.r_half_light_err, pp.total_flux, pp.total_flux_err
 
-def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=None):
+def gaussian_fit2d(image, p0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=None):
     """two dimentional Gaussian fit follows the formula provided by Condon+1997
     http://adsabs.harvard.edu/abs/1997PASP..109..166C
     see also: 
     https://casadocs.readthedocs.io/en/latest/api/tt/casatasks.analysis.imfit.html
     
+    Args:
+        image: the 2d image
+        p0: the initial guess: [amp, x0, y0, xsigma, ysigma, theta]
     The advantage is that it provides a formula to calculate the uncertainties
     But it also comes with limitations:
         1. The assumed gaussian model should close to the true profile
@@ -971,15 +1208,15 @@ def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=N
                                (np.arange(0, xsize)+0.5)*pixel_size,
                                indexing='ij')
     # automatically estimate the initial parameters
-    if x0 is None:
+    if p0 is None:
         amp = np.percentile(image, 0.9)*1.1
         x0, y0 = xsize*0.5, ysize*0.5
         xsigma, ysigma = pixel_size*4, pixel_size*4 
-        x0 = [amp, x0, y0, xsigma, ysigma, 0]
+        p0 = [amp, x0, y0, xsigma, ysigma, 0]
 
     def _cost(params, xgrid, ygrid):
         return np.sum((image - gaussian_2d(params, xgrid, ygrid))**2/rms**2)
-    res_minimize = optimize.minimize(_cost, x0, args=(xgrid, ygrid), method='BFGS')
+    res_minimize = optimize.minimize(_cost, p0, args=(xgrid, ygrid), method='BFGS')
 
     if plot:
         fit_image = gaussian_2d(res_minimize.x, xgrid, ygrid)
@@ -1025,8 +1262,9 @@ def gaussian_fit2d(image, x0=None, rms=1, pixel_size=1, plot=False, noise_fwhm=N
         flux_err = np.sqrt(2.0)*flux/rho
     return flux, flux_err, res_minimize.x
 
-def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, theta=0, debug=False,
-                       xbounds=None, ybounds=None, center_bounds_scale=0.125, plot=False, ax=None):
+def gaussian_2Dfitting(image, x_mean=0., y_mean=0., x_stddev=1, y_stddev=1, 
+                       theta=0, debug=False, xbounds=None, ybounds=None, 
+                       center_bounds_scale=0.125, plot=False, ax=None):
     """Apply simple two dimentional Gaussian fitting
     
     Args:
@@ -1136,7 +1374,7 @@ def find_structure(image, mask=None, rms=None, sigma=3.0, iterations=1, opening_
 
 def source_finder(image=None, wcs=None, std=None, mask=None, 
                   beam=None, aperture_scale=6.0, 
-                  detection_threshold=3.0, 
+                  detection_threshold=5.0, 
                   plot=False, name=None, show_flux=False, 
                   method='auto', filter_kernel=None, # parameters for sep
                   find_peaks_params={}, DAOStarFinder_params={},
@@ -1170,7 +1408,9 @@ def source_finder(image=None, wcs=None, std=None, mask=None,
                                                err=std, mask=mask, filter_kernel=filter_kernel))
         except:
             # convert the byte order from big-endian (astropy.fits default) on little-endian machine
-            image_little_endian = image.byteswap().newbyteorder()
+            # image_little_endian = image.byteswap().newbyteorder()
+            # the following works for numpy>2.0 
+            image_little_endian = image.astype(image.dtype.newbyteorder('='))
             sources_found = Table(sep.extract(image_little_endian, detection_threshold, 
                                               err=std, mask=mask, filter_kernel=filter_kernel))
         if sources_found is not None:
@@ -2196,6 +2436,10 @@ def plot_image(image, beam=None, ax=None, name=None, pixel_size=1, unit=None,
     Args:
         image: 2D array
         beam: the size of the beam, in [arcsec, arcsec, degree]
+
+    TODO:
+        1. add the offset option, which can work better with zoom if the sources 
+           are not centered
     """
     if ax == None:
         fig = plt.figure(figsize=(10,8))
@@ -2486,4 +2730,8 @@ def plot_detections_old(image, pixel_sizes=[1,1],
 ########################################
 ################ tests #################
 ########################################
+
+def test_something():
+    print("Testing ...")
+    return
 

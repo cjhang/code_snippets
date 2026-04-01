@@ -71,6 +71,16 @@ def test_adaptive_aperture_photometry(plot=False):
     print(f'Input flux={flux_in}, measurement flux={flux_table[2]}')
     assert abs(flux_table[2] - flux_in) < 0.2*flux_in
 
+def test_adaptive_aperture_photometry_bootstrap():
+    from image_utils import adaptive_aperture_photometry
+    flux_in = 1
+    image = make_gaussian_image((11,11), fwhm=(4,2), offset=(0, -0), theta=np.pi/12, area=flux_in)
+    np.random.seed(1994)
+    noise = np.random.randn(11,11)*0.01
+    im2 = image+noise
+    flux_table = adaptive_aperture_photometry(im2, aperture=[2,1,np.pi/12], plot=True, bootstrap=True, n_bootstrap=100, step=0.2, tolerence=1e-5, pixel_mask_frac=0.2)
+
+
 def test_measure_flux_single(plot=False, debug=False):
     flux_in = 1
     fwhm = (5,3)

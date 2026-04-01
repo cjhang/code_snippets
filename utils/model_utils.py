@@ -11,18 +11,19 @@ History:
 __version__ = '0.1.2'
 
 
+import time
 import numpy as np
-from numpy import linalg
 import warnings
+import emcee
+
+from numpy import linalg
 from multiprocessing import Pool
 from scipy import interpolate, special, optimize
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
 from astropy import constants as const
 from astropy import units as u
 from astropy.cosmology import Planck18 as cosm
-import time
 
-import emcee
 
 ###############################################
 # Parameter
@@ -514,11 +515,26 @@ class Sersic2D(Model):
         z = ((x_maj / self.reff.value) ** expon + (x_min / b) ** expon) ** inv_expon
         return self.amplitude.value * np.exp(-bn * (z ** (1 / self.n.value) - 1.0))
 
+def blackbody_nu(nu, temperature):
+    """
+    Args:
+        nu: frequency, in Hz
+        temperature: in Kelvin
+
+    Return:
+     Bv(v, T): erg/u.s/u.sr/u.cm**2/u.Hz 
+    """
+    const_h = const.h.cgs.value
+    const_c = const.c.cgs.value
+    k_B = const.k_B.cgs.value
+
+    return (2*const_h*nu**3 / const_c**2 * (np.exp(const_h*nu/(
+        k_B*temperature)) - 1)**-1)
 
 def blackbody_lambda(lam, temperature):
     """
     Args:
-        lam: frequency, in cm
+        lam: wavelength, in cm
         temperature: in Kelvin
 
     Return:
@@ -529,17 +545,6 @@ def blackbody_lambda(lam, temperature):
     k_B = const.k_B.cgs.value
     return 2*const_h*const_c**2 / lam**5 / (np.exp(const_h*const_c/(
                                               lam*k_B*temperature))-1)
-def dust_temperature_at_z(temperature, z, beta):
-    """da Cunha et al. 2013
-
-    Args:
-        temperature: dust temperature in K
-        z: redshift
-        beta: emissivity
-    """
-    T0 = 2.73*(1+z)
-    return (temperature**(4+beta)+T0**(4+beta)*((1+z)**(4+beta)-1))**(1/(4+beta))
-
 def modified_blackbody_nu(nu, temperature=None, z=0, beta=2.0, dustmass=None, area=None):
     """flux density of modified blackbody
     Args:
@@ -552,7 +557,7 @@ def modified_blackbody_nu(nu, temperature=None, z=0, beta=2.0, dustmass=None, ar
     nu0 = 250*u.GHz.to(u.Hz)
     Tcmb = 2.73
     D_L = cosm.luminosity_distance(z).to(u.cm).value
-    Td = dust_temperature_at_z(temperature, z, beta)
+    Td = temperature
     tau_nu = dustmass/area * kappa0 *(nu/nu0)**beta
     B_Td = blackbody_nu(nu, Td)
     B_Tcmb = blackbody_nu(nu, Tcmb)
@@ -648,7 +653,7 @@ class MBlackbody_log(Model):
 # Fitters
 ###############################################
 class Fitter():
-    def __init__(self, models, grid, data, name=None):
+    def __init__(self, models, grid, data, mask=None, name=None):
         self.models = models
         self.grid = grid
         self.data = data
@@ -657,6 +662,7 @@ class Fitter():
         self.keys = list(self.parameters.keys())
         self.n_params = len(self.parameters)
         self.limits = models.get_limits()
+        self.mask = mask
         self.name = name
     def _calculate_diff(self):
         """internal function to compare the model and data
@@ -685,7 +691,10 @@ class Fitter():
                     self.grid.grid, model, 
                     np.array([var[0].flatten(),var[1].flatten(), var[2].flatten()
                                                   ]).T).reshape(obs.shape)
-        diff2 = (obs-model_interp)**2/sigma2
+        if self.mask is None:
+            diff2 = (obs-model_interp)**2/sigma2
+        else:
+            diff2 = (obs-model_interp)[~self.mask]**2/sigma2
         return diff2
  
 def calculate_diff(models, grid, data):
@@ -882,8 +891,9 @@ class EmceeFitter(Fitter):
 
 class MinimizeFitter(Fitter):
 
-    def __init__(self, models, grid, data, name=None):
-        super().__init__(models=models, grid=grid, data=data, name=name)
+    def __init__(self, models, grid, data, mask=None, name=None):
+        super().__init__(models=models, grid=grid, data=data, 
+                         mask=mask, name=name)
         limits = models.get_limits()
         limits_ranges = np.array(list(limits.values()))
         self.bounds = limits_ranges
@@ -917,7 +927,8 @@ class MinimizeFitter(Fitter):
         self.best_fit0 = fit_result.x
         self.best_fit = fit_result.x
         self.best_fit_error = None
-        print(f'first fit: {self.best_fit0}')
+        if debug:
+            print(f'first fit: {self.best_fit0}')
         if False: # just for testing, going to be removed
             fit_result_lsq = optimize.leastsq(
                     self.vector_cost, fit_result.x, full_output=True,
@@ -935,6 +946,25 @@ class MinimizeFitter(Fitter):
             else: 
                 self.best_fit_error = None
 
+    def run_de(self, initial_guess=None, debug=False, maxiter=None, workers=-1):
+        """run the minimization with differential evolution algorithm
+
+        compared to 'run', it needs boundaries to search all the parameter space
+        """
+        # print('bounds', self.bounds)
+        if initial_guess is None:
+            initial_guess = self.initial_guess
+        fit_result = optimize.differential_evolution(
+                self.cost, bounds=self.bounds, x0=initial_guess,
+                workers=workers,
+                args=(),#self.models, self.grid, self.data), 
+                )
+        self.best_fit0 = fit_result.x
+        self.best_fit = fit_result.x
+        self.best_fit_error = None
+        if debug:
+            print(f'fit with differential_evolution: {self.best_fit0}')
+
     def auto_run(self, initial_guess=None, debug=False, maxiter=None):
         """The default method to also return the errorbar of the parameters
 
@@ -947,6 +977,11 @@ class MinimizeFitter(Fitter):
                 self.cost, initial_guess, 
                 args=(),#self.models, self.grid, self.data), 
                 bounds=self.bounds)
+        # print('bounds', self.bounds)
+        # first_result = optimize.differential_evolution(
+        #         self.cost, bounds=self.bounds,
+        #         args=(),#self.models, self.grid, self.data), 
+        #         )
         # compute the chi2 of the first fit
         try:
             data_size = self.data['data'].size

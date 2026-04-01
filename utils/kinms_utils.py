@@ -498,6 +498,43 @@ def fit_spec_norm(vel, spec, std=1, p0=None, mode='minimize',
         plt.show()
     return bestfit_params, bestfit_spec
 
+def _guassian_1d_curvefit(vel, amp, v0, sigma):
+    return amp * np.exp(-0.5*(vel-v0)**2/sigma**2)
+
+def fit_spec_curvefit(
+        vel, data, data_err=None, 
+        func=_guassian_1d_curvefit, 
+        guess=None, 
+        bounds=(-np.inf, np.inf), 
+        ax=None, 
+        plot=False
+        ):
+    """fit a single gaussian with scipy curve_fit
+
+    Args:
+        vel: velocity
+        data: spectral data
+        guess: the initial guess
+        bounds: the boundary of each parameter, [[low_boundaries], [up_boundaries]]
+    """
+    vel = np.array(vel)
+    data = np.array(data)
+
+    popt, pcov = optimize.curve_fit(
+            func, vel, data, p0=guess, nan_policy='omit', bounds=bounds)
+    bestfit = popt
+    bestfit_err = np.sqrt(np.diag(pcov))
+    bestfit_data = func(vel, *popt)
+
+    if plot:
+        if ax is None:
+            fig, ax = plt.subplots(1,1, figsize=(6,4))
+        ax.step(vel, data, color='black', where='mid', label='data')
+        ax.plot(vel, bestfit_data, linestyle='dashed', color='blue', label='bestfit')
+        ax.legend()
+        plt.show()
+    return bestfit, bestfit_err, bestfit_data
+
 def fit_spec_astropy(specchan, specdata, guess=None, bounds=None, 
               snr_limit=None, plot=False, ax=None, debug=False):
     """fit a single gaussian, similar to spec_autofit, but based on astropy.modelling
@@ -1646,10 +1683,31 @@ def plot_fitcube(fitmaps, flux_max=None, vel_min=-300, vel_max=300,
 ###############################################
 # test functions
 ###############################################
+
+def test_fit_spec_curvefit(plot=False):
+    """test the performance of fit_spec and fit_spec_norm
+    """
+    gaussian_truth = [1, -250, 200]
+    vel = np.linspace(-2000, 2000, 500)
+    line = gaussian_1d(gaussian_truth, velocity=vel)
+    np.random.seed(1994)
+    spec = line + np.random.randn(500) 
+
+    print('truth:', gaussian_truth)
+    bestfit, bestfit_err, bestfit_spec = fit_spec_curvefit(vel, spec, data_err=1)
+    print('fit:', bestfit)
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(6,4))
+        ax.step(vel, spec, label='data')
+        ax.step(vel, line, label='truth')
+        ax.step(vel, bestfit_spec, label='fit')
+        ax.legend()
+        plt.show()
+
 def test_fit_spec(plot=False):
     """test the performance of fit_spec and fit_spec_norm
     """
-    gaussian_truth = [4, -250, 200]
+    gaussian_truth = [1, -250, 200]
     vel = np.linspace(-2000, 2000, 500)
     line = gaussian_1d(gaussian_truth, velocity=vel)
     np.random.seed(1994)
