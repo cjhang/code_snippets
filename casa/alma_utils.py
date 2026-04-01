@@ -827,7 +827,8 @@ def quick_cube():
 # global variables
 # ALMA pipeline versions: https://almascience.nrao.edu/processing/science-pipeline
 ALMA_PIPELINEs = (
-    ['2024-09-30','2025-09-30',"6.6.1",'casa-6.6.1-17-pipeline-2024.1.0.8'],
+    ['2025-09-29','2026-09-30',"6.6.6",'casa-6.6.6-17-pipeline-2025.1.0.35'],
+    ['2024-09-30','2025-09-29',"6.6.1",'casa-6.6.1-17-pipeline-2024.1.0.8'],
     ['2023-09-30','2024-09-30',"6.5.4",'casa-6.5.4-9-pipeline-2023.1.0.124'],
     ['2022-09-26','2023-09-30',"6.4.1",'casa-6.4.1-12-pipeline-2022.2.0.68'],
     ['2021-05-01','2022-09-26',"6.2.1",'casa-6.2.1-7-pipeline-2021.2.0.128'],
@@ -884,9 +885,15 @@ def choose_alma_pipeline(asdm=None, vis=None, basedir=None):
         if (final_date >= date_range[0]) and (final_date < date_range[1]):
             pipeline_version = pipe[2]
             pipeline_selected = pipe[3]
+    # check the executable
+    full_app_path = glob.glob(os.path.join(basedir, pipeline_selected)+'*')[0]
+    full_execute_path = full_app_path + '/bin/casa'
+    if not os.isfile(full_execute_path):
+        raise FileExistsError(f"Cannot find {full_execute_path}")
+
     if pipeline_version is None:
         return None,None,None
-    return pipeline_version, pipeline_selected, os.path.join(basedir, pipeline_selected, 'bin/casa')
+    return pipeline_version, pipeline_selected, full_execute_path 
 
 def auto_execute_file(member_dir, mous_id=None, casa_pipeline=None, overwrite=False):
     """automatic execute the "*.scriptForPI.py" in the given directory
@@ -973,7 +980,6 @@ def restore_pipeline(project, dry_run=False, overwrite=False, pipeline=None,
                                 logging.info("{}/{}/{} is failed! Checking the logs in the script folder".format(science_goal, group, member))
                 # get back to the starting folder after pipeline restoration
                     os.chdir(rootdir)
-
 
 def run_pipeline(rawdata=None, workdir='./', pipe_template=None,
                  pipeline=None, pipeline_dir=None, dry_run=False):

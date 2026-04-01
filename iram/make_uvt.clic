@@ -1,0 +1,42 @@
+! make uvt from calibrated visibility
+
+!let srce &1 /new char*6
+define char*10 srce
+let srce ***
+
+set default
+set scan 0 10000
+set receiver 1 ! 1 = 3mm/B1, 2=2mm/B2, 3=1mm/B3
+set quality     average
+set weight tsys on
+set weight calibration on
+set averag scan
+set amplitude   ant jansky relative ! change if baseline based calibration was done
+set rf          antenna on spectrum file 1  ! change if baseline based calibration was done
+set phase       antenna atmosphere internal relative  ! change if baseline based calibration was done
+
+set drop 0.002 0.00
+!
+set type        object
+!set type p ! for calibrator
+set procedure   corr
+
+set selection LINE LSB l01 and l02 and l05 and l06
+
+file in ~/calib/24-mar-2023-s23aa000.hpb
+find /sou 'srce'*
+table 'srce'_lsb.uvt NEW ! add /mosaic if a mosaic was observed
+
+file in ~/calib/26-mar-2023-s23aa000.hpb
+find /sou 'srce'*
+table 'srce'_lsb.uvt ! add /mosaic if a mosaic was observed
+
+set selection LINE USB l03 and l04 and l07 and l08
+
+file in ~/calib/24-mar-2023-s23aa000.hpb
+find /sou 'srce'*
+table 'srce'_usb.uvt NEW ! add /mosaic if a mosaic was observed
+
+file in ~/calib/26-mar-2023-s23aa000.hpb
+find /sou 'srce'*
+table 'srce'_usb.uvt ! add /mosaic if a mosaic was observed

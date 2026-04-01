@@ -12,9 +12,9 @@
 echo '(casa.sh version 4.1 Jan 2020, JC)'
 INVOCATION=$(basename $0)
 echo $INVOCATION
-DEFAULTCONFIG="/home/jchen/applications/casa/casa_configs/"
-WRAPPERINSTALLDIR="/home/jchen/.local/bin"
-CASAINSTALLDIR="/home/jchen/applications/casa"
+DEFAULTCONFIG="/Users/jhchen/.local/casa/casa_configs/"
+WRAPPERINSTALLDIR="/Users/jhchen/.local/bin"
+CASAINSTALLDIR="/Users/jhchen/.local/casa"
 
 USERSTRING=""
 echo
@@ -61,7 +61,7 @@ if [ $START = 1 ]; then
         exec ${CASAINSTALLDIR}/casa-pipeline-release-5.6.2-3.el7/bin/casa --pipeline --rcdir $RCFILENAME $@    
     # This should always point to the latest version and should not start a pipeline if preset
     elif [ $INVOCATION == "casa" ]; then
-        exec ${CASAINSTALLDIR}/casa-6.4.0-16/bin/casa --rcdir $RCFILENAME $@
+        exec ${CASAINSTALLDIR}/casa-6.6.0.20-12.0-py38//CASA.app/Contents/MacOS/casa --rcdir $RCFILENAME $@
     else
         echo "Not found "$INVOCATION
     fi
