@@ -80,7 +80,7 @@ For instance, if you are keen to reduce the date of a specific day, you can get 
 If you want to prepare the daily calibration files for an on-going observation, which can be later re-used by the `run_eris_pipeline`:
 
     obsdate="2024-08-25"
-    eris_jhchen_utils get_daily_calib -d "$obsdate" -b K_low -s 100mas -e 600 --outdir calibPool/"$obsdate" --calib_raw calib_raw/"$obsdate"
+    eris_jhchen_utils get_daily_calib -d "$obsdate" -b K_low -s 100mas -e 600 --outdir calibPool/"$obsdate" --calib_raw calib_raw/"$obsdate" --archive
 
 If you have downloaded all the science data of your project, and the data are organised in the folder with their observing dates. Then, all the data can be reduced quickly by the `run_eris_pipeline`. Assuming all the raw data are in "science_raw":
 
@@ -141,7 +141,7 @@ In normal situation, the flux calibration (zero point and transmission curve) ca
     from eris_jhchen_utils import search_archive, get_telluric_calibration
     
     star_list, _, _ = search_archive('./science_reduced', band='K_short', spaxel='25mas', target_type='CALIBSTD')
-    get_telluric_calibration(star_list, outdir='spectral_correction')
+    get_telluric_calibration(star_list, outdir='spectral_corrections')
 ```
 
 Or, in command line tool for individual files and for the whole reduced data directory:
