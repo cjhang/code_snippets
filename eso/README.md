@@ -137,6 +137,22 @@ Flux calibration normally needs more human intervention if the star is offset fr
 
 In normal situation, the flux calibration (zero point and transmission curve) can be quickly derived from the standard telluric stars using:
 
+```bash
+eris_jhchen_utils request_science --dp_type "%STD%" --start_date 2024-02-01 --end_date 2025-06-30 --band K_short --spaxel 250mas --outdir stdstar_raw_Kshort --archive
+eris_jhchen_utils run_eris_pipeline -d stdstar_raw_K_short --outdir stdstar_reduced_K_short
+eris_jhchen_utils run_eris_stdflux -d stdstar_reduced_K_short -o spectral_corrections/Kshort_250mas --band K_short --spaxel 250mas
+```
+
+Then, you can get the correction in fits format in the folder of `spectral_correction`. For each fits file, there is also a qa file for quality assessment, the "*_qa.pdf", from which you can check the quality of the flux calibration. If you found some of the fitting need human intervention, it can be easily achieved with `--interactive` option of `run_eris_stdflux`
+
+```
+eris_jhchen_utils run_eris_stdflux -d stdstar_reduced_H_short -o spectral_corrections/Hshort_250mas --band H_short --spaxel 250mas --ob_list 3649419 --interactive --overwrite
+```
+
+You can attach multiple OB_ID after '--ob_list'. It will then open the interactive window for std star fitting.
+
+Alternatively, you can still use all the functions directly in Python:
+
 ```python
     from eris_jhchen_utils import search_archive, get_telluric_calibration
     
@@ -144,14 +160,7 @@ In normal situation, the flux calibration (zero point and transmission curve) ca
     get_telluric_calibration(star_list, outdir='spectral_corrections')
 ```
 
-Or, in command line tool for individual files and for the whole reduced data directory:
-
-    eris_jhchen_utils.py get_telluric_calibration -f starfile1 starfile2
-    eris_jhchen_utils.py get_telluric_calibration -d ./science_reduced
-
-Then, you can get the correction in fits format in the folder of `spectral_correction`. For each fits file, there is also a qa file for quality assessment.
-
-With the "*_qa.pdf", you can check the quality of the flux calibration. If more human interventions are needed. You can also break the task into individual steps:
+ If more human interventions are needed. You can also break the task into individual steps:
 
 ```python
     from eris_jhchen_utils import extract_star, get_corrections
