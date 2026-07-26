@@ -25,7 +25,7 @@ History:
 
 """
 
-__version__ = '0.1.2'
+__version__ = '0.1.3'
 
 
 import os
@@ -483,6 +483,7 @@ class Cube(BaseCube):
         header_sliced.set('NAXIS3',shape_sliced[0])
         try:
             header_sliced.set('CUNIT3', self.header_sliced['CUNIT3'])
+            header_sliced.set('BUNIT', self.header_sliced['BUNIT'])
         except:
             pass
         for key, value in self.header.items():
@@ -591,7 +592,7 @@ class Cube(BaseCube):
 ###   stand alone functions   ###
 #################################
 
-def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None, corret_beam=False):
+def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None, correct_beam=False):
     """read the fits file
     """
     with fits.open(fitscube) as cube_hdu:
@@ -600,17 +601,26 @@ def read_ALMA_cube(fitscube, debug=False, stokes=0, name=None, corret_beam=False
         cube_header = cube_hdu['primary'].header
         cube_data = cube_hdu['primary'].data #* u.Unit(cube_header['BUNIT'])
         try:
+            cube_unit = u.Unit(cube_header['BUNIT'])
+        except:
+            cube_unit = ''
+        try:
+            #cube_beams = cube_hdu['beams'].data
             beams_data = cube_hdu['beams'].data
             cube_beam = np.array([beams_data['BMAJ'], beams_data['BMIN'], beams_data['BPA']]).T
         except: cube_beam = None
-        if corret_beam: # convert the units
-            if '/beam' in cube_header['BUNIT']: # check whether it is beam^-1
+        if correct_beam: # convert the units
+            if '/beam' in cube_unit: # check whether it is beam^-1
                 pixel2arcsec_ra = abs(cube_header['CDELT1']*u.Unit(cube_header['CUNIT1']).to(u.arcsec)) 
                 pixel2arcsec_dec = abs(cube_header['CDELT2']*u.Unit(cube_header['CUNIT2']).to(u.arcsec))       
                 pixel_area = pixel2arcsec_ra * pixel2arcsec_dec # in arcsec2
-                beamsize = calculate_beamsize(cube_beams, debug=debug) / pixel_area 
-                cube_data = cube_data / beamsize[None,:,None,None] * u.beam
-    return Cube(data=cube_data[stokes], header=cube_header, beam=cube_beam, name=name)
+                beamsize = calculate_beamsize(cube_beam) / pixel_area
+                cube_data = cube_data / beamsize[None,:,None,None]
+                cube_unit = cube_unit*u.beam
+                cube_header['BUNIT'] = cube_unit.to_string()
+        if cube_data.ndim > 3:
+            cube_data = cube_data[stokes]
+    return Cube(data=cube_data, header=cube_header, beam=cube_beam, name=name)
 
 def get_chandata(header=None, wcs=None, output_unit=None):
     """a general way to read the spectral axis from the header
@@ -1199,7 +1209,8 @@ if __name__ == '__main__':
 
             '''))
     subp_subcube.add_argument('--fitscube', type=str, help='The input fits datacube')
-    subp_subcube.add_argument('--extname', type=str, help='The input fits datacube')
+    subp_subcube.add_argument('--extname', type=str, default='Primary',
+                              help='The input fits datacube')
     subp_subcube.add_argument('--outfile', type=str, help='The output file name')
     subp_subcube.add_argument('--bltr', type=int, nargs='+', help='The pixel coordinate of [bottom left, top_right], e.g. 10 10 80 80')
     subp_subcube.add_argument('--sky_center', type=str, help='The sky coordinate of the center,  e.g. "1:12:43.2 +31:12:43" or "1h12m43.2s +1d12m43s" or "23.5 -34.2"')

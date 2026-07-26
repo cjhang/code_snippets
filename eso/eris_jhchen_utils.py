@@ -18,7 +18,7 @@ History:
     - 2024-09-05: add support for flux calibration, v0.8
     - 2026-02-01: optimized telluric star reductions, v0.9
 """
-__version__ = '0.9.9'
+__version__ = '0.9.10'
 
 # import the standard libraries
 import os 
@@ -2380,15 +2380,19 @@ def match_telluric_corrections(name):
     """match the corrections for each observation
     """
     # target_matcher = re.compile(r"(?P<target>[\w\s\-\.+]+)_(?P<target_type>(SCIENCE|CALIBPSF|CALIBSTD))_(?P<id>\d{7})_(?P<tpl_start>[\d\-\:T]+)_(?P<band>[JKH]_[\w]{3,6}?)_(?P<spaxel>\d{2,3}mas)_(?P<exptime>\d+)s")
-    name_matcher = re.compile(r"(?P<target>.+)_(?P<tpl_start>[0-9-:T]+)_(?P<band>[JKH]_[a-z]{3,6}?)_(?P<spaxel>[0-9]{2,3}mas)_airmass(?P<airmass>\d+\.\d+)_zp(?P<zp>\d+\.\d+)")
+    name_matcher = re.compile(r"(?P<target>.+)_(?P<tpl_start>[0-9-:T]+)_(?P<band>[JKH]_[a-z]{3,6}?)_(?P<spaxel>[0-9]{2,3}mas)_(?P<ob_id>\d+)_airmass(?P<airmass>\d+\.\d+)_seeing(?P<seeing>\d+\.\d+)_zp(?P<zp>\d+\.\d+)")
     try:
         corr_match = name_matcher.search(name).groupdict()
     except:
         corr_match = None
     return corr_match
 
-def search_telluric_corrections(datadir, target_name=None, date=None, delta_day=15, band=None,
-                                spaxel=None, airmass=None, delta_airmass=0.2, zp_range=[0.5, 3.0],
+def search_telluric_corrections(datadir, target_name=None, 
+                                date=None, delta_day=178, 
+                                band=None, spaxel=None, 
+                                airmass=None, delta_airmass=0.2, 
+                                seeing=None, delta_seeing=0.5,
+                                zp_range=[0.5, 3.0],
                                 mode=None, ):
     """
     Args:
@@ -2399,6 +2403,8 @@ def search_telluric_corrections(datadir, target_name=None, date=None, delta_day=
             'average': average the correction
             'median': use the median value of the correction
             'extrapolation': extrapolation the correction based on the airmass
+        airmass: can be set both by airmass and delta_airmass, or with set airmass to a range
+        seeing: can also be set using the same way as airmass
     """
     correct_files = glob.glob(datadir+'/*.fits')
     matched_corrections = []
@@ -2420,24 +2426,37 @@ def search_telluric_corrections(datadir, target_name=None, date=None, delta_day=
         if (float(corr_matched['zp']) < zp_range[0]) or (float(corr_matched['zp']) > zp_range[1]):
             continue
         if airmass is not None:
+            obs_airmass = float(corr_matched['airmass'])
             if isinstance(airmass, (list, np.ndarray)):
-                if ((float(corr_matched['airmass']) < airmass[0]) 
-                    | (float(corr_matched['airmass'])>airmass[1])):
+                if ((obs_airmass < airmass[0]) 
+                    | (obs_airmass>airmass[1])):
                     continue
             else:
-                obs_delta_airmass = np.abs(airmass - float(corr_matched['airmass']))
+                obs_delta_airmass = np.abs(airmass - obs_airmass)
                 if  obs_delta_airmass > delta_airmass:
+                    continue
+        if seeing is not None:
+            obs_seeing = float(corr_matched['seeing'])
+            if isinstance(seeing, (list, np.ndarray)):
+                if ((obs_seeing < seeing[0]) 
+                    | (obs_seeing > seeing[1])):
+                    continue
+            else:
+                obs_delta_seeing = np.abs(seeing - float(corr_matched['seeing']))
+                if  obs_delta_seeing > delta_seeing:
                     continue
         if date is not None:
             obs_delta_seconds = np.abs((np.array(date, dtype='datetime64[s]') 
                               - np.array(corr_matched['tpl_start'], dtype='datetime64[s]')))
-            obs_delta_days = obs_delta_seconds.astype(int) / (3600*12)
+            obs_delta_days = obs_delta_seconds / np.timedelta64(1, 'D')
+            #obs_delta_days = obs_delta_seconds.astype(int) / (3600*12)
             if obs_delta_days > delta_day: 
                 continue
-        matched_corrections.append([corrfile, obs_delta_airmass, obs_delta_days])
+        matched_corrections.append([corrfile, obs_airmass, obs_seeing, obs_delta_airmass, obs_delta_days])
     matched_corrections = np.array(matched_corrections)
     matched_corrections = table.Table(matched_corrections, 
-                                      names=('filename', 'delta_airmass', 'delta_time'))
+                                      names=('filename', 'airmass', 'seeing', 'delta_airmass', 'delta_time'),
+                                      dtype=('U200', 'f8', 'f8', 'f8', 'f8'))
     if mode is None:
         return matched_corrections
     if mode == 'closest':
@@ -2517,10 +2536,12 @@ def get_median_correction(filelist):
 
 def correct_cube(fitscube, wavelength=None, transmission=None, zp=None, 
                  correction=None, overwrite=False,
-                 exptime=None, outfile=None,
+                 exptime=None, outdir=None, outfile=None,
                  clean_cube=True, mask_sky_lines=True, 
                  z=None, lines=None, line_widths=1000,
                  sigma_clip=True, sigma=5.0, subtract_median=False,
+                 subtract_median_row=True, subtract_median_spectral=False,
+                 subtract_median_box=None,
                  ):
     """correct the flux the cube
 
@@ -2549,15 +2570,14 @@ def correct_cube(fitscube, wavelength=None, transmission=None, zp=None,
                     raise ValueError('Please provide the exptime!')
             else:
                 raise ValueError('Please make sure the data unit is either adu or adu/s')
-        
-        try:
-            arcfile = header['ARCFILE']
-        except:
-            pass
     if clean_cube:
         cube = clean_cube2(cube, cube_wavelength, z=z, 
                            subtract_median=subtract_median,
+                           subtract_median_row=subtract_median_row, 
+                           subtract_median_spectral=subtract_median_spectral,
+                           subtract_median_box=subtract_median_box,
                            mask_sky_lines=mask_sky_lines,
+                           lines=lines, line_widths=line_widths,
                            sigma_clip=sigma_clip, sigma=sigma)
 
     if correction is not None:
@@ -2579,7 +2599,7 @@ def correct_cube(fitscube, wavelength=None, transmission=None, zp=None,
     else:
         if wavelength is None:
             raise ValueError("Please provide also the wavelength!")
-        correction = transmission * zp
+        correction = zp / transmission 
         # if transmission is not None:
         #     if isinstance(transmission, str):
         #         transmission_corr = np.loadtxt(transmission, delimiter=',')
@@ -2615,14 +2635,22 @@ def correct_cube(fitscube, wavelength=None, transmission=None, zp=None,
         if not os.path.isdir(outdir):
             os.system(f'mkdir -p {outdir}')
         # outfile = os.path.join(outdir, os.path.basename(fitscube)[:-4]+f'{suffix}.fits')
-        if os.path.isfile(outfile):
-            if not overwrite:
-                print(f'skip existing file: {outfile}')
-                skip_write = True
-        if not skip_write:
-            hdus.writeto(outfile, overwrite=True)
-        return outfile
-    return hdus
+    elif outdir is not None:
+        header_dict = read_eris_header(fitscube)
+        filename = '{}_{}_{}_{}_{}_{}'.format(
+                header_dict['object'], header_dict['arcfile'][:-5], 
+                header_dict['band'], header_dict['spaxel'], 
+                header_dict['ob_id'], os.path.basename(fitscube))
+        outfile = os.path.join(outdir, filename)
+    else:
+        raise ValueError('Please provide either outfile or outdir to save the files')
+    print(f'saving {outfile}')
+    if os.path.isfile(outfile):
+        if not overwrite:
+            print(f'skip existing file: {outfile}')
+            return outfile
+    hdus.writeto(outfile, overwrite=True)
+    return outfile
 
 def fit_star_stdflux(starfits, x0=None, y0=None, pixel_size=1, plot=False,
                      interactive=False, basename=None, outfile=None, plotfile=None,
@@ -3266,7 +3294,11 @@ def clean_cube(datacube, mask=None, signal_mask=None,
 def clean_cube2(cube, wavelength, 
                 z=None, lines=None, line_widths=1000,
                 mask_sky_lines=True,
-                subtract_median=True, padding=None,
+                padding=None,
+                subtract_median=True, 
+                subtract_median_row=True, 
+                subtract_median_spectral=False,
+                subtract_median_box=None,
                 sigma_clip=True, sigma=5,):
     """background subtraction with line protection
 
@@ -3276,6 +3308,16 @@ def clean_cube2(cube, wavelength,
                               otherwise, it will be treated as restframe (default z=0)
         z (float): redshift
         line_width (float): velocity width in km/s, 
+        subtract_median: apply median subtraction
+        subtract_median_row: apply row based median subtraction, 
+            need subtract_median=True
+        subtract_median_spectral: apply median subtraction along spectral axis, 
+            need subtract_median=True
+        subtract_median_box: apply median subtraction within a selected box region, 
+            but use the box region as the sky, it needs subtract_median=True 
+            the box is [low_x_idx, up_x_idx, low_y_idx, up_y_idx] to select the region
+            with datacube[:, low_y_idx:up_y_idx, low_x_idx:up_x_idx]
+
     """
     # calculated the filled cube with protected lines
 
@@ -3346,12 +3388,42 @@ def clean_cube2(cube, wavelength,
                 message='Mean of empty slice',
                 category=RuntimeWarning
             )
-            # clip along rows
-            clipped = astro_stats.sigma_clip(cube_filled, sigma=3, axis=2) 
-            median_rows = np.nanmedian(clipped, axis=2) # do medians on rows
-        median_cube = np.repeat(median_rows[:,:, np.newaxis], cube.shape[2], axis=2) # make it 3D by repeating along the x axis
-    else:
-        median_cube = 0
+            if subtract_median_row:
+                # clip and median along rows
+                clipped = astro_stats.sigma_clip(cube_filled, sigma=3, axis=2) 
+                median_rows = np.nanmedian(clipped, axis=2) # do medians on rows
+                cube = cube - median_row[:,:,None] 
+                # median_cube = np.repeat(median_rows[:,:, np.newaxis], cube.shape[2], axis=2) # make it 3D by repeating along the x axis
+            else:
+                median_cube_row = 0
+            if subtract_median_spectral:
+                # clip and median along spectral
+                clipped = astro_stats.sigma_clip(cube_filled, sigma=3, axis=0) 
+                median_spectral = np.nanmedian(clipped, axis=0) # do medians on rows
+                cube = cube - median_spectral[None,:,:] 
+                # median_cube_spectral = np.repeat(median_spectral[np.newaxis, :,:], cube.shape[0], axis=0) # make it 3D by repeating along the x axis
+            else:
+                median_cube_spectral = 0
+            if subtract_median_box is not None:
+                clipped = astro_stats.sigma_clip(cube_filled, sigma=3, axis=0) 
+                # clip and median within a box 
+                if np.array(subtract_median_box).ndim > 1:
+                    box_clipped = []
+                    for box_idx in subtract_median_box:
+                        low_x_i, up_x_i, low_y_i, up_y_i = box_idx
+                        box_clipped.append(clipped[:, low_y_i:up_y_i, low_x_i:up_x_i].reshape(cube.shape[0], -1))
+                    box_clipped = np.concatenate(box_clipped, axis=1)
+                    median_box = np.nanmedian(box_clipped, axis=1)
+                else:
+                    low_x_idx, up_x_idx, low_y_idx, up_y_idx = subtract_median_box
+                    box_clipped = clipped[:, low_y_idx:up_y_idx, low_x_idx:up_x_idx]
+                    median_box = np.nanmedian(box_clipped, axis=(1,2))
+                cube = cube - median_box[:,None,None] 
+                # median_cube_box = np.repeat(median_box[:,np.newaxis, np.newaxis], 
+                #                             cube.shape[1:], axis=(1,2))
+            else:
+                median_cube_box = 0
+    # median_cube = median_cube_row + median_cube_spectral + median_cube_box
     if sigma_clip:
         # apply sigma_clip along the spectral axis with signal protection
         with warnings.catch_warnings():
@@ -3372,7 +3444,7 @@ def clean_cube2(cube, wavelength,
             outlier_mask = (cube_full_masked.mask | cube_free_masked.mask)
         cube_outlier_masked = fill_invalid(cube, mask=outlier_mask) 
         cube[outlier_mask] = cube_outlier_masked[outlier_mask]
-    cube = cube - median_cube
+    # cube = cube - median_cube
     return cube
 
 def get_sky_lines_mask(wavelength, esorex='esorex', sky_mask_min=1.0):
@@ -3492,6 +3564,8 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
                       z=None, lines=None, line_widths=1000, wave_range=None,
                       wave_ref=None, wave_ref_width=None,
                       sigma_clip=True, sigma=5.0, subtract_median=False,
+                      subtract_median_row=True, subtract_median_spectral=False,
+                      subtract_median_box=None,
                       mask_ext=None, median_filter=False, median_filter_size=(5,3,3),
                       clean_cube=True, mask_sky_line=True,  
                       weighting=None, overwrite=False, debug=False):
@@ -3739,6 +3813,9 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
             if clean_cube:
                 cube_data = clean_cube2(cube_data, cube_wavelength, z=z, 
                                         subtract_median=subtract_median,
+                                        subtract_median_row=subtract_median_row, 
+                                        subtract_median_spectral=subtract_median_spectral,
+                                        subtract_median_box=subtract_median_box,
                                         mask_sky_lines=mask_sky_line,
                                         sigma_clip=sigma_clip, sigma=sigma)
 
@@ -3878,12 +3955,14 @@ def combine_eris_cube(cube_list, pixel_shifts=None, savefile=None,
         return data_combined 
 
 def combine_eris_cube2(cube_list, pixel_shifts=None, savefile=None, 
-                      z=None, lines=None, line_widths=1000, wave_range=None,
-                      wave_ref=None, wave_ref_width=1000,
-                      sigma_clip=True, sigma=5.0, subtract_median=False,
-                      mask_ext=None, 
-                      clean_cube=True, mask_sky_line=True,  
-                      weighting=None, overwrite=False, debug=False):
+                       z=None, lines=None, line_widths=1000, wave_range=None,
+                       wave_ref=None, wave_ref_width=1000,
+                       sigma_clip=True, sigma=5.0, subtract_median=False,
+                       subtract_median_row=True, subtract_median_spectral=False,
+                       subtract_median_box=None,
+                       mask_ext=None, 
+                       clean_cube=True, mask_sky_line=True,  
+                       weightings=None, overwrite=False, debug=False):
     """a simpplified version of combine_eris_cube, going to replace combine_eris_cube
        The key difference is to seperate the spatial shift and wavelength 
        interpolation 
@@ -3982,7 +4061,11 @@ def combine_eris_cube2(cube_list, pixel_shifts=None, savefile=None,
             if clean_cube:
                 cube_data = clean_cube2(cube_data, cube_wavelength, z=z, 
                                         subtract_median=subtract_median,
+                                        subtract_median_row=subtract_median_row, 
+                                        subtract_median_spectral=subtract_median_spectral,
+                                        subtract_median_box=subtract_median_box,
                                         mask_sky_lines=mask_sky_line,
+                                        lines=lines, line_widths=line_widths,
                                         sigma_clip=sigma_clip, sigma=sigma)
 
 
@@ -4009,17 +4092,21 @@ def combine_eris_cube2(cube_list, pixel_shifts=None, savefile=None,
                 assume_sorted=True,
             )
             
-            # weight the data by their exposure time and sensitivity            
-            if wave_ref is not None:
-                delta_wave_ref = wave_ref_width / 3e5 * wave_ref
-                wave_ref_range = [wave_ref-delta_wave_ref, wave_ref+delta_wave_ref]
-                wave_ref_select = (wavelength > wave_ref_range[0]) & (
-                                    wavelength < wave_ref_range[1])
-                #spec_cube_rms2 = np.sqrt(np.nanmean(cube_data[wave_ref_select]**2))
-                cube_ref_std = np.nanstd(cube_data[wave_ref_select])*1e18
-                weight = cube_exptime/cube_ref_std**2
+            # computing the weighting of the exposures
+            # weight the data by their exposure time and sensitivity 
+            if weightings is None:
+                if wave_ref is not None:
+                    delta_wave_ref = wave_ref_width / 3e5 * wave_ref
+                    wave_ref_range = [wave_ref-delta_wave_ref, wave_ref+delta_wave_ref]
+                    wave_ref_select = (cube_wavelength > wave_ref_range[0]) & (
+                                       cube_wavelength < wave_ref_range[1])
+                    #spec_cube_rms2 = np.sqrt(np.nanmean(cube_data[wave_ref_select]**2))
+                    cube_ref_std = np.nanstd(cube_data[wave_ref_select])*1e18
+                    weight = cube_exptime/cube_ref_std**2
+                else:
+                    weight = cube_exptime
             else:
-                weight = cube_exptime
+                weight = weightings[i]
             cube_data_interp = interpolator(wavelength)
             valid = np.isfinite(cube_data_interp)
             numerator[:, (offset_pixel[1]+pad):(offset_pixel[1]+cube_ny+pad), 
@@ -4052,13 +4139,16 @@ def combine_eris_cube2(cube_list, pixel_shifts=None, savefile=None,
         if hdr['CUNIT3'].strip() == 'm':
             hdr['PC3_3'] = 1e6 * hdr['PC3_3']
             hdr['CRVAL3'] = (1e6 * hdr['CRVAL3'], '[um] Coordinate value at reference point') 
-            hdr['CDELT3'] = (1.0, '[um] Coordinate increment at reference point') 
+            hdr['CDELT3'] = (hdr['PC3_3'], '[um] Coordinate increment at reference point') 
             hdr['CUNIT3'] = 'um'
 
         # copy the PC records to CD to support QFitsView
         hdr['CD1_1'] = hdr['PC1_1']
         hdr['CD2_2'] = hdr['PC2_2']
         hdr['CD3_3'] = hdr['PC3_3']
+        hdr['CDELT1'] = hdr['PC1_1']
+        hdr['CDELT2'] = hdr['PC2_2']
+        hdr['CDELT3'] = hdr['PC3_3']
         hdr['BUNIT'] = first_header['BUNIT'].strip() + '/s'
         hdr['OBSERVER'] = 'VLT/ERIS'
         hdr['COMMENT'] = 'Created by the eris_jhchen_utils.py'

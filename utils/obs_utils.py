@@ -487,10 +487,13 @@ def get_alma_transmission(freq, pwv=0.5):
 
 
 def plot_alma_spw(freq_range=[90, 1000], lines=None, lines_names=None,
-                  pwv=1.0, show_alma_bands=True):
+                  pwv=1.0, show_alma_bands=True, ax=None):
     tab_pwv = read_alma_pwv()
     freq_selection = (tab_pwv['frequency']>freq_range[0]) & (tab_pwv['frequency']<freq_range[1])
-    fig, ax = plt.subplots(1,1)
+    if ax is None:
+        fig, ax = plt.subplots(1,1)
+    else:
+        fig = None
     x_freq = tab_pwv['frequency'][freq_selection]
     y_pwv = tab_pwv[str(pwv)][freq_selection]
     ax.plot(x_freq, y_pwv, color='black', alpha=0.5)
@@ -517,6 +520,7 @@ def plot_alma_spw(freq_range=[90, 1000], lines=None, lines_names=None,
     ax.set_xlabel('Frequency')
     ax.set_ylabel('Transmission')
     plt.show()
+    return fig, ax
 
 
 if __name__ == '__main__':

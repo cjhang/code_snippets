@@ -827,7 +827,7 @@ def quick_cube():
 # global variables
 # ALMA pipeline versions: https://almascience.nrao.edu/processing/science-pipeline
 ALMA_PIPELINEs = (
-    ['2025-09-29','2026-09-30',"6.6.6",'casa-6.6.6-17-pipeline-2025.1.0.35'],
+    ['2025-09-29','2026-09-30',"6.6.6",'casa-6.6.6-18-pipeline-2025.1.0.37'],
     ['2024-09-30','2025-09-29',"6.6.1",'casa-6.6.1-17-pipeline-2024.1.0.8'],
     ['2023-09-30','2024-09-30',"6.5.4",'casa-6.5.4-9-pipeline-2023.1.0.124'],
     ['2022-09-26','2023-09-30',"6.4.1",'casa-6.4.1-12-pipeline-2022.2.0.68'],
@@ -888,7 +888,7 @@ def choose_alma_pipeline(asdm=None, vis=None, basedir=None):
     # check the executable
     full_app_path = glob.glob(os.path.join(basedir, pipeline_selected)+'*')[0]
     full_execute_path = full_app_path + '/bin/casa'
-    if not os.isfile(full_execute_path):
+    if not os.path.isfile(full_execute_path):
         raise FileExistsError(f"Cannot find {full_execute_path}")
 
     if pipeline_version is None:

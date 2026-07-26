@@ -14,6 +14,7 @@ __version__ = '0.1.2'
 import time
 import numpy as np
 import warnings
+import operator
 import emcee
 
 from numpy import linalg
@@ -197,6 +198,19 @@ class Model:
             return self.model_on_grid(args[0])
         else:
             return self.evaluate(*args)
+    def __add__(self, model):
+        if isinstance(other, Model):
+            Model(name=self.name+model.name)
+            return 
+        else: NotImplemented
+    def __mul__(self, other):
+        if isinstance(other, (int, float)):
+            return Vector(self.x * other, self.y * other)
+        return NotImplemented
+    def __sub__(self, model):
+        return NotImplemented
+    def __truediv__(self, model):
+        return NotImplemented
     @property
     def name(self):
         if self._name is None:
@@ -275,6 +289,8 @@ class Model:
             return self.evaluate(grid.x)
         if grid.ndim == 2:
             return self.evaluate(*grid.meshgrid)
+
+
 
 class Models:
     """

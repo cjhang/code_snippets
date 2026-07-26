@@ -273,6 +273,10 @@ class BaseImage(object):
         except:
             pixel_beam = None
         return pixel_beam
+    @property
+    def celestial(self):
+        # dropping the other spectral and stocks axis
+        return self.__class__(self.image, wcs=self.wcs.celestial, beam=self.beam)
 
     def pixel2skycoords(self, pixel_coords):
         """covert from pixel to skycoords
@@ -334,7 +338,7 @@ class BaseImage(object):
             header_sliced['BUNIT'] = self.header['BUNIT']
         except:
             pass
-        return BaseImage(data=image_sliced, header=header_sliced, beam=self.beam)
+        return self.__class__(data=image_sliced, header=header_sliced, beam=self.beam)
 
     def writefits(self, filename, overwrite=False, shift_reference=False):
         """write to fits file
@@ -445,9 +449,6 @@ class Image(BaseImage):
     def __getitem__(self, s):
         return Image(self.subimage(s))
 
-    def subimage(self, s):
-        return Image(super().subimage(s))
-
     def imstats(self, sigma=5.0, maxiters=2, sigma_clip=False):
         """this function first mask the 4-sigma signal and expand the mask with
         scipy.ndimage.binary_dilation
@@ -544,7 +545,7 @@ class Image(BaseImage):
                                     conserve_flux=conserve_flux, **kwargs)
         else:
             raise ValueError("Please specify the output referece system, either the header_out or the wcs_out")
-        return Image(data=data_new, header=header_out, wcs=wcs_out)
+        return Image(data=data_new, header=header_out, wcs=wcs_out, beam=self.beam)
  
     def beam_stats(self, beam=None, mask=None, nsample=100):
         if beam is None:
@@ -552,6 +553,8 @@ class Image(BaseImage):
         if mask is None:
             mask = self.mask
         aperture = beam2aperture(beam)
+        if mask is None:
+            mask = self.find_structure(sigma=4.0, dilation_iters=3)
         return aperture_stats(self.image, aperture=aperture, 
                               mask=mask, nsample=nsample)
 
@@ -570,12 +573,14 @@ class Image(BaseImage):
                 if 'beam' not in self.unit.to_string():
                     self.data = self.data*self.beamarea
                     self.unit = u.Unit(self.unit.to_string()+'/beam')
+                    self.header['BUNIT'] = self.unit.to_string()
                 else:
                     pass
             else:
                 if 'beam' in self.unit.to_string():
                     self.data = self.data/self.beamarea
                     self._unit = self.unit*u.beam
+                    self.header['BUNIT'] = self.unit.to_string()
 
     def correct_reponse(self, corr):
         """apply correction for the whole map
@@ -615,6 +620,7 @@ class Image(BaseImage):
 
     def measure_flux(self, dets=None, coords=None, apertures=None, 
                      aperture_scale=4.0, segment_scale=3.0,
+                     aperture_correction=False,
                      method='adaptive-aperture', minimal_aperture=None, **kwargs):
         """shortcut for flux measurement of existing detections
 
@@ -650,8 +656,9 @@ class Image(BaseImage):
                     aper = apertures[i]
                     if aper[0]*aper[1] < minimal_aperture[0]*minimal_aperture[1]:
                         apertures[i] = minimal_aperture
-            apercorr = aperture_correction(fwhm=self.pixel_beam, aperture=apertures)
-            corr = np.array(apercorr) * corr
+            if aperture_correction:
+                apercorr = aperture_correction(fwhm=self.pixel_beam, aperture=apertures)
+                corr = np.array(apercorr) * corr
         flux_table = measure_flux(self.image.value, wcs=self.wcs, coords=coords, 
                                   apertures=apertures, method=method, 
                                   segment_size=segment_scale*np.max(self.pixel_beam[0]),
@@ -701,12 +708,13 @@ def read_ALMA_image(fitsimage, extname='primary', name=None, debug=False,
                 pixel2arcsec_dec = abs(image_header['CDELT2']*u.Unit(image_header['CUNIT2']).to(u.arcsec))       
                 pixel_area = pixel2arcsec_ra * pixel2arcsec_dec
                 beamsize = 1/(np.log(2)*4.0) * np.pi * image_beam[0] * image_beam[1] / pixel_area
-                image_data = image_data / beamsize * u.beam
-                image_header['BUNIT'] = image_data.unit.to_string()
+                image_data = image_data / beamsize
+                image_unit = image_unit*u.beam
+                image_header['BUNIT'] = image_unit.to_string()
     if name is None:
         name = os.path.basename(fitsimage)
     return Image(data=image_data, header=image_header, beam=image_beam, name=name, 
-                 unit=image_unit)
+                 )
 
 def calculate_rms(data, mask=None, masked_invalid=True, sigma_clip=True, sigma=3.0, maxiters=5,
                   mask_structures=False):
@@ -1027,7 +1035,11 @@ def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=Non
                                                         error=image_err)
             phot_table.add_row([r, aper.area, aper_sum[0], aper_sum_err[0]])
         # calculate the flattening radius and total flux
-        slope_selection = (np.diff(phot_table['flux']) < step*tolerence) & (radii[:-1]>min_aperture)
+        is_valid = np.isfinite(phot_table['flux'])
+        flux_valid = phot_table['flux'][is_valid]
+        flux_err_valid = phot_table['flux_err'][is_valid]
+        radii_valid = radii[is_valid]
+        slope_selection = (np.diff(flux_valid) < step*tolerence) & (radii_valid[:-1]>min_aperture)
         if np.any(slope_selection):
             max_idx = np.argmax(slope_selection)
         else:
@@ -1035,24 +1047,25 @@ def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=Non
 
         # flux_table = Table(names=['r', 'area', 'flux', 'flux_err'],
                            # dtype=('f8', 'f8', 'f8', 'f8'))
-        flux_max = phot_table['flux'][max_idx]
-        flux_max_err = np.sqrt((phot_table['flux_err'][max_idx])**2 
+        flux_max = flux_valid[max_idx]
+        flux_max_err = np.sqrt((flux_err_valid[max_idx])**2 
                                + (tolerence*flux_max)**2)
-        flux_max_r = radii[max_idx]
+        flux_max_r = radii_valid[max_idx]
         # calculate the radius at the give flux ratio
-        flux_r_select = ((phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err)) & 
-                         (phot_table['flux'] <= flux_ratio*(flux_max+flux_max_err)))
+        flux_r_select = ((flux_valid >= flux_ratio*(flux_max-flux_max_err)) & 
+                         (flux_valid <= flux_ratio*(flux_max+flux_max_err)))
+        #print('flux max', flux_max, flux_max_err)
         flux_r_min_index = np.where(
-                phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
+                flux_valid >= flux_ratio*(flux_max-flux_max_err))[0][0]
         flux_r_max_index = np.where(
-                phot_table['flux'] >= flux_ratio*(flux_max-flux_max_err))[0][0]
+                flux_valid >= flux_ratio*(flux_max-flux_max_err))[0][0]
         # ratio_flux_r = np.nanmean(radii[flux_r_select])
         # ratio_flux_r_err = np.nanstd(radii[flux_r_select])
-        ratio_flux_r = np.mean([radii[flux_r_min_index], radii[flux_r_min_index]])
+        ratio_flux_r = np.mean([radii[flux_r_min_index], radii[flux_r_max_index]])
         ratio_flux_r_err = np.max(
                 [np.diff([radii[flux_r_min_index], radii[flux_r_min_index]])[0], step])
-        flux_profile = phot_table['flux']
-        flux_profile_err = phot_table['flux_err']
+        flux_profile = flux_valid #phot_table['flux']
+        flux_profile_err = flux_err_valid #phot_table['flux_err']
     else:
         # used when no robust error is available 
         image_bootstrap = create_bootstrap_image(image, mask=mask, n_samples=n_bootstrap,
@@ -1107,7 +1120,7 @@ def adaptive_aperture_photometry(image, aperture, error=None, step=0.5, mask=Non
         ratio_flux_r = np.median(ratio_flux_r_bootstrap)
         ratio_flux_r_err = np.std(ratio_flux_r_bootstrap)
         # construct the table
-        phot_table = Table([radii, np.pi*radii*b2a, flux_profile, flux_profile_err],
+        phot_table = Table([radii_valid, np.pi*radii*b2a, flux_profile, flux_profile_err],
                            names=['r', 'area', 'flux', 'flux_err'])
     if debug:
         pass
@@ -1594,7 +1607,7 @@ def source_deblend(image, pixel_coords, mask=None, plot=False, algorithm='waters
 def measure_flux(image, wcs=None, detections=None,
                  coords=None, apertures=None, aperture_scale=1,
                  method='adaptive-aperture', max_aperture=None, tolerence=1e-4,
-                 mask=None, n_boostrap=100,
+                 mask=None, n_boostrap=100, flux_unit_scale=1,
                  segment_size=30.0, noise_fwhm=None, rms=None,
                  plot=False, ax=None, color='white', debug=False):
     """Two-dimension flux measurement in the pixel coordinates
@@ -1817,7 +1830,7 @@ def measure_flux(image, wcs=None, detections=None,
                                       facecolor='none', edgecolor='black', alpha=0.5)
             vert_dist = 12+0.4*(obj['aper_maj']*np.cos(obj['theta']) + obj['aper_min']*np.cos(obj['theta']))
             ax.add_patch(ellipse)
-            ax.text(obj['x'], obj['y']-abs(vert_dist), "{:.2f}".format(obj['flux']), 
+            ax.text(obj['x'], obj['y']-abs(vert_dist), "{:.2f}".format(obj['flux']*flux_unit_scale), 
                     color=color, horizontalalignment='center', verticalalignment='center',)
         plt.show()
         # # only for test
@@ -2386,6 +2399,47 @@ def make_rgb(image_b, image_g, image_r, box=None, remove_signal=True,
                          layer_b.T**b_gamma, layer_alpha.T]).T
     return np.array([layer_r.T**r_gamma, layer_g.T**g_gamma, layer_b.T**b_gamma]).T
 
+def image_resample(image_in, pixel_size_in, pixel_size_out, shape_out=None,
+                   preserve_flux=True):
+    """ resample image on a grid with different pixelsize and shape
+    Args:
+        image_in: input image
+        pixel_size_in: pixelsize of the input image, [y_pixelsize, x_pixelsize]
+        pixel_size_out: pixelsize of the output image, [y_pixelsize, x_pixelsize]
+        shape_out: output image size, [y_size, x_size]
+        preserve_flux: where to keep total integrate value constant
+    """
+    if np.isscalar(pixel_size_in):
+        pixel_size_in = (pixel_size_in, pixel_size_in)
+    if np.isscalar(pixel_size_out):
+        pixel_size_out = (pixel_size_out, pixel_size_out)
+    # calculate the input grid
+    ny, nx = image_in.shape
+    xi_coord = (np.arange(0, nx) - (nx-1)/2.0) * pixel_size_in[1]
+    yi_coord = (np.arange(0, ny) - (ny-1)/2.0) * pixel_size_in[0]
+
+    # define the output grid
+    if shape_out is None:
+        # default to perserve the image coverage
+        pixel_ratio = (np.array(pixel_size_in) / np.array(pixel_size_out))
+        ny_out, nx_out = np.round((np.array([ny, nx]) * pixel_ratio)).astype(int)
+    else:
+        ny_out, nx_out = shape_out
+    xo_coord = (np.arange(0, nx_out) - (nx_out-1)/2.0) * pixel_size_out[1]
+    yo_coord = (np.arange(0, ny_out) - (ny_out-1)/2.0) * pixel_size_out[0]
+    yo, xo = np.meshgrid(yo_coord, xo_coord, indexing='ij')
+    
+    # start the interpolation
+    image_out = scipy.interpolate.interpn(
+            (yi_coord, xi_coord), image_in, np.vstack([yo.ravel(), xo.ravel()]).T,
+            method='linear', bounds_error=False, fill_value=0
+    ).reshape(ny_out, nx_out)
+
+    # preserve the total flux
+    if preserve_flux:
+        image_out *= np.sum(image_in)*np.multiply(*pixel_size_in)/(np.sum(image_out)*np.multiply(*pixel_size_out))
+    return image_out
+
 ########################################
 ########### plot functions #############
 ########################################
@@ -2426,6 +2480,7 @@ def plot_pixel_image(image, beam=None, zoom_in=None,
 def plot_image(image, beam=None, ax=None, name=None, pixel_size=1, unit=None, 
                contour=None, contour_levels=None, 
                vmin=None, vmax=None, zoom=1.0,
+               offset=None,
                show_colorbar=True, colorbar_powerlimits=None,
                show_axis=True, show_ruler=True, ruler_size=1,
                show_fwhm=True, show_labels=True,
@@ -2459,8 +2514,13 @@ def plot_image(image, beam=None, ax=None, name=None, pixel_size=1, unit=None,
     #ax.pcolormesh(x_map, y_map, data_masked)
     # extent = [np.max(x_index), np.min(x_index), np.min(y_index), np.max(y_index)]
     # the X-axis is negative, because we are inside the sky sphere
+
     extent = [0.5*nx*pixel_size[0], -0.5*nx*pixel_size[0], 
               -0.5*ny*pixel_size[1], 0.5*ny*pixel_size[1]]
+    if offset is not None:
+        extent = np.array(extent) + np.array(
+                [offset[0]*pixel_size[0],offset[0]*pixel_size[0],
+                 offset[1]*pixel_size[1],offset[1]*pixel_size[1]])
     im = ax.imshow(image, origin='lower', extent=extent, interpolation='nearest', 
                    vmin=vmin, vmax=vmax, **kwargs)
     if show_colorbar:
@@ -2509,9 +2569,9 @@ def plot_image(image, beam=None, ax=None, name=None, pixel_size=1, unit=None,
         # show the ruler
         if show_ruler:
             ax.plot([0.82*np.min(x_index)/zoom, 0.82*np.min(x_index)/zoom], 
-                    [-0.5*ruler_size, 0.5*ruler_size], linestyle='-', lw=1, color='grey')
+                    [-0.5*ruler_size, 0.5*ruler_size], linestyle='-', lw=1, color='white')
             ax.text(0.92*np.min(x_index)/zoom, 0, f'{ruler_size}arcsec', ha='center', va='center', 
-                    rotation=90, fontsize=fontsize*0.6, color='grey')
+                    rotation=90, fontsize=fontsize*0.6, color='white')
 
     return ax, cbar
 

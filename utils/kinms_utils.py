@@ -9,7 +9,10 @@ History:
     2025-05-06: add multiprocessing support for fitters, v0.2
 """
 
-__version__ = '0.2.2'
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Sequence, Union
 
 import os, sys, glob, re, time
 import warnings
@@ -19,6 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib import patches
 from astropy.io import fits
 import astropy.table as table
+from astropy import units, wcs
 from astropy.convolution import convolve, Gaussian2DKernel
 from scipy import ndimage, optimize, stats, interpolate, signal
 from photutils.aperture import EllipticalAperture
@@ -27,6 +31,9 @@ from multiprocessing import Pool, Process, Queue
 
 from astropy.modeling import fitting, models
 
+ArrayLike = Union[np.ndarray, units.Quantity]
+PathLike = Union[str, Path]
+__version__ = '0.2.2'
 
 #####################################################################################
 # Kinematic models
@@ -125,13 +132,13 @@ def get_wavelength(header=None, wcs=None, output_unit=None):
             chandata = chandata.to(units.Unit(output_unit)).value
     return chandata
 
-def read_cube(cubefile, z=None, rest_wave=None, header_ext='DATA',):
+def read_cube(cubefile, z=None, rest_wave=None, header_ext=0,):
     """read eris datacube and convert the wavelength to velocity relative to Ha
     """
     with fits.open(cubefile) as hdu:
         header = hdu[header_ext].header
         cube = hdu[header_ext].data
-    header = fix_micron_unit_header(header)
+    #header = fix_micron_unit_header(header)
     wavelength = get_wavelength(header, output_unit='um')
     if z is not None:
         refwave = (rest_wave * (1+z)).to(u.um).value
@@ -181,6 +188,11 @@ def calc_gaussian1d_chi2(params, velocity=None, spec=None, std=None):
     chi2 = np.sum((spec-fit)**2/std**2)
     return chi2
     # return (spec-fit)**2/std**2
+
+def calc_gaussian1d_chi2_vector(params, velocity=None, spec=None, std=None):
+    fit = gaussian_1d(params, velocity=velocity)
+    chi2 = np.sum((spec-fit)**2/std**2)
+    return (spec-fit)**2/std**2
 
 def fit_spec(vel, spec, std=1, p0=None, mode='minimize', 
              plot=False, ax=None,
@@ -233,9 +245,9 @@ def fit_spec(vel, spec, std=1, p0=None, mode='minimize',
         vel0 = 0 #np.median(vel[spec_selection])
     if sig0 is None:
         if sigma_bounds is not None:
-            sig0 = 1.2*np.max([np.median(np.diff(vel)), 1.1*sigma_bounds[0]])
+            sig0 = 1.2*np.max([5*np.median(np.diff(vel)), 1.5*sigma_bounds[0]])
         else:
-            sig0 = 2*np.median(np.diff(vel))
+            sig0 = 5*np.median(np.diff(vel))
     if fit_cont:
         if (p0 is not None) and (len(p0)>3):
             cont0 = p0[3]
@@ -254,13 +266,20 @@ def fit_spec(vel, spec, std=1, p0=None, mode='minimize',
         guess_spec = gaussian_1d(initial_guess, velocity=vel)
         # do the fit
         if False:# np.all(bounds) is None:
-            fit_result = optimize.least_squares(calc_gaussian1d_chi2, initial_guess, 
-                                       args=(vel, spec, std), 
-                                       bounds=(-np.inf,np.inf), method='lm')
+            opts = dict(xatol=1e-4, fatol=1e-4, maxiter=2000, maxfev=2000)
+            fit_result = optimize.least_squares(
+                    calc_gaussian1d_chi2_vector, initial_guess, 
+                    ftol=1e-04, xtol=1e-04, gtol=1e-04, max_nfev=2000,
+                    args=(vel, spec, std), method='lm')#bounds=(-np.inf,np.inf), )
+            #fit_result = optimize.leastsq(
+            #        calc_gaussian1d_chi2_vector, initial_guess, 
+            #        args=(vel, spec, std))#bounds=(-np.inf,np.inf), )
         if True:
+            opts = dict(xatol=1e-4, fatol=1e-4, maxiter=2000, maxfev=2000)
             fit_result = optimize.minimize(calc_gaussian1d_chi2, initial_guess, 
                                        args=(vel, spec, std), 
-                                       bounds=bounds,)
+                                       options=opts,
+                                       method='Nelder-Mead',)# bounds=bounds,)
         # make profile of the best fit 
         bestfit_spec = gaussian_1d(fit_result.x, velocity=vel)
         bestfit_params = fit_result.x
@@ -400,11 +419,11 @@ def fit_spec_norm(vel, spec, std=1, p0=None, mode='minimize',
         I0 = np.max(spec_norm)
     if vel0 is None:
         vel0 = 0 #np.median(vel[spec_selection])
-    if sig0 is None:
+    if sigma0 is None:
         if sigma_bounds is not None:
-            sig0 = 1.2*np.max([np.median(np.diff(vel_norm)), sigma_bounds_scaled[0]])
+            sigma0 = 1.2*np.max([5*np.median(np.diff(vel_norm)), sigma_bounds_scaled[0]])
         else:
-            sig0 = 2*np.median(np.diff(vel_norm))
+            sigma0 = 5*np.median(np.diff(vel_norm))
     sigma_bounds_scaled = [sigma_bounds[0]/vel_scale, sigma_bounds[1]/vel_scale]
     if fit_cont:
         if (p0 is not None) and (len(p0)>3):
@@ -416,16 +435,26 @@ def fit_spec_norm(vel, spec, std=1, p0=None, mode='minimize',
     if mode == 'minimize':
         bounds = [amplitude_bounds_scaled, velocity_bounds_scaled, sigma_bounds_scaled]
         if fit_cont:
-            initial_guess = [I0, vel0, sig0, cont0]
+            initial_guess = [I0, vel0, sigma0, cont0]
             bounds.append(cont_bounds_scaled)
         else:
-            initial_guess = [I0, vel0, sig0]
+            initial_guess = [I0, vel0, sigma0]
         # make profile of initial guess.  this is only used for information/debugging purposes.
         guess_spec_norm = gaussian_1d(initial_guess, velocity=vel_norm)
         # do the fit
+        opts = dict(xatol=1e-4, fatol=1e-4, maxiter=2000, maxfev=2000)
         fit_result = optimize.minimize(calc_gaussian1d_chi2, initial_guess, 
                                        args=(vel_norm, spec_norm, std_norm), 
+                                       method='Nelder-Mead', options=opts,
                                        bounds=bounds)
+        if False:# np.all(bounds) is None:
+            # initial_guess = [1, 0, 50/vel_scale]
+            fit_result = optimize.least_squares(
+                    calc_gaussian1d_chi2_vector, 
+                    initial_guess, 
+                    args=(vel_norm, spec_norm, std_norm), 
+                    bounds=(-np.inf,np.inf))
+
         # make profile of the best fit 
         bestfit_spec_norm = gaussian_1d(fit_result.x, velocity=vel_norm)
         bestfit_params = fit_result.x
@@ -519,7 +548,8 @@ def fit_spec_curvefit(
     """
     vel = np.array(vel)
     data = np.array(data)
-
+    if guess is None:
+        guess = [0, np.nanmax(data), 50]
     popt, pcov = optimize.curve_fit(
             func, vel, data, p0=guess, nan_policy='omit', bounds=bounds)
     bestfit = popt
@@ -589,7 +619,6 @@ def fit_spec_astropy(specchan, specdata, guess=None, bounds=None,
             return [0,0,0], None
     else:
         return bestfit, specfit
- 
 
 def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
                vmin=-1000, vmax=1000,
@@ -672,10 +701,65 @@ def pv_diagram(datacube, velocity=None, z=None, pixel_center=None,
             ax3.set_xlabel('Velocity')
     return sliced_pvmap
 
-def cube_viewer():
+def save_maps(
+        maps: ArrayLike,
+        outfile: str,
+        header: Optional[fits.Header] = None,
+        overwrite: bool = False, 
+        ):
     """a simplified cube viewer
     """
-    pass
+    if header is not None:
+        maps_header = wcs.WCS(header).celestial.to_header()
+        maps_header["NAXIS"] = 3
+        maps_header["BTYPE"] = "FITTED"
+        maps_header["COMMENT"] = "Fitted maps with shape [nmaps, ny, nx]."
+    else:
+        maps_header = fits.Header()
+        maps_header["NAXIS"] = 3
+        maps_header["BTYPE"] = "FITTED"
+        maps_header["COMMENT"] = "Fitted maps with shape [nmaps, ny, nx]."
+
+    cube_hdus = fits.HDUList([fits.PrimaryHDU(data=maps, header=maps_header),])
+    cube_hdus.writeto(outfile, overwrite=overwrite)
+
+def save_cube(
+        cube: ArrayLike, 
+        outfile: str,
+        header: Optional[fits.Header] = None,
+        wavelength: ArrayLike = None, 
+        spectral_axis: int = 0,
+        overwrite: bool = False,
+        ):
+    """save the 3D datacube into fits file
+
+    Parameters
+    ----------
+    cube: the 3D datacube to be saved
+
+    """
+    if header is not None:
+        cube_header = header.copy()
+        cube_header["NAXIS"] = 3
+        cube_header["BTYPE"] = "FITTED"
+        cube_header["COMMENT"] = "Fitted spectral cube with shape [nwave, ny, nx]."
+
+    else:
+        cube_header = fits.Header()
+        cube_header["NAXIS"] = 3
+        cube_header["BTYPE"] = "FITTED"
+        cube_header["COMMENT"] = "Fitted spectral cube with shape [nwave, ny, nx]."
+
+    if wavelength is not None:
+        cdelt = np.diff(wavelength)
+        header[f"CRPIX{spectral_axis}"] = 1.0
+        header[f"CRVAL{spectral_axis}"] = float(wavelength[0])
+        header[f"CDELT{spectral_axis}"] = cdelt
+        header[f"CTYPE{spectral_axis}"] = "WAVE"
+
+    cube_hdus = fits.HDUList([fits.PrimaryHDU(data=cube, header=cube_header), ])
+    cube_hdus.writeto(outfile, overwrite=overwrite)
+
 
 #####################################################################################
 # Fitter classes
@@ -741,25 +825,50 @@ class SpecFitter:
         pass
 
 class CubeFitter:
-    def __init__(self, cube, velocity=None, header=None):
+    def __init__(
+            self, 
+            cube=None, 
+            velocity=None, 
+            header=None):
         self.cube = cube
         self.velocity = velocity
-        self.nchan, self.ny, self.nx = cube.shape
+    @property
+    def nchan(self):
+        return self.cube.shape[-3]
+    @property
+    def shape(self):
+        return self.cube.shape
+    @property
+    def imshape(self):
+        return self.cube.shape[-1:-2]
 
     def smooth(self, kernel=None):
         gauss_kernel = gkern(smooth_width) 
         self.cube = signal.convolve(self.cube, gauss_kernel[None,:,:], mode='same')
 
-    def fit_cube(self, mode='minimize', SNR_limit=3,
+    def fit_cube(self, mode='minimize', SNR_limit=2,
                  vel_low=-300, vel_up=300, savefile=None, debug=None):
         fitcube, fitmaps = pixel_fit_cube(
                 self.cube, velocity=self.velocity, mode=mode, SNR_limit=SNR_limit,
                 vel_low=vel_low, vel_up=vel_up, 
-                savefile=None, debug=debug)
+                debug=debug)
         return fitcube, fitmaps
+    
+    def fit_cube_curvefit(self, mode='minimize', SNR_limit=2,
+                 vel_low=-300, vel_up=300, savefile=None, debug=None):
+        fitcube, fitmaps = pixel_fit_cube_simple(
+                self.cube, velocity=self.velocity, SNR_limit=SNR_limit,
+                vel_low=vel_low, vel_up=vel_up, 
+                debug=debug)
+        return fitcube, fitmaps
+    
+    def save_maps():
+        pass
+    def save_cube():
+        pass
 
     def read_fits(self, fitsfile, z=None, rest_wave=None, header_ext='DATA'):
-        velocity, cube, header = read_cube(cube, z=z, rest_wave=rest_wave, 
+        velocity, cube, header = read_cube(fitsfile, z=z, rest_wave=rest_wave, 
                                            header_ext=header_ext)
         self.velocity = velocity
         self.cube = cube
@@ -1031,8 +1140,86 @@ def spec_autofit(vel, spec, std=None, p0=None,
     else:
         return None 
  
+def pixel_fit_cube_simple(
+        cube, 
+        velocity=None, 
+        plot=False, 
+        fit_cont=False,
+        smooth_width=None,
+        vel_low=-300, 
+        vel_up=300, 
+        SNR_limit=2.0,
+        debug=False, 
+        **kwargs):
+    """fit cube pixel by pixel using curve_fit with 1d gaussian model
+
+    Args:
+        cube: it can be the fitsfile or the datacube
+        velocity: the velocity of the cube
+    """
+    if isinstance(cube, str):
+        velocity, cube, header = read_cube(cube, z=z, rest_wave=rest_wave)
+    if smooth_width is not None:
+        gauss_kernel = gkern(smooth_width) 
+        cube = signal.convolve(cube, gauss_kernel[None,:,:], mode='same')
+
+    cube_shape = cube.shape
+    fitcube = np.zeros_like(cube)
+    imagesize = cube_shape[-2:]
+    nspec = cube_shape[-3]
+    # mean, median, std = astro_stats.sigma_clipped_stats(cube, sigma=10)
+    # mask = np.ma.masked_invalid(cube).mask
+    # vmax = 1.5*np.percentile(cube[~mask], 90)
+
+    # A cube to save all the best-fit values (maps)
+    # [amp, velocity, sigma, SNR]
+    fitmaps = np.full((5, cube_shape[-2], cube_shape[-1]), fill_value=np.nan)
+    weight_map = np.zeros(imagesize)
+    
+    for y in range(0, cube_shape[-2]):
+        for x in range(0, cube_shape[-1]):
+            spec = cube[:,y,x]
+            if np.nansum(spec) != 0:
+                # measure the std
+                cont_window = (velocity<=vel_low) | (velocity>=vel_up)
+                std = np.nanstd(spec[cont_window])                            
+                med = np.nanmedian(spec[cont_window])
+                # get chi^2 of straight line fit
+                chi2_sline = np.nansum((spec-med)**2 / std**2)
+                # do a Gaussian profile fit of the line
+                #bestfit = gaussian_1d(px, velocity=velocity)
+                try:
+                    px, px_err, spec_fit = fit_spec_curvefit(velocity, spec, std)
+                except:
+                    continue
+                # calculate the chi^2 of the Gaussian profile fit
+                #chi2_gauss = np.nansum((spec-bestfit)**2 / std**2)
+                chi2_gauss = np.nansum((spec-spec_fit)**2 / std**2)
+                # calculate the S/N of the fit: sqrt(delta_chi^2)=S/N
+                SNR = (chi2_sline - chi2_gauss)**0.5
+                # store the fit parameters with S/N>SNR_limit
+                if SNR < SNR_limit:
+                    continue
+                fitmaps[0, y, x] = px[0]
+                fitmaps[1:3, y, x] = px[1:3] # vcenter, vsigma
+                fitmaps[3, y, x] = 0
+                fitmaps[4, y, x] = SNR
+                fitcube[:,y,x] = spec_fit
+
+                # plot data and fit if S/N is above threshold
+                if plot:
+                    ax = fig.add_subplot(111)
+                    ax.step(vel, spec, color='black', where='mid', label='data')
+                    ax.plot(vel, bestfit, color='red', alpha=0.8)
+                    plt.show(block=False)
+                    plt.pause(0.02)
+                    plt.clf()
+
+    return fitcube, fitmaps
+
+
 def pixel_fit_cube(cube, velocity=None, mode='minimize', SNR_limit=3, 
-                   plot=False, fit_cont=False,
+                   plot=False, fit_cont=False, sigma0=50,
                    smooth_width=None,
                    vel_low=-300, vel_up=300, savefile=None, debug=False, **kwargs):
     """fit gaussian line through the cube pixel by pixel
@@ -1074,11 +1261,16 @@ def pixel_fit_cube(cube, velocity=None, mode='minimize', SNR_limit=3,
                 # get chi^2 of straight line fit
                 chi2_sline = np.nansum((spec-med)**2 / std**2)
                 # do a Gaussian profile fit of the line
-                px, spec_fit = fit_spec_norm(velocity, spec, std, fit_cont=fit_cont, 
-                              mode=mode)
-                bestfit = gaussian_1d(px, velocity=velocity)
+                px, spec_fit = fit_spec_norm(
+                        velocity, spec, std, fit_cont=fit_cont, 
+                        sigma0=sigma0,
+                        mode=mode)
+                #px, spec_fit = fit_spec_astropy(velocity, spec)
+                #bestfit = gaussian_1d(px, velocity=velocity)
+                #px, px_err, spec_fit = fit_spec_curvefit(velocity, spec, std)
                 # calculate the chi^2 of the Gaussian profile fit
-                chi2_gauss = np.nansum((spec-bestfit)**2 / std**2)
+                #chi2_gauss = np.nansum((spec-bestfit)**2 / std**2)
+                chi2_gauss = np.nansum((spec-spec_fit)**2 / std**2)
                 # calculate the S/N of the fit: sqrt(delta_chi^2)=S/N
                 SNR = (chi2_sline - chi2_gauss)**0.5
                 # store the fit parameters with S/N>SNR_limit
@@ -1094,7 +1286,7 @@ def pixel_fit_cube(cube, velocity=None, mode='minimize', SNR_limit=3,
                     if fit_cont:
                         fitmaps[3, y, x] = px[3]
                     fitmaps[4, y, x] = SNR
-                    fitcube[:,y,x] = bestfit
+                    fitcube[:,y,x] = spec_fit
 
                     # plot data and fit if S/N is above threshold
                     if plot:
@@ -1123,7 +1315,7 @@ def pixel_fit_cube2(cube, velocity=None, mode='minimize', SNR_limit=3,
                    smooth_width=None, 
                    minaper=0, maxaper=4, 
                    vel_low=-500, vel_up=500, savefile=None, debug=False, **kwargs):
-    """fit gaussian line through the cube
+    """fit gaussian line through the cube, with adaptive apertures
 
     Args:
         datacube: it can be the fitsfile or the datacube
@@ -1208,8 +1400,8 @@ def pixel_fit_cube2(cube, velocity=None, mode='minimize', SNR_limit=3,
                         # get chi^2 of straight line fit
                         chi2_sline = np.nansum((spec-med)**2 / std**2)
                         # do a Gaussian profile fit of the line
-                        px,bestfit_spec = fit_spec_norm(velocity, spec, std, fit_cont=fit_cont, 
-                                      mode=mode)
+                        #px,bestfit_spec = fit_spec_norm(velocity, spec, std, fit_cont=fit_cont,mode=mode)
+                        px, px_err, bestfit_spec = fit_spec_curvefit(velocity, spec, std,)
                         # calculate the chi^2 of the Gaussian profile fit
                         chi2_gauss = np.nansum((spec-bestfit_spec)**2 / std**2)
                         # calculate the S/N of the fit: sqrt(delta_chi^2)=S/N
