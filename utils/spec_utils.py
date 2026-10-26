@@ -42,6 +42,8 @@ class Database(object):
                           ('12C18O_7-6', 768.25159330*u.GHz), ('12C18O_8-7', 877.92195530*u.GHz)])
         self.C_ion = OrderedDict([('CI_1-0', 492.16065100*u.GHz), ('CI_2-1', 809.34197*u.GHz), 
                          ('CII', 1900.5369*u.GHz)])
+        self.O_ion = OrderedDict([('OI_1-0', 2060.06909*u.GHz), 
+                                  ('OI_2-1', 4744.77749*u.GHz)])
         self.H2O = OrderedDict([
                        ('H2O_414-321', 380.19735980*u.GHz), ('H2O_423-330', 448.00107750*u.GHz),
                        ('H2O_110-101', 556.93598770*u.GHz), ('H2O_532-441', 620.70095490*u.GHz),
@@ -533,6 +535,42 @@ def rebin_array(arr, bin_size, operation='sum', padding_value=None):
         
     return rebinned_arr
 
+# def line_reference_stacking(vel, ref_spec, target_spec, vel_target=None, mode='median'):
+#     """stacking one weak line based on the velocity of a strong line
+#
+#     This is duplication of line_stacking, but can be used for two lines simutaneously
+#     """
+#     if vel_target is None:
+#         vel_target = vel
+#     velocity_list = []
+#     stacked_ref_spec = np.zeros([len(ref_spec), len(vel)]) 
+#     for i, spec in enumerate(ref_spec):
+#         # best_fit_params, best_fit = fit_spec_astropy(vel, spec)
+#         best_fit_params, best_fit = fit_gaussian_line(vel, spec, sigma_bounds=[40, 400])
+#         velocity_list.append(best_fit_params[1])
+#         # extrapolate the new ref spectra
+#         grid_interper = interpolate.RegularGridInterpolator(
+#             [vel-best_fit_params[1], ], spec, method='cubic', 
+#             fill_value=np.nan, bounds_error=False)
+#         stacked_ref_spec[i] = grid_interper(vel)
+#     # stacking the target specrtra with velocity offset
+#     stacked_target_spec = np.zeros([len(target_spec), len(vel_target)]) 
+#     for i,spec in enumerate(target_spec):
+#         vel_off = velocity_list[i]
+#         vel_new = vel_target - vel_off
+#         # extrapolate the new target spectra
+#         grid_interper = interpolate.RegularGridInterpolator(
+#             [vel_new, ], spec, method='cubic', 
+#             fill_value=np.nan, bounds_error=False)
+#         stacked_target_spec[i] = grid_interper(vel_target)
+#     if mode == 'median':
+#         return (np.nanmedian(stacked_ref_spec, axis=0), 
+#                 np.nanmedian(stacked_target_spec, axis=0))
+#     elif mode == 'mean':
+#         return (np.nanmean(stacked_ref_spec, axis=0), 
+#                 np.nanmean(stacked_target_spec, axis=0))
+#
+
    
 ########################################
 ############ CMD Tools #################
@@ -566,7 +604,7 @@ def print_lines(z=0.0, family=None, unit=None, limits=None, reference=None,
             unit = u.Unit('GHz')
     elif family == 'all' or family=='full':
         family_select = [db.CO_family, db.CO_13C, db.CO_18O, db.CO_17O, 
-                         db.C_ion, db.H2O, db.HCN, db.HNC, db.HCO_plus, db.Special, db.Other]
+                         db.C_ion, db.O_ion, db.H2O, db.HCN, db.HNC, db.HCO_plus, db.Special, db.Other]
         if unit is None:
             unit = u.Unit('GHz')
     else:

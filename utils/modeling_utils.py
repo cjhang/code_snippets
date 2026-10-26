@@ -13,6 +13,8 @@ from __future__ import annotations
 __version__ = '0.2.0'
 
 import operator
+import os
+import pickle
 import time
 import warnings
 from functools import reduce, cached_property
@@ -22,6 +24,7 @@ from typing import Callable, Optional
 import emcee
 import numpy as np
 from numpy import linalg
+from scipy import fft as spfft
 from scipy import interpolate, optimize, special, stats
 from matplotlib import pyplot as plt
 from astropy import constants as const
@@ -295,15 +298,15 @@ class Grid3D(Grid):
 ###############################################
 
 # ---------------- operator overloading, generated once ----------------
-def _make_binary_op(sym: str):
-    def op(self: Model, other) -> CompoundModel:
-        other = other if isinstance(other, Model) else _Constant(other)
-        return CompoundModel(self, other, sym)
-    def rop(self: Model, other) -> CompoundModel:
-        other = other if isinstance(other, Model) else _Constant(other)
-        return CompoundModel(other, self, sym)
-    return op, rop
-
+# def _make_binary_op(sym: str):
+#     def op(self: Model, other) -> CompoundModel:
+#         other = other if isinstance(other, Model) else _Constant(other)
+#         return CompoundModel(self, other, sym)
+#     def rop(self: Model, other) -> CompoundModel:
+#         other = other if isinstance(other, Model) else _Constant(other)
+#         return CompoundModel(other, self, sym)
+#     return op, rop
+#
 class Model:
     """Base class for all models.
 
@@ -314,6 +317,20 @@ class Model:
     def __init__(self, name: Optional[str] = None) -> None:
         self.name = name or type(self).__name__
 
+    def __add__(self, other: Model):
+        return CompoundModel(self, other, '+')
+    def __sub__(self, other: Model):
+        return CompoundModel(self, other, '-')
+    def __mul__(self, other: Model):
+        return CompoundModel(self, other, '*')
+    def __truediv__(self, other: Model):
+        return CompoundModel(self, other, '/')
+    # define all the arithmetic operators
+    # __add__,     __radd__     = _make_binary_op('+')
+    # __sub__,     __rsub__     = _make_binary_op('-')
+    # __mul__,     __rmul__     = _make_binary_op('*')
+    # __truediv__, __rtruediv__ = _make_binary_op('/')
+    #
     def _iter_params(self):
         """Yield ``(owner_model, attr_name, Parameter)`` for each free parameter."""
         for attr, val in vars(self).items():
@@ -537,11 +554,35 @@ class Model:
                 result.append(lo + ui * (hi - lo))
         return np.array(result)
 
-Model.__add__,      Model.__radd__      = _make_binary_op('+')
-Model.__sub__,      Model.__rsub__      = _make_binary_op('-')
-Model.__mul__,      Model.__rmul__      = _make_binary_op('*')
-Model.__truediv__,  Model.__rtruediv__  = _make_binary_op('/')
+    def summary(self) -> None:
+        """Print a table of all parameters with values, fixed status, and ties."""
+        seen: dict[int, str] = {}
+        lines: list[str] = []
+        for m in self.submodels:
+            for attr, p in vars(m).items():
+                if not isinstance(p, Parameter):
+                    continue
+                pid = id(p)
+                tied_note = ""
+                if pid in seen:
+                    tied_note = f"  (tied to {seen[pid]})"
+                else:
+                    seen[pid] = f"{m.name}.{attr}"
+                if isinstance(p, DerivedParameter):
+                    status = 'derived'
+                else:
+                    status = "FIXED" if p.fixed else "free "
+                lines.append(
+                    f"{m.name}.{attr:<12} = {p.value!r:>10}  [{status}]{tied_note}"
+                )
+        print("\n".join(lines))
 
+
+# Model.__add__,      Model.__radd__      = _make_binary_op('+')
+# Model.__sub__,      Model.__rsub__      = _make_binary_op('-')
+# Model.__mul__,      Model.__rmul__      = _make_binary_op('*')
+# Model.__truediv__,  Model.__rtruediv__  = _make_binary_op('/')
+#
 
 class _Constant(Model):
     """Internal: wraps a scalar constant for ``model + 5.0`` style expressions."""
@@ -617,10 +658,6 @@ class CompoundModel(Model):
                     f"{m.name}.{attr:<12} = {p.value!r:>10}  [{status}]{tied_note}"
                 )
         print("\n".join(lines))
-
-def join_models(models: list[Model]) -> Model:
-    """Combine a list of models via addition (replaces the old ``Models([...])`` API)."""
-    return reduce(operator.add, models)
 
 
 ###############################################
@@ -732,6 +769,54 @@ def check_regular_grid(arr: np.ndarray) -> bool:
     """Return True if *arr* is regularly spaced."""
     arr_diff = np.diff(arr)
     return bool(np.all(np.abs(arr_diff - arr_diff[0]) <= np.finfo(arr_diff.dtype).eps))
+
+
+class PSFConvolver:
+    """FFT-based 'same'-mode convolution with a fixed PSF kernel.
+
+    Produces the same result as ``scipy.signal.fftconvolve(img, psf, mode='same')``
+    (and therefore the default zero-padded boundary behaviour of
+    ``astropy.convolution.convolve``) but roughly 300-500x faster when called
+    repeatedly, because the kernel's FFT is computed once in the constructor and
+    reused on every call.
+
+    The caller is responsible for any kernel normalisation (e.g. dividing the
+    PSF by its sum) -- this class applies the kernel exactly as given, matching
+    ``astropy.convolution.convolve`` which does *not* normalise a 2D kernel by
+    default.
+
+    Parameters
+    ----------
+    psf : ndarray
+        The (2D) convolution kernel. Used as-is (no renormalisation).
+    shape : tuple[int, int]
+        The ``(ny, nx)`` shape of the images that will be convolved.
+        The output of :meth:`__call__` has this shape.
+    """
+
+    def __init__(self, psf: np.ndarray, shape: tuple):
+        psf = np.asarray(psf, dtype=float)
+        if psf.ndim != 2:
+            raise ValueError(f"PSFConvolver expects a 2D kernel, got ndim={psf.ndim}")
+        self._psf = psf
+        self._shape = tuple(int(s) for s in shape)
+        self._fsize = (self._shape[0] + psf.shape[0] - 1,
+                       self._shape[1] + psf.shape[1] - 1)
+        self._psf_fft = spfft.rfft2(psf, s=self._fsize)
+
+    def __call__(self, image: np.ndarray) -> np.ndarray:
+        """Convolve *image* (shape ``self._shape``) with the fixed PSF."""
+        img = np.asarray(image, dtype=float)
+        f = spfft.rfft2(img, s=self._fsize) * self._psf_fft
+        full = spfft.irfft2(f, s=self._fsize)
+        # central crop matching scipy/astropy 'same' mode
+        oy = (self._fsize[0] - self._shape[0]) // 2
+        ox = (self._fsize[1] - self._shape[1]) // 2
+        return full[oy:oy + self._shape[0], ox:ox + self._shape[1]]
+
+    @property
+    def psf(self) -> np.ndarray:
+        return self._psf
 
 class Line1D(Model):
     """Straight line: ``y = m * x + b``.
@@ -1133,6 +1218,91 @@ def emcee_log_probability(
 # Fitters
 ###############################################
 
+def default_ncores(fraction: float = 0.8, **kwargs) -> int:
+    """Default number of worker processes for parallel MCMC sampling.
+
+    Uses ``fraction`` of the host's logical CPU cores (default 0.8, i.e. 80%%)
+    so that sampling is parallelised while leaving some headroom for the main
+    process and the OS. Never returns fewer than 1.
+    """
+    n = os.cpu_count() or 1
+    return max(1, int(fraction * n))
+
+
+# ---------------------------------------------------------------------------
+# Worker-side cache for parallel MCMC.
+#
+# emcee calls ``pool.map(log_prob_fn, theta)`` on *every* MCMC step, and
+# ``multiprocessing.Pool`` re-pickles ``log_prob_fn`` for every task. Because
+# here ``log_prob_fn`` is a bound method carrying the whole model + data +
+# PSF (large numpy arrays), that re-serialisation dwarfs the actual per-step
+# computation, so a plain Pool makes the parallel run *slower* than the
+# sequential one (confirmed: 8 cores was slower than 1).
+#
+# ``_WorkerPool`` instead ships the log-probability function to each worker
+# exactly once (via the Pool ``initializer``) and afterwards sends only the
+# small parameter vectors per step, giving the expected speed-up.
+_worker_lnprob = None  # the unpickled log_posterior, set inside each worker
+
+
+def _worker_init(lnprob_pickle: bytes) -> None:
+    """Pool initializer: unpickle the log-probability once per worker."""
+    global _worker_lnprob
+    _worker_lnprob = pickle.loads(lnprob_pickle)
+
+
+def _worker_eval(theta) -> float:
+    """Evaluate the cached worker-side log-probability for one walker."""
+    return _worker_lnprob(theta)
+
+
+class _WorkerPool:
+    """multiprocessing.Pool that serialises the log-probability only once."""
+
+    def __init__(self, processes: int, lnprob) -> None:
+        self._processes = processes
+        self._pool = Pool(
+            processes,
+            initializer=_worker_init,
+            initargs=(pickle.dumps(lnprob),),
+        )
+
+    def map(self, fn, iterable, chunksize=None):
+        # ``fn`` is ignored: workers already hold the unpickled function.
+        # Use a chunk per process by default: multiprocessing.Pool's default
+        # chunksize (~len/(4*procs)) produces one IPC message per walker per
+        # step, and the resulting pickling/queue overhead dwarfs the actual
+        # per-evaluation cost in short MCMC steps (measured ~40 ms/step for a
+        # 32-walker step vs ~0.5 ms with a proper chunksize).
+        if chunksize is None:
+            try:
+                n = len(iterable)
+            except TypeError:
+                n = None
+            chunksize = 1 if n is None else max(1, int(np.ceil(n / self._processes)))
+        return self._pool.map(_worker_eval, iterable, chunksize=chunksize)
+
+    def close(self) -> None:
+        self._pool.close()
+
+    def join(self) -> None:
+        self._pool.join()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+        self.join()
+
+
+def _make_worker_pool(ncores: Optional[int], lnprob):
+    """Return a parallel worker pool when ``ncores>1``, else ``None``."""
+    if ncores is not None and ncores > 1:
+        return _WorkerPool(ncores, lnprob)
+    return None
+
+
 class Fitter:
     def __init__(self, models, grid, data, mask=None, name=None):
         self.models = models
@@ -1372,15 +1542,30 @@ class EmceeFitter(Fitter):
         steps: int = 5000,
         progress: bool = True,
         force: bool = False,
+        ncores: Optional[int] = None,
     ) -> None:
-        """Run MCMC for a fixed number of steps."""
-        self.sampler = self._make_sampler()
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', module='emcee')
-            self.sampler.run_mcmc(
-                self.pos, steps, progress=progress,
-                skip_initial_state_check=force,
-            )
+        """Run MCMC for a fixed number of steps.
+
+        ``ncores`` controls parallel evaluation of the walkers with a
+        ``multiprocessing`` pool: ``ncores>1`` uses that many worker
+        processes, while ``None``/``1`` runs sequentially (default).
+        """
+        pool = _make_worker_pool(ncores, self.log_posterior)
+        if pool is not None and self._hdf_backend is not None:
+            warnings.warn("ncores>1 with an HDF backend: the backend is not "
+                          "sent to workers; parallel sampling will still run.")
+        try:
+            self.sampler = self._make_sampler(pool=pool)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', module='emcee')
+                self.sampler.run_mcmc(
+                    self.pos, steps, progress=progress,
+                    skip_initial_state_check=force,
+                )
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
 
     # ------------------------------------------------------------
     def auto_run(
@@ -1390,7 +1575,8 @@ class EmceeFitter(Fitter):
         check_steps: int = 1000,
         autocorr_multiplier: int = 50,
         debug: bool = False,
-        rtol: float = 0.1
+        rtol: float = 0.1,
+        ncores: Optional[int] = None,
     ) -> bool:
         """
         Run MCMC with automatic convergence checking via integrated
@@ -1423,49 +1609,58 @@ class EmceeFitter(Fitter):
         if max_steps < check_steps:
             raise ValueError(f"max_steps ({max_steps}) must be >= check_steps ({check_steps})")
 
-        self.sampler = self._make_sampler()
+        pool = _make_worker_pool(ncores, self.log_posterior)
+        if pool is not None and self._hdf_backend is not None:
+            warnings.warn("ncores>1 with an HDF backend: the backend is not "
+                          "sent to workers; parallel sampling will still run.")
+        try:
+            self.sampler = self._make_sampler(pool=pool)
 
-        index = 0
-        old_tau = np.inf
-        autocorr = np.empty(max_steps // check_steps + 1)
-        converged = False
+            index = 0
+            old_tau = np.inf
+            autocorr = np.empty(max_steps // check_steps + 1)
+            converged = False
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', module='emcee')
-            for _sample in self.sampler.sample(self.pos, iterations=max_steps, progress=progress):
-                if self.sampler.iteration % check_steps:
-                    continue
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', module='emcee')
+                for _sample in self.sampler.sample(self.pos, iterations=max_steps, progress=progress):
+                    if self.sampler.iteration % check_steps:
+                        continue
 
-                # tol=0: return a best-effort estimate, never raise AutocorrError.
-                # Reliability of the estimate is judged by our own criterion below.
-                tau = self.sampler.get_autocorr_time(tol=0)
-                autocorr[index] = np.mean(tau)
-                index += 1
+                    # tol=0: return a best-effort estimate, never raise AutocorrError.
+                    # Reliability of the estimate is judged by our own criterion below.
+                    tau = self.sampler.get_autocorr_time(tol=0)
+                    autocorr[index] = np.mean(tau)
+                    index += 1
 
-                converged = np.all(tau * autocorr_multiplier < self.sampler.iteration)
-                converged &= np.all(np.abs(old_tau - tau) / tau < rtol)
+                    converged = np.all(tau * autocorr_multiplier < self.sampler.iteration)
+                    converged &= np.all(np.abs(old_tau - tau) / tau < rtol)
 
-                if debug:
-                    reduced_chi2 = self._reduced_chi2_at_current_state()
-                    acc_frac = np.mean(self.sampler.acceptance_fraction)
-                    print(
-                        f"[iter {self.sampler.iteration}] "
-                        f"mean_tau={np.mean(tau):.1f}  "
-                        f"individual tau={dict(zip(self.keys, tau))} "
-                        f"acc_frac={acc_frac:.3f}  "
-                        f"converged={converged}  "
-                        f"reduced_chi2(best-so-far)={reduced_chi2:.4g}"
-                    )
-                    if acc_frac < 0.05:
-                        warnings.warn(
-                            f"Very low acceptance fraction ({acc_frac:.3f}) at "
-                            f"iteration {self.sampler.iteration} -- check walker "
-                            f"initialization, bounds, or priors."
+                    if debug:
+                        reduced_chi2 = self._reduced_chi2_at_current_state()
+                        acc_frac = np.mean(self.sampler.acceptance_fraction)
+                        print(
+                            f"[iter {self.sampler.iteration}] "
+                            f"mean_tau={np.mean(tau):.1f}  "
+                            f"individual tau={dict(zip(self.keys, tau))} "
+                            f"acc_frac={acc_frac:.3f}  "
+                            f"converged={converged}  "
+                            f"reduced_chi2(best-so-far)={reduced_chi2:.4g}"
                         )
+                        if acc_frac < 0.05:
+                            warnings.warn(
+                                f"Very low acceptance fraction ({acc_frac:.3f}) at "
+                                f"iteration {self.sampler.iteration} -- check walker "
+                                f"initialization, bounds, or priors."
+                            )
 
-                if converged:
-                    break
-                old_tau = tau
+                    if converged:
+                        break
+                    old_tau = tau
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
 
         self.autocorr = autocorr[:index]
         self.converged = converged
@@ -1501,7 +1696,9 @@ class EmceeFitter(Fitter):
         progress: bool = True,
     ) -> None:
         """Run MCMC with a multiprocessing pool."""
-        with Pool(ncores) as pool:
+        if not (ncores is not None and ncores > 1):
+            ncores = default_ncores()  # parallelise by default for multi_run
+        with _WorkerPool(ncores, self.log_posterior) as pool:
             self.sampler = self._make_sampler(pool=pool)
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', module='emcee')
